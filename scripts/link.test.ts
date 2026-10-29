@@ -7,6 +7,7 @@ import {
   writeFileSync,
   readlinkSync,
   existsSync,
+  lstatSync,
   rmSync,
   symlinkSync,
 } from "node:fs";
@@ -30,15 +31,27 @@ function fixture(t) {
   return { source, home };
 }
 
-test("links expose source edits, preserve originals and leave session state alone", (t) => {
+test("copies mods, links layouts, preserves originals and leaves session state alone", (t) => {
   const { source, home } = fixture(t);
   writeFileSync(join(home, "shared.json"), '{"layout":"personal"}');
   writeFileSync(join(home, "mods/personal/gpui-kit.d.ts"), "generated");
+  mkdirSync(join(source, "mods/personal/icons"));
+  writeFileSync(join(source, "mods/personal/icons/app.png"), "png");
+  mkdirSync(join(home, "mods/personal/icons"));
+  writeFileSync(join(home, "mods/personal/icons/app.png"), "png");
   const result = linkPackage(source, home);
   assert.equal(result.linked, 3);
-  assert.equal(readlinkSync(join(home, "mods/personal")), join(source, "mods/personal"));
+  assert.ok(!lstatSync(join(home, "mods/personal")).isSymbolicLink());
+  assert.ok(!lstatSync(join(home, "mods/personal/icons/app.png")).isSymbolicLink());
+  assert.equal(
+    readlinkSync(join(home, "layouts/personal.json")),
+    join(source, "layouts/personal.json"),
+  );
   writeFileSync(join(source, "mods/personal/main.js"), "changed");
+  rmSync(join(source, "mods/personal/icons/app.png"));
+  assert.equal(linkPackage(source, home).linked, 1);
   assert.equal(readFileSync(join(home, "mods/personal/main.js"), "utf8"), "changed");
+  assert.equal(existsSync(join(home, "mods/personal/icons/app.png")), false);
   assert.equal(
     readFileSync(join(result.backup, "mods/personal/main.js"), "utf8"),
     "export default class Personal {}",
@@ -94,7 +107,17 @@ test("migrates links from this checkout's source to its build output", (t) => {
   assert.throws(() => linkPackage(output, home), /Already linked elsewhere/);
   const result = linkPackage(output, home, source);
   assert.equal(result.linked, 3);
-  assert.equal(readlinkSync(join(home, "mods/personal")), join(output, "mods/personal"));
+  assert.equal(readFileSync(join(home, "mods/personal/main.js"), "utf8"), "compiled");
   assert.equal(readlinkSync(join(result.backup, "mods/personal")), join(source, "mods/personal"));
   assert.deepEqual(linkPackage(output, home, source), { linked: 0, backup: null });
+});
+
+test("replaces a mod linked to the build output with a copy", (t) => {
+  const { source, home } = fixture(t);
+  rmSync(join(home, "mods/personal"), { recursive: true });
+  symlinkSync(join(source, "mods/personal"), join(home, "mods/personal"));
+  const result = linkPackage(source, home);
+  assert.equal(result.linked, 3);
+  assert.ok(!lstatSync(join(home, "mods/personal")).isSymbolicLink());
+  assert.equal(readlinkSync(join(result.backup, "mods/personal")), join(source, "mods/personal"));
 });

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   mkdtempSync,
   mkdirSync,
+  readFileSync,
   symlinkSync,
   writeFileSync,
   lstatSync,
@@ -11,7 +12,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { forwardChange, refreshLinks } from "./watch.ts";
+import { installMod } from "./link.ts";
+import { forwardChange, refreshInstall } from "./watch.ts";
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "frantss-herdr-watch-"));
@@ -21,47 +23,42 @@ function fixture(t) {
   for (const base of [root, home]) {
     mkdirSync(join(base, "mods"), { recursive: true });
     mkdirSync(join(base, "layouts"), { recursive: true });
+    mkdirSync(join(base, "themes"), { recursive: true });
   }
   mkdirSync(join(root, "mods/personal"));
+  writeFileSync(join(root, "mods/personal/main.js"), "first");
   writeFileSync(join(root, "layouts/personal.json"), "{}");
-  symlinkSync(join(root, "mods/personal"), join(home, "mods/personal"));
+  installMod(root, join(root, "mods/personal"), join(home, "mods/personal"));
   symlinkSync(join(root, "layouts/personal.json"), join(home, "layouts/personal.json"));
   return { root, home };
 }
 
-test("forwards nested mod and layout edits to the installed links", (t) => {
+test("forwards layout edits to the installed links", (t) => {
   const { root, home } = fixture(t);
-  for (const [file, link] of [
-    ["mods/personal/main.js", "mods/personal"],
-    ["layouts/personal.json", "layouts/personal.json"],
-  ]) {
-    lutimesSync(join(home, link), new Date(0), new Date(0));
-    assert.equal(forwardChange(root, home, file), true);
-    assert.ok(lstatSync(join(home, link)).mtimeMs > 0);
-    assert.ok(lstatSync(join(home, link)).isSymbolicLink());
-  }
+  lutimesSync(join(home, "layouts/personal.json"), new Date(0), new Date(0));
+  assert.equal(forwardChange(root, home, "layouts/personal.json"), true);
+  assert.ok(lstatSync(join(home, "layouts/personal.json")).mtimeMs > 0);
+  assert.ok(lstatSync(join(home, "layouts/personal.json")).isSymbolicLink());
 });
 
-test("ignores generated files, session data, unlinked mods and foreign links", (t) => {
+test("ignores mods, session data, unlinked layouts and foreign links", (t) => {
   const { root, home } = fixture(t);
-  for (const filename of [
-    ".git/index",
-    "shared.json",
-    "mods/personal/gpui-kit.d.ts",
-    "mods/personal/jsconfig.json",
-    "mods/personal/ui.test.mjs",
-    "mods/missing/main.js",
-  ])
+  for (const filename of ["shared.json", "mods/personal/main.js", "layouts/missing.json"])
     assert.equal(forwardChange(root, home, filename), false);
   rmSync(join(home, "layouts/personal.json"));
   symlinkSync(join(root, "somewhere-else.json"), join(home, "layouts/personal.json"));
   assert.equal(forwardChange(root, home, "layouts/personal.json"), false);
 });
 
-test("successful build refreshes linked output without touching source links", (t) => {
+test("successful build copies changed owned mods and skips foreign ones", (t) => {
   const { root, home } = fixture(t);
-  mkdirSync(join(root, "themes"));
-  lutimesSync(join(home, "mods/personal"), new Date(0), new Date(0));
-  assert.equal(refreshLinks(root, home), 2);
-  assert.ok(lstatSync(join(home, "mods/personal")).mtimeMs > 0);
+  assert.equal(refreshInstall(root, home), 1);
+  writeFileSync(join(root, "mods/personal/main.js"), "second");
+  mkdirSync(join(root, "mods/foreign"));
+  mkdirSync(join(home, "mods/foreign"));
+  writeFileSync(join(root, "mods/foreign/main.js"), "ours");
+  writeFileSync(join(home, "mods/foreign/main.js"), "theirs");
+  assert.equal(refreshInstall(root, home), 2);
+  assert.equal(readFileSync(join(home, "mods/personal/main.js"), "utf8"), "second");
+  assert.equal(readFileSync(join(home, "mods/foreign/main.js"), "utf8"), "theirs");
 });

@@ -15,24 +15,27 @@ pnpm run link
 pnpm dev
 ```
 
-`pnpm run link` builds first, then links the layout, custom mod directories, and
-themes from `dist/` into `~/.config/herdr-app`. Set `HERDR_APP_HOME` for another
-Herdr config folder. After the first link or a move from source links to output
-links, restart Herdr once so it resolves the new mod paths. Its core keeps the
+`pnpm run link` builds first, then installs everything from `dist/` into
+`~/.config/herdr-app`: it links the layout and themes and copies the custom mod
+directories. Mods are copies, not links, because Herdr 0.1.7 does not load mod
+images through symbolic links. Set `HERDR_APP_HOME` for another Herdr config folder.
+When the command replaces an existing entry, restart Herdr once. Its core keeps the
 terminals running. The output is ignored by Git; edit TypeScript and assets in
-the source directories.
+the source directories, not the installed copies.
 
 Keep `pnpm dev` running while editing. It rebuilds the JavaScript and copies
-changed layouts, themes, and assets. After a successful build it notifies Herdr
-through its installed links, because Herdr 0.1.7 does not watch external symbolic
-link targets on macOS. Failed builds retain the previous output. Ctrl+C stops
-watching; Herdr continues using the last build. Use `pnpm build` for a single build.
+changed layouts, themes, and assets. After a successful build it copies changed
+mods into Herdr and notifies Herdr through the layout and theme links, because
+Herdr 0.1.7 does not watch external symbolic link targets on macOS. Failed builds
+retain the previous output. Ctrl+C stops watching; Herdr continues using the last
+build. Use `pnpm build` for a single build.
 
 Matching original files are backed up under Herdr's `backups/frantss-herdr-<time>/`.
 Different files and links to another checkout are refused before any replacement.
-Links to this checkout's old source paths can be migrated to `dist/`. Repeating
-the link command keeps existing output links. Keep this checkout at the same path
-while Herdr uses it, and rebuild after cloning or deleting `dist/`.
+Links to this checkout's source or `dist/` mods are replaced by copies. A hidden
+`.frantss-herdr` file marks each copied mod, so later installs update it. Keep this
+checkout at the same path while Herdr uses it, and rebuild after cloning or
+deleting `dist/`.
 
 To activate the layout in another installation:
 
@@ -67,7 +70,7 @@ Use `herdr-app status` to check errors in the running app after edits.
 
 ## Restore the original files
 
-For each linked entry, remove the symbolic link and move its matching original
-from the printed backup folder to the same location. Do not delete the checkout
-until its links have been removed. The original extraction backup retains the
-pre-extraction files, including generated editor files.
+For each installed entry, remove the symbolic link or copied mod directory and move
+its matching original from the printed backup folder to the same location. Do not
+delete the checkout until its links have been removed. The original extraction
+backup retains the pre-extraction files, including generated editor files.

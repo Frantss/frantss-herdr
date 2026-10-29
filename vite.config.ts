@@ -1,6 +1,6 @@
 import { defineConfig } from "vite-plus";
 import { appHome, outputRoot } from "./scripts/paths.ts";
-import { refreshLinks } from "./scripts/watch.ts";
+import { refreshInstall } from "./scripts/watch.ts";
 
 export default defineConfig({
   pack: {
@@ -26,7 +26,7 @@ export default defineConfig({
       },
     ],
     onSuccess: () => {
-      refreshLinks(outputRoot, appHome);
+      refreshInstall(outputRoot, appHome);
     },
   },
   test: {
