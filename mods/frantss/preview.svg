@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200">
+  <rect width="320" height="200" fill="#fafafa"/>
+  <rect y="24" width="320" height="1" fill="#e8e8e8"/>
+  <text x="44" y="16" font-family="monospace" font-size="9" fill="#6d28d9">❯</text>
+  <text x="54" y="16" font-family="monospace" font-size="9" fill="#171717">frantss</text>
+  <circle cx="14" cy="12" r="3" fill="#cccccc"/><circle cx="24" cy="12" r="3" fill="#cccccc"/><circle cx="34" cy="12" r="3" fill="#cccccc"/>
+  <rect x="80" y="25" width="1" height="175" fill="#e8e8e8"/>
+  <rect x="10" y="38" width="30" height="3" fill="#737373"/>
+  <rect x="10" y="48" width="60" height="3" fill="#cccccc"/><rect x="10" y="56" width="60" height="3" fill="#cccccc"/>
+  <rect x="10" y="72" width="26" height="3" fill="#737373"/>
+  <rect x="10" y="82" width="60" height="3" fill="#cccccc"/>
+  <rect x="90" y="34" width="220" height="156" rx="2" fill="#ffffff" stroke="#6d28d9"/>
+  <rect x="90" y="34" width="220" height="14" rx="2" fill="#ffffff" stroke="#e8e8e8"/>
+</svg>

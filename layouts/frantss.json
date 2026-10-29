@@ -1,0 +1,198 @@
+{
+  "id": "r9af5185cde1ea4518f548ca879ac5fcc",
+  "type": "row",
+  "children": [
+    {
+      "id": "frantss-root",
+      "type": "column",
+      "children": [
+        {
+          "id": "frantss-texture",
+          "type": "column",
+          "children": [
+            {
+              "id": "frantss-top",
+              "type": "block",
+              "content": {
+                "mod": "frantss",
+                "props": {
+                  "role": "top"
+                }
+              },
+              "size": {
+                "px": 40
+              },
+              "window_drag": true
+            },
+            {
+              "id": "frantss-body",
+              "type": "row",
+              "children": [
+                {
+                  "id": "frantss-rail",
+                  "type": "block",
+                  "content": {
+                    "mod": "frantss",
+                    "props": {
+                      "role": "rail"
+                    }
+                  },
+                  "size": {
+                    "px": 240
+                  },
+                  "min": 160,
+                  "max": 400
+                },
+                {
+                  "id": "frantss-work",
+                  "type": "column",
+                  "children": [
+                    {
+                      "id": "frantss-tabs",
+                      "type": "block",
+                      "content": {
+                        "mod": "frantss-tabs"
+                      },
+                      "size": {
+                        "px": 42
+                      },
+                      "window_drag": true
+                    },
+                    {
+                      "id": "frantss-work-body",
+                      "type": "row",
+                      "children": [
+                        {
+                          "id": "frantss-main",
+                          "type": "block",
+                          "content": {
+                            "tab": "active",
+                            "pane": {
+                              "header": {
+                                "content": {
+                                  "mod": "frantss",
+                                  "props": {
+                                    "role": "pane"
+                                  }
+                                },
+                                "reveal": "always",
+                                "height": 28,
+                                "position": "top"
+                              },
+                              "border": {
+                                "width": 1,
+                                "color": "border"
+                              },
+                              "radius": 3,
+                              "gap": 12,
+                              "lone": true
+                            }
+                          }
+                        },
+                        {
+                          "id": "panel",
+                          "type": "column",
+                          "children": [
+                            {
+                              "id": "panel-body",
+                              "type": "stack",
+                              "children": [
+                                {
+                                  "id": "files",
+                                  "type": "block",
+                                  "content": {
+                                    "mod": "frantss-files"
+                                  }
+                                },
+                                {
+                                  "id": "changes",
+                                  "type": "block",
+                                  "content": {
+                                    "mod": "frantss-changes"
+                                  }
+                                },
+                                {
+                                  "id": "agent-graph",
+                                  "type": "block",
+                                  "content": {
+                                    "mod": "agent-graph"
+                                  }
+                                },
+                                {
+                                  "id": "git-history",
+                                  "type": "block",
+                                  "content": {
+                                    "mod": "git-history"
+                                  }
+                                },
+                                {
+                                  "id": "github",
+                                  "type": "block",
+                                  "content": {
+                                    "mod": "github"
+                                  }
+                                }
+                              ],
+                              "active": "files"
+                            }
+                          ],
+                          "size": {
+                            "px": 368
+                          },
+                          "min": 280,
+                          "max": 900,
+                          "hidden": true
+                        }
+                      ],
+                      "padding": 12,
+                      "gap": 12
+                    }
+                  ],
+                  "resizable": false
+                }
+              ],
+              "divider": {
+                "width": 1,
+                "color": "border"
+              }
+            }
+          ],
+          "background": {
+            "image": "mods/frantss/texture.svg",
+            "fit": "cover"
+          },
+          "divider": {
+            "width": 1,
+            "color": "border"
+          },
+          "resizable": false
+        }
+      ],
+      "background": "canvas",
+      "theme": {
+        "light": "frantss-light",
+        "dark": "frantss-dark"
+      },
+      "font": "Geist Mono",
+      "font_size": 13,
+      "ui_font": "Geist Mono",
+      "terminal_padding": [
+        10,
+        8
+      ],
+      "terminal_opacity": 1,
+      "resizable": false,
+      "titlebar": "none",
+      "preview": "mods/frantss/preview.svg",
+      "terminal_menu": "frantss-menu"
+    }
+  ],
+  "theme": {
+    "light": "frantss-light",
+    "dark": "frantss-dark"
+  },
+  "divider": {
+    "width": 1,
+    "color": "border"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "frantss-herdr",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/watch.mjs",
+    "link": "node scripts/link.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node scripts/test.mjs"
+  }
+}

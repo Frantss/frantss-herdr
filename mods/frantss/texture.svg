@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1512" height="948" viewBox="0 0 1512 948">
+<defs>
+<pattern id="d" width="8" height="8" patternUnits="userSpaceOnUse"><circle cx="4" cy="4" r="0.75" fill="#808080" fill-opacity="0.13"/></pattern>
+<linearGradient id="l" x1="0" x2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient><linearGradient id="r" x1="1" x2="0"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient><linearGradient id="t" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient><linearGradient id="b" x2="0" y1="1" y2="0"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<mask id="m"><rect width="288" height="948" fill="url(#l)"/><rect x="1224" width="288" height="948" fill="url(#r)"/><rect width="1512" height="256" fill="url(#t)"/><rect y="692" width="1512" height="256" fill="url(#b)"/></mask>
+</defs>
+<rect width="1512" height="948" fill="url(#d)" mask="url(#m)"/>
+</svg>
