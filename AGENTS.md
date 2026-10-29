@@ -22,6 +22,7 @@
 
 - Weigh blast radius. After approval, proceed with small, reversible changes. Present a proposal before requesting approval for architectural or cross-cutting changes.
 - Request approval before running any action with side effects.
+- Exception: after changing mods, layouts or themes, run `pnpm run link` without asking, so Herdr loads the change.
 - After approval, fix encountered bugs directly related to your work and report the fixes afterwards. Apply the same proposal requirement to architectural or cross-cutting bug fixes.
 
 ## Context management
