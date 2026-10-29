@@ -28,6 +28,7 @@ import {
   terminals,
 } from "herdr";
 import { iconFile, type IconManifest } from "./icons.ts";
+import { statusMarks, type Mark } from "./status.ts";
 import { daemonName, daemonRunning, freshConfig, freshTheme, FRESH_THEME } from "./fresh.ts";
 
 interface LayoutNode {
@@ -129,7 +130,7 @@ export default class Files extends View {
   declare entries: Map<string, FileEntry[]>;
   declare folders: Set<string>;
   declare pending: Set<string>;
-  declare marks: Record<string, string>;
+  declare marks: Record<string, Mark>;
   declare on: string | null;
   declare watched: string | null;
   declare root: string | null;
@@ -219,7 +220,7 @@ export default class Files extends View {
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(
           (): null => null,
         );
-        const marks: Record<string, string> = {};
+        let marks: Record<string, Mark> = {};
         if (top?.code === 0) {
           const status = await exec(
             "git",
@@ -230,21 +231,11 @@ export default class Files extends View {
               "-z",
               "--no-renames",
               "--untracked-files=normal",
+              "--ignored",
             ],
             { cwd, on },
           ).catch((): null => null);
-          if (status?.code === 0)
-            for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
-              const xy = entry.slice(0, 2);
-              marks[`${top.stdout.trim()}/${entry.slice(3)}`] =
-                xy === "??" || xy.includes("A")
-                  ? "A"
-                  : xy.includes("U")
-                    ? "U"
-                    : xy.includes("D")
-                      ? "D"
-                      : "M";
-            }
+          if (status?.code === 0) marks = statusMarks(status.stdout, top.stdout.trim(), TOTAL);
         }
         if (key() !== context) return;
         this.marks = marks;
@@ -328,14 +319,16 @@ export default class Files extends View {
     });
   }
 
-  rows(prefix: string, depth: number, out: Element[], t: Theme): Element[] {
+  // Like VS Code, ignored entries stay listed with a dimmed name, and an ignored folder's contents too.
+  rows(prefix: string, depth: number, out: Element[], t: Theme, inIgnored = false): Element[] {
     if (out.length >= TOTAL || depth > 40) return out;
     const light = isLight(t.background);
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name,
         open = this.folders.has(path),
-        mark = this.marks[`${this.root}/${path}`];
+        mark = this.marks[`${this.root}/${path}`],
+        ignored = inIgnored || mark === "I";
       out.push(
         h_flex()
           .id(`file-${path}`)
@@ -365,8 +358,15 @@ export default class Files extends View {
                 .flex_none(),
             ),
           )
-          .child(div().flex_1().min_w(0).truncate().child(entry.name))
-          .when(Boolean(mark), (el) =>
+          .child(
+            div()
+              .flex_1()
+              .min_w(0)
+              .truncate()
+              .when(ignored, (el) => el.text_color(t.dim))
+              .child(entry.name),
+          )
+          .when(Boolean(mark) && mark !== "I", (el) =>
             el.child(
               div()
                 .text_size(11)
@@ -377,7 +377,7 @@ export default class Files extends View {
             ),
           ),
       );
-      if (entry.dir && open) this.rows(path, depth + 1, out, t);
+      if (entry.dir && open) this.rows(path, depth + 1, out, t, ignored);
     }
     return out;
   }

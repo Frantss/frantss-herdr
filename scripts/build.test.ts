@@ -39,6 +39,7 @@ test("build emits native JavaScript entries and copies every required asset", ()
   assert.ok(existsSync(join(outputRoot, "mods/github/github.js")));
   assert.ok(existsSync(join(outputRoot, "mods/frantss-files/icons.js")));
   assert.ok(existsSync(join(outputRoot, "mods/frantss-files/fresh.js")));
+  assert.ok(existsSync(join(outputRoot, "mods/frantss-files/status.js")));
   assert.ok(existsSync(join(outputRoot, "mods/frantss-files/material-icons.json")));
   assert.ok(existsSync(join(outputRoot, "mods/frantss-files/icons/typescript.svg")));
 });
