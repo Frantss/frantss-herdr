@@ -54,6 +54,13 @@ Keep Herdr's shipped mods installed. This layout uses their menus and dialogs
 (`worktree`, `prompt`, `confirm`, `help`, `picker`, `peek`, `toast`, `new-menu`)
 and icons from `workspace-chrome`, `files`, `changes` and `pane`.
 Git panels require `git`; the GitHub panel also requires authenticated `gh`.
+The files panel opens files in [Fresh](https://getfresh.dev/) (`fresh` on PATH), in one
+Fresh daemon per project folder. The daemons keep running after their tabs close;
+`fresh --cmd daemon list` shows them as `herdr-<folder>-<hash>`, and
+`fresh --cmd daemon kill <name>` stops one. A new daemon takes the active Herdr theme,
+written to `~/.config/fresh/themes/herdr-frantss.json`, and a config without the welcome
+tab, written to `frantss-files/fresh-config.json` in Herdr's config folder. Stop a daemon
+to give it a changed theme.
 The app launcher uses macOS `open`. Other panels use Herdr's `hc` and native APIs.
 
 `pnpm check` refreshes Herdr's generated API declarations in the ignored `types/`

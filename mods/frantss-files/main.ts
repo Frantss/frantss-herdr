@@ -1,4 +1,4 @@
-// A lazy file browser for the focused pane's folder, with bounded read-only previews.
+// A lazy file browser for the focused pane's folder. A click on a file opens it in Fresh (getfresh.dev).
 import {
   View,
   div,
@@ -9,21 +9,26 @@ import {
   type Color,
   type Element,
 } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
+import { v_flex, h_flex } from "gpui-base";
 import {
   spaces,
   panes,
   focused,
   exec,
   readTextFile,
+  writeTextFile,
   watchFolder,
   theme,
-  settings,
   window,
   layout,
   appHome,
+  home,
+  run,
+  notify,
+  terminals,
 } from "herdr";
 import { iconFile, type IconManifest } from "./icons.ts";
+import { daemonName, daemonRunning, freshConfig, freshTheme, FRESH_THEME } from "./fresh.ts";
 
 interface LayoutNode {
   id?: string;
@@ -71,44 +76,26 @@ function shown() {
 const meaningful = (paths: string[]) =>
   paths.some((path) => !/\/\.git\/.*\.lock$|\/node_modules\//.test(path));
 
-// Code colors from the Veist VS Code theme (its tokenColors); the rest follow the theme's text color.
-// Its mint and white only read on dark, so a light theme keeps colors from its terminal palette.
-const VEIST = {
-  keyword: "#d32d6c",
-  string: "#7ce0c3",
-  comment: "#888888",
-  function: "#54a6f8",
-  number: "#54a6f8",
-  constant: "#54a6f8",
-};
 const isLight = (hex: string) => {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 128;
 };
-const syntaxColors = (t: Theme) =>
-  isLight(t.background)
-    ? {
-        keyword: t.ansi5,
-        string: t.ansi2,
-        comment: t.dim,
-        function: t.ansi4,
-        type: t.ansi3,
-        number: t.ansi1,
-        constant: t.ansi6,
-      }
-    : VEIST;
-const LANG: Record<string, string> = {
-  ts: "js",
-  tsx: "js",
-  mts: "js",
-  cts: "js",
-  jsx: "js",
-  mjs: "js",
-  toml: "yaml",
-  jsonc: "json",
-  svelte: "html",
-  vue: "html",
-};
+// Written when a daemon starts, so Fresh takes the Herdr theme active at that time.
+async function writeFreshConfig(t: Theme): Promise<string> {
+  const folder = `${appHome()}/frantss-files`,
+    themes = `${home()}/.config/fresh/themes`,
+    configPath = `${folder}/fresh-config.json`;
+  await exec("mkdir", ["-p", folder, themes]);
+  const replace = async (path: string, value: unknown) => {
+    const text = JSON.stringify(value, null, 2) + "\n",
+      old = await readTextFile(path);
+    if (old !== text) await writeTextFile(path, text, old);
+  };
+  await replace(`${themes}/${FRESH_THEME}`, freshTheme(t, isLight(t.background)));
+  await replace(configPath, freshConfig());
+  return configPath;
+}
+
 const PER_FOLDER = 500,
   TOTAL = 5000;
 
@@ -148,9 +135,6 @@ export default class Files extends View {
   declare loading: boolean;
   declare stale: boolean;
   declare error: string | null;
-  declare code: EditorState | null;
-  declare file: string | null;
-  declare fileError: string | null;
   declare icons: IconManifest | null;
 
   init(_props: unknown, cx: AsyncContext) {
@@ -215,7 +199,6 @@ export default class Files extends View {
       this.folders = new Set();
       this.pending = new Set();
       this.marks = {};
-      this.show(null);
       this.watched = null;
       this.error = null;
       this.limited = false;
@@ -300,43 +283,49 @@ export default class Files extends View {
     cx.notify();
   }
 
-  show(path: string | null, cx?: Context) {
-    this.code?.release();
-    this.code = null;
-    this.file = path;
-    this.fileError = null;
-    if (!path || !cx) return;
-    const context = this.context,
-      root = this.root,
-      on = this.on;
-    cx.spawn(async (cx) => {
-      try {
-        const text = await readTextFile(`${root}/${path}`, { on });
-        if (this.file !== path || key() !== context) return;
-        if (text === null) {
-          this.fileError = "This file is no longer available";
-          return;
-        }
-        if (text.includes("\0")) {
-          this.fileError = "Binary file · no text preview";
-          return;
-        }
-        const t = theme() as Theme,
-          ext = path.includes(".") ? path.split(".").pop() : "txt";
-        this.code = EditorState.new({
-          language: LANG[ext] ?? ext,
-          readonly: true,
-          value: text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text,
-          font_family: settings().font_family as string | undefined,
-          font_size: 12,
-          syntax: syntaxColors(t),
+  // A running daemon takes the file without a terminal; then its tab is shown, or a new tab attaches.
+  // Without a daemon, open-file in a new tab starts one and stays attached.
+  open(path: string, cx: Context) {
+    const root = this.root,
+      on = this.on,
+      file = `${root}/${path}`,
+      name = daemonName(root);
+    cx.spawn(async () => {
+      const fresh = (args: string[]) =>
+        exec("fresh", ["--cmd", "daemon", ...args], { cwd: root, on }).catch((): null => null);
+      const list = await fresh(["list"]);
+      if (!list) {
+        notify({
+          title: "Fresh is not installed",
+          body: "Install it with `brew install fresh-editor` to open files.",
+          level: "error",
         });
-      } catch {
-        if (this.file === path && key() === context)
-          this.fileError = "Cannot preview this file (binary, too large, or unreadable)";
-      } finally {
-        cx.notify();
+        return;
       }
+      if (!daemonRunning(list.stdout, name)) {
+        const config = await writeFreshConfig(theme() as Theme).catch((): null => null);
+        run("terminal.open", {
+          argv: [
+            "fresh",
+            ...(config ? ["--config", config] : []),
+            "--cmd",
+            "daemon",
+            "open-file",
+            name,
+            file,
+          ],
+          folder: root,
+          place: "tab",
+        });
+        return;
+      }
+      await fresh(["open-file", name, file]);
+      // The foreground program, because a shell wrapper's argv still names the daemon after Fresh quits.
+      const client = terminals().find(
+        (t) => t.state === "live" && (t.foreground?.argv ?? t.argv ?? []).includes(name),
+      );
+      if (client) run("pane.focus", { terminal: client.address });
+      else run("terminal.open", { argv: ["fresh", "-a", name], folder: root, place: "tab" });
     });
   }
 
@@ -361,7 +350,7 @@ export default class Files extends View {
           .cursor_pointer()
           .text_color(t.muted)
           .hover((s) => s.bg(t.hover).text_color(t.foreground))
-          .on_click((_e, cx) => (entry.dir ? this.toggle(path, cx) : this.show(path, cx)))
+          .on_click((_e, cx) => (entry.dir ? this.toggle(path, cx) : this.open(path, cx)))
           .child(
             entry.dir
               ? svg(`mods/frantss-files/chevron-${open ? "down" : "right"}.svg`)
@@ -421,21 +410,6 @@ export default class Files extends View {
           .text_size(11)
           .border_b(1)
           .border_color(t.border)
-          .when(Boolean(this.file), (el) =>
-            el.child(
-              div()
-                .id("files-back")
-                .tooltip("Back to files")
-                .w(20)
-                .cursor_pointer()
-                .text_color(t.muted)
-                .on_click((_e, cx) => {
-                  this.show(null);
-                  cx.notify();
-                })
-                .child("←"),
-            ),
-          )
           .child(div().child("Files"))
           .child(
             div()
@@ -444,50 +418,38 @@ export default class Files extends View {
               .truncate()
               .text_right()
               .text_color(t.dim)
-              .child(this.file ?? this.root?.split(/[\\/]/).pop() ?? ""),
+              .child(this.root?.split(/[\\/]/).pop() ?? ""),
           ),
       )
-      .when(!this.file, (el) =>
-        el.child(
-          v_flex()
-            .id("files-tree")
-            .flex_1()
-            .min_h(0)
-            .overflow_y_scrollbar()
-            .p(4)
-            .children(this.rows("", 0, [], t))
-            .when(Boolean(this.error) || !this.entries.get("")?.length, (el) =>
-              el.child(
-                div()
-                  .p(8)
-                  .text_size(12)
-                  .text_color(t.dim)
-                  .child(
-                    this.error ||
-                      (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"),
-                  ),
-              ),
-            )
-            .when(this.limited, (el) =>
-              el.child(
-                div()
-                  .p(8)
-                  .text_size(11)
-                  .text_color(t.dim)
-                  .child("File list limited to 500 entries per folder and 5,000 total"),
-              ),
-            ),
-        ),
-      )
-      .when(Boolean(this.file), (el) =>
-        el.child(
-          this.code
-            ? Editor.new(this.code).flex_1().min_h(0)
-            : div()
-                .p(12)
+      .child(
+        v_flex()
+          .id("files-tree")
+          .flex_1()
+          .min_h(0)
+          .overflow_y_scrollbar()
+          .p(4)
+          .children(this.rows("", 0, [], t))
+          .when(Boolean(this.error) || !this.entries.get("")?.length, (el) =>
+            el.child(
+              div()
+                .p(8)
+                .text_size(12)
                 .text_color(t.dim)
-                .child(this.fileError || "Loading file…"),
-        ),
+                .child(
+                  this.error ||
+                    (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"),
+                ),
+            ),
+          )
+          .when(this.limited, (el) =>
+            el.child(
+              div()
+                .p(8)
+                .text_size(11)
+                .text_color(t.dim)
+                .child("File list limited to 500 entries per folder and 5,000 total"),
+            ),
+          ),
       );
   }
 }
