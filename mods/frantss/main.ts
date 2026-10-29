@@ -379,10 +379,9 @@ export default class Frantss extends View {
             : [crumbLink(crumb, false), div().flex_none().child("/")],
         ),
       );
-    // Room for macOS's window buttons, which stay drawn over the bar.
     return h_flex()
       .size_full()
-      .pl(96)
+      .pl(RAIL.pad)
       .pr(16)
       .items_center()
       .gap(8)
