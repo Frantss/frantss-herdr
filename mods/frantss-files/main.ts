@@ -96,6 +96,9 @@ async function writeFreshConfig(t: Theme): Promise<string> {
   return configPath;
 }
 
+const openEditorTab = (folder: string, argv: string[]) =>
+  run("tab.new", { name: "editor", folder, argv });
+
 const PER_FOLDER = 500,
   TOTAL = 5000;
 
@@ -304,19 +307,15 @@ export default class Files extends View {
       }
       if (!daemonRunning(list.stdout, name)) {
         const config = await writeFreshConfig(theme() as Theme).catch((): null => null);
-        run("terminal.open", {
-          argv: [
-            "fresh",
-            ...(config ? ["--config", config] : []),
-            "--cmd",
-            "daemon",
-            "open-file",
-            name,
-            file,
-          ],
-          folder: root,
-          place: "tab",
-        });
+        openEditorTab(root, [
+          "fresh",
+          ...(config ? ["--config", config] : []),
+          "--cmd",
+          "daemon",
+          "open-file",
+          name,
+          file,
+        ]);
         return;
       }
       await fresh(["open-file", name, file]);
@@ -325,7 +324,7 @@ export default class Files extends View {
         (t) => t.state === "live" && (t.foreground?.argv ?? t.argv ?? []).includes(name),
       );
       if (client) run("pane.focus", { terminal: client.address });
-      else run("terminal.open", { argv: ["fresh", "-a", name], folder: root, place: "tab" });
+      else openEditorTab(root, ["fresh", "-a", name]);
     });
   }
 
