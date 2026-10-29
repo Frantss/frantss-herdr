@@ -241,14 +241,24 @@ export default class AgentGraph extends View {
         tab: (k: TerminalRecord) => tabOf(k) === here?.tab,
         all: () => true,
       }[this.scope] ?? (() => true);
-    const kidsOf = (address: string) =>
-      all.filter((k) => k.parent === address).sort((a, b) => a.created_ms - b.created_ms);
-    const build = (k: TerminalRecord): AgentNode => ({
-      k,
-      status: statusOf(k, listed),
-      allKids: kidsOf(k.address),
-      kids: this.folded.has(k.address) ? [] : kidsOf(k.address).map(build),
-    });
+    const children = new Map<string | undefined, TerminalRecord[]>();
+    for (const k of all) {
+      const parent = k.parent,
+        siblings = children.get(parent);
+      if (siblings) siblings.push(k);
+      else children.set(parent, [k]);
+    }
+    for (const siblings of children.values()) siblings.sort((a, b) => a.created_ms - b.created_ms);
+    const kidsOf = (address: string) => children.get(address) ?? [];
+    const build = (k: TerminalRecord): AgentNode => {
+      const allKids = kidsOf(k.address);
+      return {
+        k,
+        status: statusOf(k, listed),
+        allKids,
+        kids: this.folded.has(k.address) ? [] : allKids.map(build),
+      };
+    };
     return all
       .filter((k) => k.state === "live" && !byAddress.has(k.parent ?? ""))
       .filter((k) => statusOf(k, listed) || kidsOf(k.address).length)
