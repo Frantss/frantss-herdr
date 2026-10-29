@@ -815,7 +815,7 @@ export default class GitHub extends View {
     const linked = this.linkedAgents();
     const busy = new Set(linked.flatMap((a) => a.kinds.map((kind) => `${a.number}:${kind}`)));
     this.groups = buildInbox(this.data, busy);
-    const colors = { ci: t.blocked, comments: t.done, review: t.accent, ready: t.idle };
+    const colors = { ci: t.blocked, comments: t.accent, review: t.accent, ready: t.idle };
     const [ci, comments, review, ready] = this.groups;
     const section = (title, color, rows) =>
       rows.length

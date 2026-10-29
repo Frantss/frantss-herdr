@@ -58,7 +58,7 @@ type RailSection = {
 const GROUPS = [
   { status: "blocked", label: "NEEDS YOU" },
   { status: "working", label: "WORKING" },
-  { status: "done", label: "DONE" },
+  { status: "done", label: "UNREAD" },
   { status: "idle", label: "IDLE" },
 ];
 // Like the site's index leaders: a run of middle dots clipped to the space between label and value.

@@ -36,7 +36,7 @@
     "accent_foreground": "#0a0a0a",
     "working": "#4ade80",
     "blocked": "#fb2c36",
-    "done": "#a78bfa",
+    "done": "#facc15",
     "idle": "#7d7d7d"
   }
 }
