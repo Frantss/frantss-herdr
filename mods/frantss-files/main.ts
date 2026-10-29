@@ -9,7 +9,7 @@ import {
   type Color,
   type Element,
 } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, v_virtual_list, Scrollbar } from "gpui-base";
 import {
   spaces,
   panes,
@@ -19,6 +19,7 @@ import {
   writeTextFile,
   watchFolder,
   theme,
+  settings,
   window,
   layout,
   appHome,
@@ -53,6 +54,13 @@ function location() {
 interface FileEntry {
   name: string;
   dir: boolean;
+}
+interface FileRow extends FileEntry {
+  path: string;
+  depth: number;
+  open: boolean;
+  mark?: Mark;
+  ignored: boolean;
 }
 type Theme = Record<string, Color>;
 
@@ -319,67 +327,65 @@ export default class Files extends View {
     });
   }
 
-  // Like VS Code, ignored entries stay listed with a dimmed name, and an ignored folder's contents too.
-  rows(prefix: string, depth: number, out: Element[], t: Theme, inIgnored = false): Element[] {
+  // Ignored directories dim their descendants too, including rows outside the viewport.
+  rows(prefix = "", depth = 0, out: FileRow[] = [], inIgnored = false): FileRow[] {
     if (out.length >= TOTAL || depth > 40) return out;
-    const light = isLight(t.background);
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name,
         open = this.folders.has(path),
         mark = this.marks[`${this.root}/${path}`],
         ignored = inIgnored || mark === "I";
-      out.push(
-        h_flex()
-          .id(`file-${path}`)
-          .h(24)
-          .flex_none()
-          .pl(8 + depth * 14)
-          .pr(8)
-          .gap(6)
-          .items_center()
-          .rounded(3)
-          .cursor_pointer()
-          .text_color(t.muted)
-          .hover((s) => s.bg(t.hover).text_color(t.foreground))
-          .on_click((_e, cx) => (entry.dir ? this.toggle(path, cx) : this.open(path, cx)))
-          .child(
-            entry.dir
-              ? svg(`mods/frantss-files/chevron-${open ? "down" : "right"}.svg`)
-                  .size(12)
-                  .flex_none()
-                  .text_color(t.dim)
-              : div().w(12).flex_none(),
-          )
-          .when(Boolean(this.icons), (el) =>
-            el.child(
-              image(`mods/frantss-files/icons/${iconFile(this.icons, { ...entry, open }, light)}`)
-                .size(14)
-                .flex_none(),
-            ),
-          )
-          .child(
-            div()
-              .flex_1()
-              .min_w(0)
-              .truncate()
-              .when(ignored, (el) => el.text_color(t.dim))
-              .child(entry.name),
-          )
-          .when(Boolean(mark) && mark !== "I", (el) =>
-            el.child(
-              div()
-                .text_size(11)
-                .text_color(
-                  mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.accent,
-                )
-                .child(mark),
-            ),
-          ),
-      );
-      if (entry.dir && open) this.rows(path, depth + 1, out, t, ignored);
+      out.push({ ...entry, path, depth, open, mark, ignored });
+      if (entry.dir && open) this.rows(path, depth + 1, out, ignored);
     }
     return out;
+  }
+
+  row({ name, dir, path, depth, open, mark, ignored }: FileRow, t: Theme, light: boolean): Element {
+    return h_flex()
+      .id(`file-${path}`)
+      .h(24)
+      .flex_none()
+      .pl(8 + depth * 14)
+      .pr(8)
+      .gap(6)
+      .items_center()
+      .rounded(3)
+      .cursor_pointer()
+      .text_color(t.muted)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .child(
+        dir
+          ? svg(`mods/frantss-files/chevron-${open ? "down" : "right"}.svg`)
+              .size(12)
+              .flex_none()
+              .text_color(t.dim)
+          : div().w(12).flex_none(),
+      )
+      .when(Boolean(this.icons), (el) =>
+        el.child(
+          image(`mods/frantss-files/icons/${iconFile(this.icons, { name, dir, open }, light)}`)
+            .size(14)
+            .flex_none(),
+        ),
+      )
+      .child(
+        div()
+          .flex_1()
+          .min_w(0)
+          .truncate()
+          .when(ignored, (el) => el.text_color(t.dim))
+          .child(name),
+      )
+      .when(Boolean(mark) && mark !== "I", (el) =>
+        el.child(
+          div()
+            .text_size(11)
+            .text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.accent)
+            .child(mark),
+        ),
+      );
   }
 
   render(cx: Context) {
@@ -388,7 +394,9 @@ export default class Files extends View {
       this.refresh(cx);
     }
     if (key() !== this.context) this.refresh(cx);
-    const t = theme() as Theme;
+    const t = theme() as Theme,
+      rows = this.rows(),
+      light = isLight(t.background);
     return v_flex()
       .id("files")
       .size_full()
@@ -425,9 +433,34 @@ export default class Files extends View {
           .id("files-tree")
           .flex_1()
           .min_h(0)
-          .overflow_y_scrollbar()
           .p(4)
-          .children(this.rows("", 0, [], t))
+          .when(rows.length > 0, (el) =>
+            el.child(
+              div()
+                .relative()
+                .flex_1()
+                .min_h(0)
+                .child(
+                  v_virtual_list(
+                    "files-rows",
+                    rows.length,
+                    24 * ((settings().zoom as number | undefined) ?? 1),
+                    (i) => rows[i].path,
+                    (range) =>
+                      rows.slice(range.start, range.end).map((row) => this.row(row, t, light)),
+                  )
+                    .size_full()
+                    .on_item_click((path, cx) => {
+                      const row = rows.find((row) => row.path === path);
+                      if (row?.dir) this.toggle(path, cx);
+                      else if (row) this.open(path, cx);
+                    }),
+                )
+                .child(
+                  Scrollbar.vertical("files-rows").viewport_from_layout().absolute().inset_0(),
+                ),
+            ),
+          )
           .when(Boolean(this.error) || !this.entries.get("")?.length, (el) =>
             el.child(
               div()
