@@ -15,6 +15,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "material-icon-theme": "5.40.0",
     "vite-plus": "1.4.0"
   },
   "engines": {

@@ -173,6 +173,9 @@ importers:
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
+      material-icon-theme:
+        specifier: 5.40.0
+        version: 5.40.0
       vite-plus:
         specifier: 1.4.0
         version: 1.4.0(@types/node@24.19.2)(@vitest/ui@5.0.5)
@@ -764,6 +767,9 @@ packages:
     resolution: {integrity: sha512-XWAtwJ6OHO+tj0EKCs0Y2UamnyOxseZWltU4x2U2wh8g4AigdjwvtUjvLP2tqkA/avxHEtzxNaqGq/YGNwckKg==}
     engines: {node: '>=18'}
 
+  chroma-js@3.2.0:
+    resolution: {integrity: sha512-os/OippSlX1RlWWr+QDPcGUZs0uoqr32urfxESG9U93lhUfbnlyckte84Q8P1UQY/qth983AS1JONKmLS4T0nw==}
+
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
 
@@ -891,6 +897,10 @@ packages:
 
   magic-string@1.4.5:
     resolution: {integrity: sha512-oLLC2+YvQUfAa+vxoufE/yc1icb87M9iXIRqAoR/2EhE/8cb3SF/+Gi0c2By1B+5Vz2e2vQtUvHiu1+63Znh+w==}
+
+  material-icon-theme@5.40.0:
+    resolution: {integrity: sha512-IrvgusbwtqxhUtVgUy0nToJcfN7CYVRdbBxKMfbo0vab9flVBHA5INZ9UiE5SgRj+PM6opCl5nn5TZdpm2UaxA==}
+    engines: {vscode: ^1.55.0}
 
   mrmime@2.0.1:
     resolution: {integrity: sha512-Y3wQdFg2Va6etvQ5I82yUhGdsKrcYox6p7FfL1LbK2J4V01F9TGlepTIhnK24t7koZibmg82KGglhA1XK5IsLQ==}
@@ -1498,6 +1508,8 @@ snapshots:
 
   chai@6.3.0: {}
 
+  chroma-js@3.2.0: {}
+
   convert-source-map@2.0.0: {}
 
   dequal@2.0.3: {}
@@ -1581,6 +1593,10 @@ snapshots:
   magic-string@1.4.5:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.6.0
+
+  material-icon-theme@5.40.0:
+    dependencies:
+      chroma-js: 3.2.0
 
   mrmime@2.0.1: {}
 

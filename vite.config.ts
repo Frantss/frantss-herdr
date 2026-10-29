@@ -24,6 +24,14 @@ export default defineConfig({
         to: "dist/mods",
         flatten: false,
       },
+      {
+        from: "node_modules/material-icon-theme/icons/*.svg",
+        to: "dist/mods/frantss-files/icons",
+      },
+      {
+        from: "node_modules/material-icon-theme/dist/material-icons.json",
+        to: "dist/mods/frantss-files",
+      },
     ],
     onSuccess: () => {
       refreshInstall(outputRoot, appHome);

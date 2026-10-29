@@ -3,6 +3,7 @@ import {
   View,
   div,
   svg,
+  image,
   type Context,
   type AsyncContext,
   type Color,
@@ -20,7 +21,9 @@ import {
   settings,
   window,
   layout,
+  appHome,
 } from "herdr";
+import { iconFile, type IconManifest } from "./icons.ts";
 
 interface LayoutNode {
   id?: string;
@@ -148,12 +151,20 @@ export default class Files extends View {
   declare code: EditorState | null;
   declare file: string | null;
   declare fileError: string | null;
+  declare icons: IconManifest | null;
 
   init(_props: unknown, cx: AsyncContext) {
     this.entries = new Map();
     this.folders = new Set();
     this.pending = new Set();
     this.marks = {};
+    cx.spawn(async (cx) => {
+      const text = await readTextFile(`${appHome()}/mods/frantss-files/material-icons.json`).catch(
+        (): null => null,
+      );
+      this.icons = text ? JSON.parse(text) : null;
+      cx.notify();
+    });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
   }
@@ -331,6 +342,7 @@ export default class Files extends View {
 
   rows(prefix: string, depth: number, out: Element[], t: Theme): Element[] {
     if (out.length >= TOTAL || depth > 40) return out;
+    const light = isLight(t.background);
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name,
@@ -358,11 +370,12 @@ export default class Files extends View {
                   .text_color(t.dim)
               : div().w(12).flex_none(),
           )
-          .child(
-            svg(`mods/frantss-files/${entry.dir ? "folder" : "file"}.svg`)
-              .size(14)
-              .flex_none()
-              .text_color(t.muted),
+          .when(Boolean(this.icons), (el) =>
+            el.child(
+              image(`mods/frantss-files/icons/${iconFile(this.icons, { ...entry, open }, light)}`)
+                .size(14)
+                .flex_none(),
+            ),
           )
           .child(div().flex_1().min_w(0).truncate().child(entry.name))
           .when(Boolean(mark), (el) =>
