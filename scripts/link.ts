@@ -9,14 +9,14 @@ import {
   symlinkSync,
   unlinkSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { appHome, outputRoot, packageRoot } from "./paths.ts";
 
-const generated = (name) =>
+const generated = (name: string) =>
   name.endsWith(".d.ts") || name === "jsconfig.json" || name === ".DS_Store";
 
-function sameContents(source, target) {
+function sameContents(source: string, target: string): boolean {
   if (lstatSync(source).isDirectory() !== lstatSync(target).isDirectory()) return false;
   if (!lstatSync(source).isDirectory()) return readFileSync(source).equals(readFileSync(target));
   const names = (path) =>
@@ -31,7 +31,7 @@ function sameContents(source, target) {
   );
 }
 
-export function linkPackage(packageRoot, appHome) {
+export function linkPackage(packageRoot: string, appHome: string, previousRoot?: string) {
   const installed = existsSync(join(appHome, "installed.json"))
     ? JSON.parse(readFileSync(join(appHome, "installed.json"), "utf8"))
     : {};
@@ -52,6 +52,12 @@ export function linkPackage(packageRoot, appHome) {
     if (stat.isSymbolicLink()) {
       if (resolve(dirname(entry.target), readlinkSync(entry.target)) === resolve(entry.source))
         return false;
+      if (
+        previousRoot &&
+        resolve(dirname(entry.target), readlinkSync(entry.target)) ===
+          resolve(previousRoot, entry.relative)
+      )
+        return true;
       throw new Error(`Already linked elsewhere: ${entry.target}`);
     }
     if (!sameContents(entry.source, entry.target))
@@ -61,11 +67,13 @@ export function linkPackage(packageRoot, appHome) {
   if (!pending.length) return { linked: 0, backup: null };
 
   const backup = join(appHome, "backups", `frantss-herdr-${Date.now()}`);
-  const changed = [];
+  const changed: { target: string; original: string | null }[] = [];
   try {
     for (const entry of pending) {
       mkdirSync(dirname(entry.target), { recursive: true });
-      const original = existsSync(entry.target) ? join(backup, entry.relative) : null;
+      const original = lstatSync(entry.target, { throwIfNoEntry: false })
+        ? join(backup, entry.relative)
+        : null;
       if (original) {
         mkdirSync(dirname(original), { recursive: true });
         renameSync(entry.target, original);
@@ -88,13 +96,15 @@ export function linkPackage(packageRoot, appHome) {
   return { linked: pending.length, backup: existsSync(backup) ? backup : null };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const packageRoot = fileURLToPath(new URL("../", import.meta.url));
-  const appHome = process.env.HERDR_APP_HOME || join(homedir(), ".config", "herdr-app");
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   try {
-    const result = linkPackage(packageRoot, appHome);
+    const result = linkPackage(outputRoot, appHome, packageRoot);
     console.log(`Linked ${result.linked} entries to ${appHome}.`);
     if (result.backup) console.log(`Originals: ${result.backup}`);
+    if (result.linked)
+      console.log(
+        "Restart Herdr once to load the new mod paths. Its core keeps terminals running.",
+      );
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;

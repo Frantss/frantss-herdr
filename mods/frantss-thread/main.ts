@@ -1,3 +1,4 @@
+import type { AsyncContext, FocusHandle } from "gpui-kit";
 // A new thread in a workspace, as Codex starts one: Local runs it in the workspace's own checkout (a
 // new tab there), Worktree in a new git worktree of it (Herdr's worktree dialog, which opens it as a
 // space). Props: { space, folder, machine, repo } — repo: the folder is in git, so Worktree is offered;
@@ -18,16 +19,20 @@ import {
 
 // The agents each machine has ("" for this one), kept in shared state (persisted) so this opens at once
 // with last time's list while it asks again; frantss-new-menu and frantss-thread share it.
+type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
+type ThreadAgent = Pick<KnownAgent, "key" | "name" | "icon" | "tint"> & { run: string[] | null };
+type Theme = Record<string, `#${string}`>;
+
 const AGENTS = "frantss.agents";
-async function refreshAgents(machine) {
+async function refreshAgents(machine: string) {
   const agents = await knownAgents({ on: machine || null });
-  const known = shared(AGENTS) ?? {};
+  const known = (shared(AGENTS) as Record<string, KnownAgent[]> | null) ?? {};
   if (JSON.stringify(agents) !== JSON.stringify(known[machine]))
     setShared(AGENTS, { ...known, [machine]: agents });
   return agents;
 }
 
-const TERMINAL = {
+const TERMINAL: ThreadAgent = {
   key: "terminal",
   name: "Terminal",
   icon: "icons/shell.svg",
@@ -36,9 +41,14 @@ const TERMINAL = {
 };
 
 export default class Thread extends View {
-  init(_props, cx) {
+  declare agents: KnownAgent[];
+  declare handle: FocusHandle;
+  declare failed: boolean;
+  init(_props: unknown, cx: AsyncContext) {
     const machine = props()?.machine ?? "";
-    this.agents = (shared(AGENTS)?.[machine] ?? []).filter((a) => a.installed);
+    this.agents = ((shared(AGENTS) as Record<string, KnownAgent[]> | null)?.[machine] ?? []).filter(
+      (a) => a.installed,
+    );
     this.handle = cx.focus_handle();
     this.handle.focus();
     cx.spawn(async (cx) => {
@@ -51,7 +61,7 @@ export default class Thread extends View {
     });
   }
 
-  local(agent) {
+  local(agent: ThreadAgent) {
     const { space, folder } = props(),
       argv = agent.run ? { argv: agent.run } : {};
     closeOverlay(props().overlay);
@@ -60,7 +70,7 @@ export default class Thread extends View {
     run("tab.new", { space, ...argv });
   }
 
-  worktree(agent) {
+  worktree(agent: ThreadAgent) {
     const { space, folder, machine } = props();
     closeOverlay(props().overlay);
     // The worktree dialog takes a space, or a folder and machine for a repo without one.
@@ -79,7 +89,7 @@ export default class Thread extends View {
   }
 
   // Like frantss-menu's rows: 24px, 3px corners, muted until hovered.
-  row(t, id, agent, action) {
+  row(t: Theme, id: string, agent: ThreadAgent, action: (agent: ThreadAgent) => unknown) {
     const icon = agent.tint
       ? svg(agent.icon).size(13).text_color(t.dim)
       : image(agent.icon).size(13);
@@ -100,7 +110,7 @@ export default class Thread extends View {
       .child(div().flex_1().min_w(0).truncate().child(agent.name));
   }
 
-  section(t, title, kind, action) {
+  section(t: Theme, title: string, kind: string, action: (agent: ThreadAgent) => unknown) {
     return v_flex()
       .gap(2)
       .child(div().px(6).pt(6).pb(2).text_size(10).text_color(t.dim).child(title))
@@ -108,7 +118,7 @@ export default class Thread extends View {
   }
 
   render() {
-    const t = theme();
+    const t = theme() as Record<string, `#${string}`>;
     return v_flex()
       .id("thread")
       .track_focus(this.handle)

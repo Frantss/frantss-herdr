@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const here = new URL(".", import.meta.url);
+const here = new URL("../../dist/mods/git-history/", import.meta.url);
 const hostTypes = await readFile(
   join(process.env.HERDR_APP_HOME || join(homedir(), ".config/herdr-app"), "gpui-kit.d.ts"),
   "utf8",
@@ -33,7 +33,7 @@ const deferred = () => {
 
 async function harness() {
   let phase = "event";
-  const state = {
+  const state: any = {
     props: { cwd: "/repo/a" },
     spaces: [],
     panes: [],
@@ -53,7 +53,7 @@ async function harness() {
     notifications: 0,
   };
   function element(kind = "div") {
-    const node = {
+    const node: any = {
       kind,
       childNodes: [],
       handlers: {},
@@ -61,18 +61,18 @@ async function harness() {
       stateStyles: {},
       elementId: undefined,
     };
-    let proxy;
+    let proxy: any;
     proxy = new Proxy(node, {
       get(target, name) {
         if (name in target) return target[name];
         if (name === "then") return undefined;
-        assert.ok(methods.has(name), `Unknown native element method ${String(name)}`);
+        assert.ok(methods.has(String(name)), `Unknown native element method ${String(name)}`);
         return (...args) => {
           if (String(name).startsWith("on_")) {
             assert.notEqual(
               phase,
               "layout",
-              `Handler ${name} registered inside virtual list renderer`,
+              `Handler ${String(name)} registered inside virtual list renderer`,
             );
             node.handlers[name] = args.at(-1);
           } else if (name === "child" || name === "header" || name === "panel")
@@ -210,7 +210,7 @@ async function harness() {
       this.calls.push(["bottom"]);
     },
   });
-  const modules = {
+  const modules: Record<string, any> = {
     "gpui-kit": {
       View: class {},
       div: () => element(),
@@ -316,7 +316,7 @@ async function harness() {
   }
   const main = await moduleFor("./main.js");
   await main.evaluate();
-  const view = new main.namespace.default();
+  const view = new (main.namespace as any).default();
   view.init({}, ctx);
   return {
     view,
@@ -500,7 +500,7 @@ test("worktree switch ignores old history and targets the new remote", async () 
   assert.equal(h.view.place.cwd, "/repo/b");
   assert.equal(h.view.place.on, "build-server");
   assert.deepEqual(
-    Array.from(h.view.commits, (item) => item.hash),
+    Array.from(h.view.commits as { hash: string }[], (item) => item.hash),
     [hash(9)],
   );
   assert.ok(

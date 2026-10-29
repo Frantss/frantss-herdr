@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
-import { loadHistory, loadDetails, loadDiff } from "./git.js";
+import { loadHistory, loadDetails, loadDiff } from "./git.ts";
 
 const exec = promisify(execFile);
 
@@ -36,7 +36,7 @@ async function repository(t) {
   await run("init", "-b", "main");
   await run("config", "user.name", "Test Author");
   await run("config", "user.email", "test@example.com");
-  const commit = async (message, files = {}) => {
+  const commit = async (message: string, files: Record<string, string | Buffer> = {}) => {
     for (const [path, content] of Object.entries(files)) await writeFile(join(dir, path), content);
     await run("add", "-A");
     await run("commit", "--allow-empty", "-m", message);

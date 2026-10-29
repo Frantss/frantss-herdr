@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { forwardChange } from "./watch.mjs";
+import { forwardChange, refreshLinks } from "./watch.ts";
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "frantss-herdr-watch-"));
@@ -56,4 +56,12 @@ test("ignores generated files, session data, unlinked mods and foreign links", (
   rmSync(join(home, "layouts/personal.json"));
   symlinkSync(join(root, "somewhere-else.json"), join(home, "layouts/personal.json"));
   assert.equal(forwardChange(root, home, "layouts/personal.json"), false);
+});
+
+test("successful build refreshes linked output without touching source links", (t) => {
+  const { root, home } = fixture(t);
+  mkdirSync(join(root, "themes"));
+  lutimesSync(join(home, "mods/personal"), new Date(0), new Date(0));
+  assert.equal(refreshLinks(root, home), 2);
+  assert.ok(lstatSync(join(home, "mods/personal")).mtimeMs > 0);
 });

@@ -1,3 +1,4 @@
+import type { AsyncContext, FocusHandle } from "gpui-kit";
 // A workspace's menu in the frantss rail. Props: { folder, saved }. Keeping adds the folder to the
 // workspaces the rail remembers (shared "frantss.workspaces"); removing only forgets it, its spaces stay.
 
@@ -5,21 +6,25 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, run, closeOverlay, props, shared, setShared } from "herdr";
 
+type SavedWorkspace = { folder: string };
+type WorkspaceAction = (folder: string, list: SavedWorkspace[]) => unknown;
+
 const WORKSPACES = "frantss.workspaces";
 
 export default class Workspace extends View {
-  init(_props, cx) {
+  declare handle: FocusHandle;
+  init(_props: unknown, cx: AsyncContext) {
     this.handle = cx.focus_handle();
     this.handle.focus();
   }
 
-  act(action) {
+  act(action: WorkspaceAction) {
     closeOverlay(props()?.overlay);
-    action(props()?.folder, shared(WORKSPACES) ?? []);
+    action(props()?.folder, (shared(WORKSPACES) as SavedWorkspace[] | null) ?? []);
   }
 
   // Like frantss-menu's rows: 24px, 3px corners, muted until hovered.
-  row(t, id, text, action) {
+  row(t: Record<string, `#${string}`>, id: string, text: string, action: WorkspaceAction) {
     return h_flex()
       .id(id)
       .h(24)
@@ -37,7 +42,7 @@ export default class Workspace extends View {
   }
 
   render() {
-    const t = theme();
+    const t = theme() as Record<string, `#${string}`>;
     return v_flex()
       .id("workspace")
       .track_focus(this.handle)

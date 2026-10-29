@@ -1,5 +1,13 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
-import { View, div, svg } from "gpui-kit";
+import {
+  View,
+  div,
+  svg,
+  type Context,
+  type AsyncContext,
+  type Color,
+  type Element,
+} from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
 import {
   spaces,
@@ -14,6 +22,13 @@ import {
   layout,
 } from "herdr";
 
+interface LayoutNode {
+  id?: string;
+  children?: LayoutNode[];
+  hidden?: boolean;
+  active?: string;
+}
+
 function location() {
   const space = spaces().find((s) => s.active),
     f = focused();
@@ -26,9 +41,15 @@ function location() {
       : (space?.machine ?? null);
   return { cwd: pane?.cwd || f?.cwd || space?.folder, on };
 }
+interface FileEntry {
+  name: string;
+  dir: boolean;
+}
+type Theme = Record<string, Color>;
+
 const key = () => JSON.stringify(location());
 
-function find(node, id) {
+function find(node: LayoutNode | null, id: string): LayoutNode | null {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
     const found = find(child, id);
@@ -38,13 +59,13 @@ function find(node, id) {
 }
 // A hidden copy keeps running, so it waits until the panel shows it.
 function shown() {
-  const tree = layout(),
+  const tree = layout() as LayoutNode | null,
     panel = find(tree, "panel"),
     body = find(tree, "panel-body");
   return !panel || (!panel.hidden && body?.active === "files");
 }
 // Git's lock files come and go with every git command; refreshing on them alone never ends.
-const meaningful = (paths) =>
+const meaningful = (paths: string[]) =>
   paths.some((path) => !/\/\.git\/.*\.lock$|\/node_modules\//.test(path));
 
 // Code colors from the Veist VS Code theme (its tokenColors); the rest follow the theme's text color.
@@ -57,11 +78,11 @@ const VEIST = {
   number: "#54a6f8",
   constant: "#54a6f8",
 };
-const isLight = (hex) => {
+const isLight = (hex: string) => {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 128;
 };
-const syntaxColors = (t) =>
+const syntaxColors = (t: Theme) =>
   isLight(t.background)
     ? {
         keyword: t.ansi5,
@@ -73,7 +94,7 @@ const syntaxColors = (t) =>
         constant: t.ansi6,
       }
     : VEIST;
-const LANG = {
+const LANG: Record<string, string> = {
   ts: "js",
   tsx: "js",
   mts: "js",
@@ -88,7 +109,7 @@ const LANG = {
 const PER_FOLDER = 500,
   TOTAL = 5000;
 
-async function directory(path, on) {
+async function directory(path: string, on: string | null): Promise<FileEntry[]> {
   if (!on && window()?.platform === "windows") {
     const r = await exec("powershell", [
       "-NoProfile",
@@ -112,7 +133,23 @@ async function directory(path, on) {
 }
 
 export default class Files extends View {
-  init(_props, cx) {
+  declare entries: Map<string, FileEntry[]>;
+  declare folders: Set<string>;
+  declare pending: Set<string>;
+  declare marks: Record<string, string>;
+  declare on: string | null;
+  declare watched: string | null;
+  declare root: string | null;
+  declare context: string;
+  declare limited: boolean;
+  declare loading: boolean;
+  declare stale: boolean;
+  declare error: string | null;
+  declare code: EditorState | null;
+  declare file: string | null;
+  declare fileError: string | null;
+
+  init(_props: unknown, cx: AsyncContext) {
     this.entries = new Map();
     this.folders = new Set();
     this.pending = new Set();
@@ -121,7 +158,7 @@ export default class Files extends View {
     cx.timer.every(10000, (cx) => this.refresh(cx));
   }
 
-  watch(root, cx) {
+  watch(root: string, cx: Context) {
     if (this.on || this.watched === root) return;
     this.watched = root;
     cx.spawn(async (cx) => {
@@ -138,7 +175,7 @@ export default class Files extends View {
     });
   }
 
-  async loadFolder(path, context) {
+  async loadFolder(path: string, context: string) {
     const on = this.on,
       root = this.root;
     const entries = await directory(path ? `${root}/${path}` : root, on);
@@ -155,7 +192,7 @@ export default class Files extends View {
     if (entries.length > PER_FOLDER || used + entries.length > TOTAL) this.limited = true;
   }
 
-  refresh(cx) {
+  refresh(cx: Context) {
     if (this.loading) return;
     const { cwd, on } = location(),
       context = key();
@@ -183,9 +220,9 @@ export default class Files extends View {
       try {
         for (const path of ["", ...this.folders]) await this.loadFolder(path, context);
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(
-          () => null,
+          (): null => null,
         );
-        const marks = {};
+        const marks: Record<string, string> = {};
         if (top?.code === 0) {
           const status = await exec(
             "git",
@@ -198,7 +235,7 @@ export default class Files extends View {
               "--untracked-files=normal",
             ],
             { cwd, on },
-          ).catch(() => null);
+          ).catch((): null => null);
           if (status?.code === 0)
             for (const entry of status.stdout.split("\0").filter(Boolean).slice(0, TOTAL)) {
               const xy = entry.slice(0, 2);
@@ -225,7 +262,7 @@ export default class Files extends View {
     });
   }
 
-  toggle(path, cx) {
+  toggle(path: string, cx: Context) {
     if (this.folders.has(path)) {
       for (const folder of this.folders)
         if (folder === path || folder.startsWith(path + "/")) {
@@ -252,7 +289,7 @@ export default class Files extends View {
     cx.notify();
   }
 
-  show(path, cx) {
+  show(path: string | null, cx?: Context) {
     this.code?.release();
     this.code = null;
     this.file = path;
@@ -273,13 +310,13 @@ export default class Files extends View {
           this.fileError = "Binary file · no text preview";
           return;
         }
-        const t = theme(),
+        const t = theme() as Theme,
           ext = path.includes(".") ? path.split(".").pop() : "txt";
         this.code = EditorState.new({
           language: LANG[ext] ?? ext,
           readonly: true,
           value: text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text,
-          font_family: settings().font_family,
+          font_family: settings().font_family as string | undefined,
           font_size: 12,
           syntax: syntaxColors(t),
         });
@@ -292,7 +329,7 @@ export default class Files extends View {
     });
   }
 
-  rows(prefix, depth, out, t) {
+  rows(prefix: string, depth: number, out: Element[], t: Theme): Element[] {
     if (out.length >= TOTAL || depth > 40) return out;
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
@@ -344,13 +381,13 @@ export default class Files extends View {
     return out;
   }
 
-  render(cx) {
+  render(cx: Context) {
     if (this.stale && shown()) {
       this.stale = false;
       this.refresh(cx);
     }
     if (key() !== this.context) this.refresh(cx);
-    const t = theme();
+    const t = theme() as Theme;
     return v_flex()
       .id("files")
       .size_full()

@@ -1,3 +1,4 @@
+import type { AsyncContext, FocusHandle, Element } from "gpui-kit";
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import {
@@ -16,19 +17,24 @@ import {
 
 // The agents each machine has ("" for this one), kept in shared state (persisted) so this opens at once
 // with last time's list while it asks again; frantss-new-menu and frantss-thread share it.
+type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
+
 const AGENTS = "frantss.agents";
-async function refreshAgents(machine) {
+async function refreshAgents(machine: string) {
   const agents = await knownAgents({ on: machine || null });
-  const known = shared(AGENTS) ?? {};
+  const known = (shared(AGENTS) as Record<string, KnownAgent[]> | null) ?? {};
   if (JSON.stringify(agents) !== JSON.stringify(known[machine]))
     setShared(AGENTS, { ...known, [machine]: agents });
   return agents;
 }
 
 export default class NewMenu extends View {
-  init(_props, cx) {
+  declare agents: KnownAgent[];
+  declare handle: FocusHandle;
+  declare failed: boolean;
+  init(_props: unknown, cx: AsyncContext) {
     const machine = spaces().find((s) => s.active)?.machine ?? "";
-    this.agents = shared(AGENTS)?.[machine] ?? [];
+    this.agents = (shared(AGENTS) as Record<string, KnownAgent[]> | null)?.[machine] ?? [];
     this.handle = cx.focus_handle();
     this.handle.focus();
     cx.spawn(async (cx) => {
@@ -40,8 +46,8 @@ export default class NewMenu extends View {
       cx.notify();
     });
   }
-  row(id, icon, name, action, hint = "", enabled = true) {
-    const t = theme();
+  row(id: string, icon: Element, name: string, action: () => unknown, hint = "", enabled = true) {
+    const t = theme() as Record<string, `#${string}`>;
     return h_flex()
       .id(id)
       .h(31)
@@ -63,7 +69,7 @@ export default class NewMenu extends View {
       .child(div().text_size(11).text_color(t.dim).child(hint));
   }
   render() {
-    const t = theme();
+    const t = theme() as Record<string, `#${string}`>;
     const space = spaces().find((s) => s.active);
     const installed = this.agents.filter((a) => a.installed);
     const choices = [...installed, ...this.agents.filter((a) => !a.installed).slice(0, 2)];

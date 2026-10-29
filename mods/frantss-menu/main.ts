@@ -1,3 +1,4 @@
+import type { Context, AsyncContext, FocusHandle } from "gpui-kit";
 // Context menus (Herdr's items). Opened as a popup with
 // props { tab: "pane" | "tab" | "space" | "global", target }.
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
@@ -20,13 +21,13 @@ import {
 } from "herdr";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
-function place(s) {
+function place(s: import("herdr").SpaceInfo) {
   const tabs = new Set((s.tabs ?? []).map((c) => c.id));
   return panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
 }
 
 // A space's checkout: "main" (a repo's own), "linked" (a worktree), or null.
-async function checkout(folder, on) {
+async function checkout(folder: string, on: string | null) {
   const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder, on });
   const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
     cwd: folder,
@@ -37,12 +38,23 @@ async function checkout(folder, on) {
 }
 
 // Without a shown name (a menu not opened by the frantss mods), Herdr's own rename.
-const renameItem = (what, tg) =>
+type MenuTarget = {
+  id?: string;
+  name?: string;
+  pane?: string;
+  terminal?: string;
+  space?: string;
+  checkout?: "main" | "linked" | null;
+};
+type MenuProps = { tab?: string; target?: MenuTarget; overlay?: string };
+type MenuItem = [label: string, command: string, args: Record<string, string>];
+
+const renameItem = (what: string, tg: MenuTarget): MenuItem =>
   tg.name === undefined
     ? ["Rename", `${what}.rename`, { id: tg.id }]
     : ["Rename", "rename", { what, id: tg.id, name: tg.name }];
 
-function items(p, git) {
+function items(p: MenuProps, git: "main" | "linked" | null): MenuItem[] {
   p = p ?? {};
   const tg = p.target ?? {};
   switch (p.tab) {
@@ -82,14 +94,14 @@ function items(p, git) {
             ]
           : []),
         ["Close pane", "pane.close", { pane: tg.pane }],
-      ];
+      ] as MenuItem[];
     }
     case "tab":
       return [
         renameItem("tab", tg),
         ["New tab", "tab.new", { space: tg.space }],
         ["Close", "tab.close", { id: tg.id }],
-      ];
+      ] as MenuItem[];
     case "space":
       return [
         renameItem("space", tg),
@@ -103,7 +115,7 @@ function items(p, git) {
           ? [["Remove worktree", "worktree", { space: tg.id, action: "remove" }]]
           : []),
         ["Close", "space.close", { id: tg.id }],
-      ];
+      ] as MenuItem[];
     default:
       return [
         ["New space", "space.new", {}],
@@ -112,11 +124,11 @@ function items(p, git) {
         ["Theme: ink", "app.theme", { name: "ink" }],
         ["Theme: moss", "app.theme", { name: "moss" }],
         ["Theme: atom one dark", "app.theme", { name: "atom-one-dark" }],
-      ];
+      ] as MenuItem[];
   }
 }
 
-function menuIcon(command) {
+function menuIcon(command: string) {
   const name = command.endsWith(".close")
     ? "x"
     : command.endsWith(".rename") || command === "rename"
@@ -138,7 +150,7 @@ function menuIcon(command) {
 }
 
 // The key bound to a command, for the hint on the right.
-function shortcut(name, args) {
+function shortcut(name: string, args: Record<string, string>) {
   // `pane.split:right` binds pane.split with { direction: "right" }.
   const value = args && Object.values(args)[0];
   const k = keys().find(
@@ -148,7 +160,10 @@ function shortcut(name, args) {
 }
 
 export default class Menu extends View {
-  init(_props, cx) {
+  declare at: number;
+  declare git: "main" | "linked" | null;
+  declare handle: FocusHandle;
+  init(_props: unknown, cx: AsyncContext) {
     this.at = 0;
     this.git = null;
     this.handle = cx.focus_handle();
@@ -163,12 +178,12 @@ export default class Menu extends View {
     const folder = space && place(space);
     if (folder)
       cx.spawn(async (cx) => {
-        this.git = await checkout(folder, space.machine).catch(() => null);
+        this.git = await checkout(folder, space.machine).catch((): null => null);
         cx.notify();
       });
   }
 
-  choose(i, _cx) {
+  choose(i: number, _cx: Context) {
     const it = items(props(), this.git)[i];
     if (!it) return;
     closeOverlay(props()?.overlay);
@@ -194,8 +209,8 @@ export default class Menu extends View {
     else run(it[1], it[2]);
   }
 
-  render(_cx) {
-    const t = theme();
+  render(_cx: Context) {
+    const t = theme() as Record<string, `#${string}`>;
     const list = items(props(), this.git);
     return v_flex()
       .id("menu")

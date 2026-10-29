@@ -1,3 +1,100 @@
+import type { ExecResult } from "herdr";
+
+export type GitHubExecutor = (
+  args: string[],
+) => Promise<Pick<ExecResult, "code"> & Partial<Omit<ExecResult, "code">>>;
+export interface ReviewThread {
+  path: string;
+  line: number | null;
+  author: string;
+  body: string;
+  url?: string;
+  replies: number;
+}
+export interface FailedCheck {
+  name: string;
+  url?: string;
+}
+export interface PullRequest {
+  number: number;
+  title: string;
+  url: string;
+  branch: string;
+  draft: boolean;
+  author: string;
+  decision: string | null;
+  additions: number;
+  deletions: number;
+  updatedAt: string | null;
+  conflicts: boolean;
+  requested: string[];
+  checks: { state: string | null; total: number; pending: number; failed: FailedCheck[] };
+  threads: ReviewThread[];
+}
+export interface PullRequests {
+  repo: string;
+  viewer: string;
+  prs: PullRequest[];
+}
+export type InboxKind = "fix-ci" | "address" | "review" | "open";
+export interface InboxItem {
+  id: string;
+  kind: InboxKind;
+  pr: PullRequest;
+  detail: string;
+}
+export interface InboxGroup {
+  key: "ci" | "comments" | "review" | "ready";
+  title: string;
+  items: InboxItem[];
+}
+interface CheckRun {
+  __typename: "CheckRun";
+  name: string;
+  status: string;
+  conclusion: string | null;
+  detailsUrl?: string;
+}
+interface StatusContext {
+  __typename: "StatusContext";
+  context: string;
+  state: string;
+  targetUrl?: string;
+}
+interface PullRequestNode {
+  number: number;
+  title: string;
+  url: string;
+  headRefName: string;
+  isDraft: boolean;
+  author?: { login: string };
+  reviewDecision: string | null;
+  additions?: number;
+  deletions?: number;
+  updatedAt?: string;
+  mergeable?: string;
+  reviewRequests: { nodes: { requestedReviewer?: { login?: string } }[] };
+  commits: {
+    nodes: {
+      commit: {
+        statusCheckRollup?: { state: string; contexts: { nodes: (CheckRun | StatusContext)[] } };
+      };
+    }[];
+  };
+  reviewThreads: {
+    nodes: {
+      isResolved: boolean;
+      isOutdated: boolean;
+      path: string;
+      line: number | null;
+      comments: {
+        totalCount?: number;
+        nodes: { author?: { login: string }; body: string; url?: string }[];
+      };
+    }[];
+  };
+}
+
 const QUERY = `query($owner: String!, $name: String!) {
   viewer { login }
   repository(owner: $owner, name: $name) {
@@ -37,14 +134,14 @@ const bodyLimit = 400;
 
 export const ACTIONS = Object.freeze({ "fix-ci": "Fix CI", address: "Address", review: "Review" });
 
-async function run(gh, args) {
+async function run(gh: GitHubExecutor, args: string[]): Promise<string> {
   const result = await gh(args);
   if (result.code !== 0)
     throw new Error(result.stderr?.trim() || `gh ${args[0]} failed (${result.code})`);
   return result.stdout;
 }
 
-function parsePullRequest(node) {
+function parsePullRequest(node: PullRequestNode): PullRequest {
   const rollup = node.commits.nodes[0]?.commit.statusCheckRollup;
   const checks = (rollup?.contexts.nodes ?? []).map((c) =>
     c.__typename === "CheckRun"
@@ -98,7 +195,7 @@ function parsePullRequest(node) {
 }
 
 // Open pull requests of the repository that `gh` resolves from its working folder.
-export async function loadPullRequests(gh) {
+export async function loadPullRequests(gh: GitHubExecutor): Promise<PullRequests> {
   const repo = JSON.parse(await run(gh, ["repo", "view", "--json", "owner,name"]));
   const { data } = JSON.parse(
     await run(gh, [
@@ -119,11 +216,14 @@ export async function loadPullRequests(gh) {
   };
 }
 
-const unique = (values) => [...new Set(values)];
+const unique = <T>(values: T[]): T[] => [...new Set(values)];
 
 // Groups the work each pull request asks for. `busy` holds the item ids an agent already works on.
-export function buildInbox({ prs, viewer }, busy = new Set()) {
-  const groups = [
+export function buildInbox(
+  { prs, viewer }: Pick<PullRequests, "prs" | "viewer">,
+  busy = new Set<string>(),
+): InboxGroup[] {
+  const groups: InboxGroup[] = [
     { key: "ci", title: "Failing CI", items: [] },
     { key: "comments", title: "Comments", items: [] },
     { key: "review", title: "Review requested", items: [] },
@@ -131,7 +231,12 @@ export function buildInbox({ prs, viewer }, busy = new Set()) {
   ];
   const [ci, comments, review, ready] = groups;
   for (const pr of prs) {
-    const item = (kind, detail) => ({ id: `${pr.number}:${kind}`, kind, pr, detail });
+    const item = (kind: InboxKind, detail: string): InboxItem => ({
+      id: `${pr.number}:${kind}`,
+      kind,
+      pr,
+      detail,
+    });
     if (pr.checks.failed.length)
       ci.items.push(item("fix-ci", unique(pr.checks.failed.map((c) => c.name)).join(", ")));
     if (pr.threads.length)
@@ -152,9 +257,10 @@ export function buildInbox({ prs, viewer }, busy = new Set()) {
   return groups;
 }
 
-export const squash = (text) => text.replace(/\s+/g, " ").trim().slice(0, bodyLimit);
+export const squash = (text: string): string =>
+  text.replace(/\s+/g, " ").trim().slice(0, bodyLimit);
 
-function section(item) {
+function section(item: InboxItem): string {
   const { pr } = item;
   if (item.kind === "fix-ci") {
     const checks = pr.checks.failed
@@ -183,7 +289,7 @@ function section(item) {
 }
 
 // The first message for the agent that works on one pull request's inbox items.
-export function taskFor(items, repo, { push = false } = {}) {
+export function taskFor(items: InboxItem[], repo: string, { push = false } = {}): string {
   const { pr } = items[0];
   const intro = `Pull request #${pr.number} "${pr.title}" in ${repo} (${pr.url}), branch ${pr.branch}. This folder has that branch checked out.`;
   const changes = items.some((item) => item.kind !== "review");
@@ -196,7 +302,7 @@ export function taskFor(items, repo, { push = false } = {}) {
 }
 
 // The checkout of `branch` in `git worktree list --porcelain` output, or null.
-export function findCheckout(porcelain, branch) {
+export function findCheckout(porcelain: string, branch: string): string | null {
   for (const block of porcelain.split(/\n\n+/)) {
     const lines = block.split("\n");
     if (lines.includes(`branch refs/heads/${branch}`))

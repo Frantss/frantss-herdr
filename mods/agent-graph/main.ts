@@ -2,9 +2,57 @@
 // A tree when it fits the width, else an indented outline of the same cards.
 // Styled as a frantss side panel, beside Files and Changes.
 
-import { View, div, image, svg, PathBuilder } from "gpui-kit";
+import {
+  View,
+  div,
+  image,
+  svg,
+  PathBuilder,
+  type Context,
+  type AsyncContext,
+  type Color,
+} from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, panes, focused, run, hc, settings, shared, theme, layout } from "herdr";
+
+interface LayoutNode {
+  id?: string;
+  children?: LayoutNode[];
+  hidden?: boolean;
+  active?: string;
+}
+
+type AgentStatus = "working" | "blocked" | "idle" | "done" | "finished" | "error";
+interface TerminalRecord {
+  address: string;
+  state: string;
+  parent?: string;
+  labels?: Record<string, string>;
+  status?: AgentStatus | { state?: AgentStatus };
+  created_ms?: number;
+  finished_ms?: number;
+  status_ms?: number;
+  exit_code?: number;
+  reason?: string;
+  name?: string;
+  template?: string;
+  title?: string;
+  cwd?: string;
+  program?: { name?: string; icon?: string; tint?: boolean };
+}
+interface AgentNode {
+  k: TerminalRecord;
+  status: AgentStatus | null;
+  allKids: TerminalRecord[];
+  kids: AgentNode[];
+  width?: number;
+  kidsWidth?: number;
+  x?: number;
+  y?: number;
+  w?: number;
+}
+type Statuses = Map<string, AgentStatus>;
+type Theme = Record<string, Color>;
 
 const CARD_W = 196;
 const CARD_H = 52;
@@ -23,7 +71,13 @@ const TRUNK = 14;
 // How long a finished sub-agent stays on the graph after it ends.
 const FINISHED_FOR_MS = 10 * 60000;
 // Lines share trunks, so they are drawn least urgent first: the most urgent color stays on top.
-const EDGE_ORDER = { finished: 0, idle: 1, done: 1, working: 2, blocked: 3 };
+const EDGE_ORDER: Partial<Record<AgentStatus, number>> = {
+  finished: 0,
+  idle: 1,
+  done: 1,
+  working: 2,
+  blocked: 3,
+};
 const SCOPES = [
   { id: "workspace", label: "Workspace", tooltip: "Agents in this space's workspace" },
   { id: "space", label: "Space", tooltip: "Agents in this space" },
@@ -34,14 +88,15 @@ const SCOPES = [
 // Each space's workspace, published by the frantss rail. Without it, a space is its own workspace.
 const SPACE_WORKSPACES = "frantss.spaceWorkspaces";
 
-const machineOf = (address) => (address.includes("/") ? `${address.split("/")[0]}/` : "");
+const machineOf = (address: string) => (address.includes("/") ? `${address.split("/")[0]}/` : "");
 // Labels hold ids local to their machine; the app prefixes remote ones.
-const labelOf = (k, key) => (k.labels?.[key] ? machineOf(k.address) + k.labels[key] : null);
-const spaceOf = (k) => labelOf(k, "herdr.space");
-const tabOf = (k) => labelOf(k, "herdr.tab");
+const labelOf = (k: TerminalRecord, key: string) =>
+  k.labels?.[key] ? machineOf(k.address) + k.labels[key] : null;
+const spaceOf = (k: TerminalRecord) => labelOf(k, "herdr.space");
+const tabOf = (k: TerminalRecord) => labelOf(k, "herdr.tab");
 
 // Error counts as blocked. A sub-agent is never done: it reports to its parent.
-function statusOf(k, listed) {
+function statusOf(k: TerminalRecord, listed: Statuses): AgentStatus | null {
   if (k.state !== "live") return "finished";
   const s = listed.get(k.address) ?? (typeof k.status === "object" ? k.status?.state : k.status);
   if (s === "error") return "blocked";
@@ -49,7 +104,7 @@ function statusOf(k, listed) {
   return s ?? null;
 }
 
-function duration(ms) {
+function duration(ms: number) {
   const m = Math.floor(ms / 60000);
   if (m < 1) return "<1m";
   if (m < 60) return `${m}m`;
@@ -57,7 +112,7 @@ function duration(ms) {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
-function icon(p, size, color) {
+function icon(p: TerminalRecord["program"], size: number, color: Color) {
   if (!p?.icon) return null;
   return p.tint
     ? svg(p.icon).size(size).flex_none().text_color(color)
@@ -65,7 +120,7 @@ function icon(p, size, color) {
 }
 
 // Each subtree gets the width of its children side by side; a parent sits centered above them.
-function measure(node) {
+function measure(node: AgentNode) {
   node.kids.forEach(measure);
   const kidsWidth =
     node.kids.reduce((w, k) => w + k.width, 0) + GAP_X * Math.max(0, node.kids.length - 1);
@@ -73,7 +128,7 @@ function measure(node) {
   node.width = Math.max(CARD_W, kidsWidth);
 }
 
-function place(node, left, depth) {
+function place(node: AgentNode, left: number, depth: number) {
   node.x = left + (node.width - CARD_W) / 2;
   node.y = PAD + depth * (CARD_H + GAP_Y);
   node.w = CARD_W;
@@ -85,7 +140,7 @@ function place(node, left, depth) {
 }
 
 // Depth first, one card per row, each level indented; cards reach the right edge. Returns the next free y.
-function placeOutline(node, depth, y, width) {
+function placeOutline(node: AgentNode, depth: number, y: number, width: number): number {
   node.x = PAD + depth * INDENT;
   node.y = y;
   node.w = Math.max(OUTLINE_MIN_W, width - PAD - node.x);
@@ -94,9 +149,9 @@ function placeOutline(node, depth, y, width) {
   return next;
 }
 
-const flatten = (node) => [node, ...node.kids.flatMap(flatten)];
+const flatten = (node: AgentNode): AgentNode[] => [node, ...node.kids.flatMap(flatten)];
 
-function find(node, id) {
+function find(node: LayoutNode | null, id: string): LayoutNode | null {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
     const found = find(child, id);
@@ -106,14 +161,22 @@ function find(node, id) {
 }
 // A hidden copy keeps running, so it waits until the panel shows it.
 function shown() {
-  const tree = layout(),
+  const tree = layout() as LayoutNode | null,
     panel = find(tree, "panel"),
     body = find(tree, "panel-body");
   return !panel || (!panel.hidden && body?.active === "agent-graph");
 }
 
 export default class AgentGraph extends View {
-  init(_props, cx) {
+  declare folded: Set<string>;
+  declare scope: string;
+  declare size: { width: number; height: number };
+  declare ended: Map<string, TerminalRecord>;
+  declare liveKey: string | null;
+  declare stale: boolean;
+  declare outline: boolean;
+
+  init(_props: unknown, cx: AsyncContext) {
     this.folded = new Set();
     this.scope = localStorage.getItem("scope") ?? "space";
     this.size = { width: 0, height: 0 };
@@ -131,7 +194,7 @@ export default class AgentGraph extends View {
     });
   }
 
-  syncFinished(cx) {
+  syncFinished(cx: Context) {
     if (!shown()) {
       this.stale = true;
       return;
@@ -146,7 +209,7 @@ export default class AgentGraph extends View {
       if (result.code !== 0) return;
       // hc ls gives short records without times; a finished sub-agent's full record never
       // changes, so hc get fetches it once.
-      const ended = JSON.parse(result.stdout).terminals.filter(
+      const ended = (JSON.parse(result.stdout).terminals as TerminalRecord[]).filter(
         (k) => k.state !== "live" && k.parent,
       );
       for (const k of ended) {
@@ -160,27 +223,27 @@ export default class AgentGraph extends View {
     });
   }
 
-  setScope(scope) {
+  setScope(scope: string) {
     this.scope = scope;
     localStorage.setItem("scope", scope);
   }
 
   // Live agents, and live terminals that started a sub-agent, are roots. Sub-agents stay
   // under their parent for a while after they finish, in the order they started.
-  forest(all, listed, here) {
+  forest(all: TerminalRecord[], listed: Statuses, here: ReturnType<typeof focused>): AgentNode[] {
     const byAddress = new Map(all.map((k) => [k.address, k]));
-    const workspaces = shared(SPACE_WORKSPACES) ?? {};
-    const workspaceOf = (id) => workspaces[id] ?? id;
+    const workspaces = (shared(SPACE_WORKSPACES) ?? {}) as Record<string, string>;
+    const workspaceOf = (id: string | null) => workspaces[id] ?? id;
     const inScope =
       {
-        workspace: (k) => workspaceOf(spaceOf(k)) === workspaceOf(here?.space),
-        space: (k) => spaceOf(k) === here?.space,
-        tab: (k) => tabOf(k) === here?.tab,
+        workspace: (k: TerminalRecord) => workspaceOf(spaceOf(k)) === workspaceOf(here?.space),
+        space: (k: TerminalRecord) => spaceOf(k) === here?.space,
+        tab: (k: TerminalRecord) => tabOf(k) === here?.tab,
         all: () => true,
       }[this.scope] ?? (() => true);
-    const kidsOf = (address) =>
+    const kidsOf = (address: string) =>
       all.filter((k) => k.parent === address).sort((a, b) => a.created_ms - b.created_ms);
-    const build = (k) => ({
+    const build = (k: TerminalRecord): AgentNode => ({
       k,
       status: statusOf(k, listed),
       allKids: kidsOf(k.address),
@@ -193,13 +256,13 @@ export default class AgentGraph extends View {
       .map(build);
   }
 
-  open(k) {
+  open(k: TerminalRecord) {
     const pane = panes().find((p) => p.terminal === k.address);
     if (pane) run("pane.focus", { pane: pane.pane });
     else run("terminal.peek", { terminal: k.address });
   }
 
-  status(t, s) {
+  status(t: Theme, s: AgentStatus | null) {
     if (s === "working")
       return svg("mods/workspace-chrome/spinner.svg")
         .size(12)
@@ -213,7 +276,7 @@ export default class AgentGraph extends View {
         .px(5)
         .h(16)
         .rounded(3)
-        .bg(t.blocked + "26")
+        .bg((t.blocked + "26") as Color)
         .text_size(10)
         .text_color(t.blocked)
         .flex()
@@ -232,7 +295,7 @@ export default class AgentGraph extends View {
   }
 
   // What a card says at its bottom right: how long it has had its status, or how it ended.
-  detail(t, k, now) {
+  detail(t: Theme, k: TerminalRecord, now: number) {
     if (k.state === "live")
       return div()
         .text_color(t.dim)
@@ -246,7 +309,7 @@ export default class AgentGraph extends View {
       .child(`exit ${k.exit_code}`);
   }
 
-  card(t, node, shown, now) {
+  card(t: Theme, node: AgentNode, shown: string | null, now: number) {
     const { k, status } = node;
     const name = k.name || k.template || k.program?.name || k.address;
     const on = k.address === shown;
@@ -264,7 +327,7 @@ export default class AgentGraph extends View {
       .rounded(3)
       .border_1()
       .border_color(status === "blocked" ? t.blocked : t.border)
-      .when(status === "blocked", (el) => el.bg(t.blocked + "14"))
+      .when(status === "blocked", (el) => el.bg((t.blocked + "14") as Color))
       .when(on, (el) => el.bg(t.selected))
       .when(status === "finished", (el) => el.opacity(0.6))
       .cursor_pointer()
@@ -298,18 +361,18 @@ export default class AgentGraph extends View {
   }
 
   // Where lines leave a parent and reach a child: centered in a tree, at the left in an outline.
-  exit(node) {
+  exit(node: AgentNode) {
     return { x: node.x + (this.outline ? TRUNK : node.w / 2), y: node.y + CARD_H };
   }
 
-  entry(node) {
+  entry(node: AgentNode) {
     return this.outline
       ? { x: node.x, y: node.y + CARD_H / 2 }
       : { x: node.x + node.w / 2, y: node.y };
   }
 
   // The fold button where a parent's lines leave; folded, it counts the sub-agents it hides.
-  foldButton(t, node) {
+  foldButton(t: Theme, node: AgentNode) {
     const open = !this.folded.has(node.k.address);
     return h_flex()
       .id(`fold-${node.k.address}`)
@@ -346,9 +409,9 @@ export default class AgentGraph extends View {
 
   // One line per edge, colored by the child: working pulses, finished is dashed.
   // Path pixels ignore the app's zoom; percentages of the painted bounds follow it.
-  edge(t, parent, kid, width, height) {
-    const px = (x) => `${(x / width) * 100}%`;
-    const py = (y) => `${(y / height) * 100}%`;
+  edge(t: Theme, parent: AgentNode, kid: AgentNode, width: number, height: number) {
+    const px = (x: number): `${number}%` => `${(x / width) * 100}%`;
+    const py = (y: number): `${number}%` => `${(y / height) * 100}%`;
     const from = this.exit(parent);
     const to = this.entry(kid);
     // Right angles only. A tree's line drops halfway, crosses, then drops into the child;
@@ -364,9 +427,13 @@ export default class AgentGraph extends View {
     if (kid.status === "finished") path = path.dash_array([4, 4]);
     path = path.move_to(px(from.x), py(from.y));
     for (const [x, y] of [...corners, [to.x, to.y]]) path = path.line_to(px(x), py(y));
-    path = path.build();
-    const color =
-      { working: t.working, blocked: t.blocked, finished: t.border }[kid.status] ?? t.input;
+    const builtPath = path.build();
+    const colors: Partial<Record<AgentStatus, Color>> = {
+      working: t.working,
+      blocked: t.blocked,
+      finished: t.border,
+    };
+    const color = colors[kid.status] ?? t.input;
     return div()
       .absolute()
       .left(0)
@@ -376,10 +443,10 @@ export default class AgentGraph extends View {
       .when(kid.status === "working", (el) =>
         el.loop("opacity", { from: 0.35, to: 1, period: 1400 }),
       )
-      .child(window.paint_path(path, color).size_full());
+      .child(window.paint_path(builtPath, color).size_full());
   }
 
-  header(t, roots) {
+  header(t: Theme, roots: AgentNode[]) {
     const nodes = roots.flatMap(flatten);
     const working = nodes.filter((n) => n.status === "working").length;
     const blocked = nodes.filter((n) => n.status === "blocked").length;
@@ -423,15 +490,15 @@ export default class AgentGraph extends View {
       );
   }
 
-  render(cx) {
+  render(cx: Context) {
     if (this.stale && shown()) {
       this.stale = false;
       this.liveKey = null;
       this.syncFinished(cx);
     }
-    const t = theme();
+    const t = theme() as Theme;
     const listed = new Map(agents().map((a) => [a.address, a.status]));
-    const live = terminals();
+    const live: TerminalRecord[] = terminals();
     const liveAddresses = new Set(live.map((k) => k.address));
     const now = Date.now();
     const recent = [...this.ended.values()].filter(
@@ -456,7 +523,7 @@ export default class AgentGraph extends View {
     const nodes = roots.flatMap(flatten);
     const width = Math.max(this.size.width, ...nodes.map((n) => n.x + n.w + PAD));
     const height = Math.max(0, ...nodes.map((n) => n.y + CARD_H + PAD));
-    const shown = focused()?.terminal;
+    const shownTerminal = focused()?.terminal;
 
     const canvas = div()
       .relative()
@@ -468,7 +535,7 @@ export default class AgentGraph extends View {
           .sort(([, a], [, b]) => (EDGE_ORDER[a.status] ?? 1) - (EDGE_ORDER[b.status] ?? 1))
           .map(([n, kid]) => this.edge(t, n, kid, width, height)),
       )
-      .children(nodes.map((n) => this.card(t, n, shown, now)))
+      .children(nodes.map((n) => this.card(t, n, shownTerminal, now)))
       .children(nodes.filter((n) => n.allKids.length).map((n) => this.foldButton(t, n)));
 
     return (
@@ -484,7 +551,7 @@ export default class AgentGraph extends View {
         .text_size(12)
         // The size comes zoomed, and the lengths this mod sets are zoomed again when drawn.
         .on_size_change((size, cx) => {
-          const zoom = settings().zoom ?? 1;
+          const zoom = (settings().zoom as number | undefined) ?? 1;
           this.size = { width: size.width / zoom, height: size.height / zoom };
           cx.notify();
         })

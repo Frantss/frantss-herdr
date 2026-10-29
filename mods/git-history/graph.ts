@@ -1,10 +1,28 @@
-export function layoutGraph(nodes) {
+export interface GraphNode {
+  hash: string;
+  parents: string[];
+}
+export interface GraphSegment {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  color: number;
+}
+export interface GraphLayout {
+  cols: number[];
+  colors: number[];
+  segments: GraphSegment[];
+  lanes: number;
+}
+
+export function layoutGraph(nodes: GraphNode[]): GraphLayout {
   const rowOf = new Map(nodes.map((node, row) => [node.hash, row]));
-  const lanes = [];
-  const laneColors = [];
-  const cols = [];
-  const colors = [];
-  const edges = [];
+  const lanes: (string | null)[] = [];
+  const laneColors: number[] = [];
+  const cols: number[] = [];
+  const colors: number[] = [];
+  const edges: { row: number; col: number; parent: string; lane: number; color: number }[] = [];
   let nextColor = 0;
   const freeLane = () => {
     const lane = lanes.indexOf(null);
@@ -32,7 +50,7 @@ export function layoutGraph(nodes) {
       edges.push({ row, col, parent, lane, color: laneColors[lane] });
     });
   });
-  const segments = [];
+  const segments: GraphSegment[] = [];
   for (const edge of edges) {
     const add = (x1, y1, x2, y2) => {
       if (y2 > y1) segments.push({ x1, y1, x2, y2, color: edge.color });

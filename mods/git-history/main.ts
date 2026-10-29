@@ -1,3 +1,14 @@
+import type { AsyncContext, Context, FocusHandle, Color, Element } from "gpui-kit";
+import type {
+  Commit,
+  CommitDetails,
+  CommitDiff,
+  GitExecutor,
+  HistoryScope,
+  HistorySnapshot,
+} from "./git.ts";
+import type { GraphLayout, GraphSegment } from "./graph.ts";
+
 import { View, div, PathBuilder } from "gpui-kit";
 import {
   v_flex,
@@ -8,19 +19,33 @@ import {
   VirtualListScrollHandle,
   Accordion,
   AccordionItem,
-  AccordionHeader,
+  AccordionHeader as NativeAccordionHeader,
   AccordionTrigger,
   AccordionPanel,
 } from "gpui-base";
 import { spaces, panes, focused, props, exec, theme, settings, layout } from "herdr";
-import { loadHistory, loadDetails, loadDiff, PAGE_SIZE } from "./git.js";
-import { layoutGraph } from "./graph.js";
+import { loadHistory, loadDetails, loadDiff, PAGE_SIZE } from "./git.ts";
+import { layoutGraph } from "./graph.ts";
+
+interface LayoutNode {
+  id?: string;
+  children?: LayoutNode[];
+  hidden?: boolean;
+  active?: string;
+}
+interface Location {
+  cwd: string | null;
+  on: string | null;
+}
+type Theme = Record<string, Color>;
+
+const AccordionHeader = NativeAccordionHeader as unknown as { new: (trigger: Element) => Element };
 
 const MAX_COMMITS = 2000;
 const ROW_HEIGHT = 42;
 const LANE_WIDTH = 14;
 
-function find(node, id) {
+function find(node: LayoutNode | null, id: string): LayoutNode | null {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
     const found = find(child, id);
@@ -29,7 +54,7 @@ function find(node, id) {
   return null;
 }
 
-function location() {
+function location(): Location {
   const explicit = props();
   if (explicit?.cwd) return { cwd: explicit.cwd, on: explicit.on ?? null };
   const space = spaces().find((s) => s.active),
@@ -46,11 +71,15 @@ function location() {
 
 const contextKey = (place) => JSON.stringify(place);
 const shortDate = (seconds) => new Date(seconds * 1000).toISOString().slice(0, 10);
-const errorText = (error) => String(error?.message ?? error).slice(0, 500);
+const errorText = (error: unknown) => {
+  const message = (error as { message?: unknown })?.message ?? error;
+  // oxlint-disable-next-line typescript/no-base-to-string -- Host rejections may contain arbitrary values.
+  return String(message).slice(0, 500);
+};
 
 // Clip edges once per load so scrolling only builds the visible row geometry.
-function rowSegments(graph, count) {
-  const rows = Array.from({ length: count }, () => []);
+function rowSegments(graph: GraphLayout, count: number): GraphSegment[][] {
+  const rows: GraphSegment[][] = Array.from({ length: count }, () => []);
   for (const edge of graph.segments) {
     for (
       let row = Math.max(0, Math.ceil(edge.y1 - 0.5));
@@ -74,7 +103,47 @@ function rowSegments(graph, count) {
 }
 
 export default class GitHistory extends View {
-  init(_props, cx) {
+  declare scope: HistoryScope;
+  declare historyOpen: boolean;
+  declare detailsOpen: boolean;
+  declare commits: Commit[];
+  declare graph: GraphLayout;
+  declare edges: GraphSegment[][];
+  declare limit: number;
+  declare generation: number;
+  declare detailGeneration: number;
+  declare diffGeneration: number;
+  declare size: { width: number; height: number };
+  declare listFocus: FocusHandle;
+  declare fileFocus: FocusHandle;
+  declare scroll: ReturnType<typeof VirtualListScrollHandle.new>;
+  declare fileScroll: ReturnType<typeof VirtualListScrollHandle.new>;
+  declare diffScroll: ReturnType<typeof VirtualListScrollHandle.new>;
+  declare diffLines: string[];
+  declare diffWidth: number;
+  declare context: string;
+  declare place: Location;
+  declare snapshot: HistorySnapshot | null;
+  declare details: CommitDetails | null;
+  declare selected: string | null;
+  declare error: string | null;
+  declare detailError: string | null;
+  declare diffError: string | null;
+  declare diff: CommitDiff | null;
+  declare file: string | null;
+  declare fileIndex: number;
+  declare loading: boolean;
+  declare detailsLoading: boolean;
+  declare diffLoading: boolean;
+  declare polling: boolean;
+  declare changed: boolean;
+  declare signature: string | null;
+  declare hasMore: boolean;
+  declare root: string | null;
+  declare branch: string | null;
+  declare head: string | null;
+
+  init(_props, cx: AsyncContext) {
     this.scope = "current";
     this.historyOpen = true;
     this.detailsOpen = false;
@@ -98,17 +167,17 @@ export default class GitHistory extends View {
 
   visible() {
     if (props()?.cwd) return true;
-    const tree = layout(),
+    const tree = layout() as LayoutNode | null,
       panel = find(tree, "panel"),
       body = find(tree, "panel-body");
     return !panel || (!panel.hidden && body?.active === "git-history");
   }
 
-  gitAt(place) {
+  gitAt(place: Location): GitExecutor {
     return (args) => exec("git", args, { cwd: place.cwd, on: place.on });
   }
 
-  async signatureAt(git) {
+  async signatureAt(git: GitExecutor) {
     const [refs, branch] = await Promise.all([
       git(["show-ref", "--head"]),
       git(["symbolic-ref", "-q", "--short", "HEAD"]),
@@ -118,7 +187,7 @@ export default class GitHistory extends View {
     return JSON.stringify([refs.stdout, branch.stdout]);
   }
 
-  reset(place) {
+  reset(place: Location) {
     this.generation++;
     this.detailGeneration++;
     this.diffGeneration++;
@@ -150,7 +219,7 @@ export default class GitHistory extends View {
     this.scroll.scroll_to_item(0);
   }
 
-  refresh(cx, append = false, notify = true) {
+  refresh(cx: Context, append = false, notify = true) {
     const place = location();
     if (contextKey(place) !== this.context) this.reset(place);
     if (!place.cwd || this.loading) return;
@@ -203,7 +272,7 @@ export default class GitHistory extends View {
     if (notify) cx.notify();
   }
 
-  poll(cx) {
+  poll(cx: Context) {
     if (!this.visible() || this.loading || this.polling || !this.snapshot || this.changed) return;
     const place = location(),
       key = contextKey(place),
@@ -228,14 +297,14 @@ export default class GitHistory extends View {
     });
   }
 
-  setScope(scope, cx) {
+  setScope(scope: HistoryScope, cx: Context) {
     if (scope === this.scope) return;
     this.scope = scope;
     this.reset(location());
     this.refresh(cx);
   }
 
-  pick(hash, cx) {
+  pick(hash: string, cx: Context) {
     if (!this.commits.some((c) => c.hash === hash)) return;
     const generation = ++this.detailGeneration,
       key = this.context,
@@ -269,7 +338,7 @@ export default class GitHistory extends View {
     cx.notify();
   }
 
-  pickFile(path, cx) {
+  pickFile(path: string, cx: Context) {
     const details = this.details;
     if (!details?.files.some((file) => file.path === path)) return;
     const generation = ++this.diffGeneration,
@@ -305,7 +374,7 @@ export default class GitHistory extends View {
   }
 
   button(id, label, action, { active = false, disabled = false, tooltip = label } = {}) {
-    const t = theme();
+    const t = theme() as Theme;
     return Button.new(id)
       .tab_stop(true)
       .h(26)
@@ -366,7 +435,7 @@ export default class GitHistory extends View {
       );
   }
 
-  commitRow(commit, index, t) {
+  commitRow(commit: Commit, index: number, t: Theme) {
     const selected = commit.hash === this.selected;
     const refNames = commit.refs
       .map((ref) => (ref.kind === "tag" ? `tag: ${ref.name}` : ref.name))
@@ -425,7 +494,7 @@ export default class GitHistory extends View {
       );
   }
 
-  moveSelection(delta, cx) {
+  moveSelection(delta, cx: Context) {
     if (!this.commits.length) return;
     const previous = this.commits.findIndex((commit) => commit.hash === this.selected);
     const index = Math.max(
@@ -436,7 +505,7 @@ export default class GitHistory extends View {
     this.pick(this.commits[index].hash, cx);
   }
 
-  filesList(details, t) {
+  filesList(details: CommitDetails, t: Theme) {
     return div()
       .id("history-files-focus")
       .relative()
@@ -470,7 +539,7 @@ export default class GitHistory extends View {
           v_virtual_list(
             "history-files",
             details.files.length,
-            26 * (settings().zoom ?? 1),
+            26 * ((settings().zoom as number | undefined) ?? 1),
             (i) => details.files[i].path,
             (range) =>
               details.files.slice(range.start, range.end).map((file, offset) =>
@@ -645,7 +714,7 @@ export default class GitHistory extends View {
                         v_virtual_list(
                           "history-diff",
                           this.diffLines.length,
-                          19 * (settings().zoom ?? 1),
+                          19 * ((settings().zoom as number | undefined) ?? 1),
                           (i) => String(i),
                           (range) =>
                             this.diffLines.slice(range.start, range.end).map((line) =>
@@ -831,7 +900,7 @@ export default class GitHistory extends View {
                       v_virtual_list(
                         "history-commits",
                         this.commits.length,
-                        ROW_HEIGHT * (settings().zoom ?? 1),
+                        ROW_HEIGHT * ((settings().zoom as number | undefined) ?? 1),
                         (i) => this.commits[i].hash,
                         (range) =>
                           this.commits
@@ -887,9 +956,9 @@ export default class GitHistory extends View {
       );
   }
 
-  render(cx) {
+  render(cx: Context) {
     if (this.visible() && contextKey(location()) !== this.context) this.refresh(cx, false, false);
-    const t = theme();
+    const t = theme() as Theme;
     return v_flex()
       .id("git-history")
       .size_full()
@@ -916,7 +985,7 @@ export default class GitHistory extends View {
         }
       })
       .on_size_change((size, cx) => {
-        const zoom = settings().zoom ?? 1;
+        const zoom = (settings().zoom as number | undefined) ?? 1;
         const next = { width: size.width / zoom, height: size.height / zoom };
         if (
           Math.abs(next.width - this.size.width) > 1 ||

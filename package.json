@@ -4,15 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/watch.mjs",
-    "link": "node scripts/link.mjs",
-    "check": "vp check --deny-warnings",
-    "test": "vp test",
-    "check:mods": "node scripts/check-mods.mjs",
+    "dev": "vp pack --watch",
+    "link": "pnpm build && node scripts/link.ts",
+    "check": "node scripts/sync-types.ts && vp check --deny-warnings",
+    "test": "pnpm build && vp test",
+    "check:mods": "pnpm build && node scripts/check-mods.ts",
     "fmt": "vp fmt",
-    "lint": "vp lint --deny-warnings"
+    "lint": "vp lint --deny-warnings",
+    "build": "vp pack"
   },
   "devDependencies": {
+    "@types/node": "^24.19.2",
     "vite-plus": "1.4.0"
   },
   "engines": {

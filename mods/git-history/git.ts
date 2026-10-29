@@ -1,10 +1,69 @@
+import type { ExecResult } from "herdr";
+
+export type GitExecutor = (args: string[]) => Promise<ExecResult>;
+export type HistoryScope = "current" | "all";
+export interface GitReference {
+  name: string;
+  kind: "head" | "remote" | "tag";
+  isCurrent: boolean;
+}
+export interface CommitMetadata {
+  hash: string;
+  parents: string[];
+  author: string;
+  email: string;
+  date: number;
+}
+export interface Commit extends CommitMetadata {
+  subject: string;
+  refs: GitReference[];
+}
+export interface HistorySnapshot {
+  readonly root: string;
+  readonly head: string | null;
+  readonly branch: string | null;
+  readonly scope: HistoryScope;
+  readonly refs: readonly Readonly<GitReference & { hash: string }>[];
+  readonly tips: readonly string[];
+}
+export interface History {
+  root: string;
+  head: string | null;
+  branch: string | null;
+  commits: Commit[];
+  hasMore: boolean;
+  snapshot: HistorySnapshot;
+}
+export interface ChangedFile {
+  path: string;
+  oldPath: string | null;
+  status: string;
+  added: number | null;
+  removed: number | null;
+}
+export interface CommitDetails extends CommitMetadata {
+  body: string;
+  files: ChangedFile[];
+  filesLimited: boolean;
+}
+export interface CommitDiff {
+  text: string;
+  truncated: boolean;
+  binary: boolean;
+}
+export interface HistoryOptions {
+  scope?: HistoryScope;
+  limit?: number;
+  snapshot?: HistorySnapshot | null;
+}
+
 const commitFields = "%H%x00%P%x00%an%x00%ae%x00%at%x00%s";
 const hashPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 const fileLimit = 1000;
 const diffLimit = 30000;
 export const PAGE_SIZE = 25;
 
-async function run(git, args) {
+async function run(git: GitExecutor, args: string[]): Promise<string> {
   const result = await git([
     "--no-pager",
     "--literal-pathspecs",
@@ -17,17 +76,21 @@ async function run(git, args) {
   return result.stdout;
 }
 
-function validHash(hash) {
+function validHash(hash: string): string {
   if (!hashPattern.test(hash)) throw new Error("Invalid commit hash.");
   return hash;
 }
 
-function metadata(fields) {
+function metadata(fields: string[]): CommitMetadata {
   const [hash, parents, author, email, date] = fields;
   return { hash, parents: parents ? parents.split(" ") : [], author, email, date: Number(date) };
 }
 
-async function readSnapshot(git, scope, root) {
+async function readSnapshot(
+  git: GitExecutor,
+  scope: HistoryScope,
+  root: string,
+): Promise<HistorySnapshot> {
   const [headResult, branchResult, refsOutput] = await Promise.all([
     git(["rev-parse", "--verify", "-q", "HEAD^{commit}"]),
     git(["symbolic-ref", "-q", "--short", "HEAD"]),
@@ -41,7 +104,7 @@ async function readSnapshot(git, scope, root) {
   ]);
   const head = headResult.code === 0 ? headResult.stdout.trim() : null;
   const branch = branchResult.code === 0 ? branchResult.stdout.trim() : null;
-  const refs = [];
+  const refs: (GitReference & { hash: string })[] = [];
   for (const line of refsOutput.split("\n").filter(Boolean)) {
     const [object, type, peeled, peeledType, full, name] = line.split("\0");
     if (full.startsWith("refs/remotes/") && full.endsWith("/HEAD")) continue;
@@ -72,20 +135,20 @@ async function readSnapshot(git, scope, root) {
 }
 
 export async function loadHistory(
-  git,
-  { scope = "current", limit = PAGE_SIZE, snapshot = null } = {},
-) {
+  git: GitExecutor,
+  { scope = "current", limit = PAGE_SIZE, snapshot = null }: HistoryOptions = {},
+): Promise<History> {
   if (scope !== "current" && scope !== "all") throw new Error("Unknown history scope.");
   const root = (await run(git, ["rev-parse", "--show-toplevel"])).replace(/\r?\n$/, "");
   if (snapshot && (snapshot.root !== root || snapshot.scope !== scope))
     throw new Error("History snapshot belongs to another worktree or scope.");
   snapshot ??= await readSnapshot(git, scope, root);
   limit = Math.max(1, Math.min(2000, Math.floor(Number(limit) || PAGE_SIZE)));
-  const byHash = new Map();
+  const byHash = new Map<string, GitReference[]>();
   for (const { hash, ...ref } of snapshot.refs) {
     byHash.set(hash, [...(byHash.get(hash) || []), ref]);
   }
-  let commits = [];
+  let commits: Commit[] = [];
   if (snapshot.tips.length) {
     const output = await run(git, [
       "log",
@@ -112,13 +175,13 @@ export async function loadHistory(
   };
 }
 
-function treeArgs(hash, parents) {
+function treeArgs(hash: string, parents: string[]): string[] {
   return parents[0] ? [validHash(parents[0]), validHash(hash)] : ["--root", validHash(hash)];
 }
 
-function parseFiles(namesOutput, statsOutput) {
+function parseFiles(namesOutput: string, statsOutput: string): ChangedFile[] {
   const names = namesOutput.split("\0");
-  const files = [];
+  const files: ChangedFile[] = [];
   for (let i = 0; i < names.length && names[i];) {
     const status = names[i++];
     const paired = /^[RC]/.test(status);
@@ -127,7 +190,7 @@ function parseFiles(namesOutput, statsOutput) {
     if (path === undefined) break;
     files.push({ path, oldPath, status: status[0], added: null, removed: null });
   }
-  const stats = new Map();
+  const stats = new Map<string, Pick<ChangedFile, "added" | "removed">>();
   const tokens = statsOutput.split("\0");
   for (let i = 0; i < tokens.length;) {
     const token = tokens[i++];
@@ -150,7 +213,7 @@ function parseFiles(namesOutput, statsOutput) {
   return files.map((file) => ({ ...file, ...stats.get(file.path) }));
 }
 
-export async function loadDetails(git, hash) {
+export async function loadDetails(git: GitExecutor, hash: string): Promise<CommitDetails> {
   const output = await run(git, [
     "show",
     "-s",
@@ -174,7 +237,12 @@ export async function loadDetails(git, hash) {
   };
 }
 
-export async function loadDiff(git, hash, parents, path) {
+export async function loadDiff(
+  git: GitExecutor,
+  hash: string,
+  parents: string[],
+  path: string,
+): Promise<CommitDiff> {
   if (typeof path !== "string" || !path || path.includes("\0"))
     throw new Error("Invalid file path.");
   const text = await run(git, [

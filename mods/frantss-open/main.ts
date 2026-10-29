@@ -1,3 +1,4 @@
+import type { AsyncContext, FocusHandle } from "gpui-kit";
 // Opens a workspace's folder in another app, from the frantss breadcrumb. Props: { folder }.
 // Only the apps installed on this machine are listed.
 
@@ -19,8 +20,10 @@ const APPS = [
 const INSTALLED = "frantss.apps";
 
 export default class Open extends View {
-  init(_props, cx) {
-    const known = shared(INSTALLED) ?? [];
+  declare installed: (typeof APPS)[number][];
+  declare handle: FocusHandle;
+  init(_props: unknown, cx: AsyncContext) {
+    const known = (shared(INSTALLED) as string[] | null) ?? [];
     this.installed = APPS.filter((a) => known.includes(a.key));
     this.handle = cx.focus_handle();
     this.handle.focus();
@@ -41,13 +44,13 @@ export default class Open extends View {
     });
   }
 
-  open(app) {
+  open(app: (typeof APPS)[number]) {
     closeOverlay(props()?.overlay);
-    exec("open", ["-a", app.app, props()?.folder]);
+    void exec("open", ["-a", app.app, props()?.folder]);
   }
 
   // Like frantss-menu's rows: 24px, 3px corners, muted until hovered.
-  row(t, app) {
+  row(t: Record<string, `#${string}`>, app: (typeof APPS)[number]) {
     return h_flex()
       .id(app.key)
       .h(24)
@@ -65,7 +68,7 @@ export default class Open extends View {
   }
 
   render() {
-    const t = theme();
+    const t = theme() as Record<string, `#${string}`>;
     return v_flex()
       .id("open")
       .track_focus(this.handle)

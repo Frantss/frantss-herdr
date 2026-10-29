@@ -1,4 +1,4 @@
-import { View, div } from "gpui-kit";
+import { View, div, type Context, type AsyncContext, type Color, type FocusHandle } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import {
   spaces,
@@ -12,6 +12,13 @@ import {
   layout,
 } from "herdr";
 
+interface LayoutNode {
+  id?: string;
+  children?: LayoutNode[];
+  hidden?: boolean;
+  active?: string;
+}
+
 function location() {
   const space = spaces().find((s) => s.active),
     f = focused();
@@ -24,9 +31,40 @@ function location() {
       : (space?.machine ?? null);
   return { cwd: pane?.cwd || f?.cwd || space?.folder, on };
 }
+type Theme = Record<string, Color>;
+
+interface FileStats {
+  add: number;
+  del: number;
+  binary?: boolean;
+}
+interface ChangedFile extends FileStats {
+  path: string;
+  status: string;
+  fresh: boolean;
+}
+interface DiffRow {
+  kind: string;
+  number?: number;
+  text: string;
+}
+type Snapshot = Pick<
+  Changes,
+  | "root"
+  | "on"
+  | "hasHead"
+  | "files"
+  | "limited"
+  | "error"
+  | "open"
+  | "closed"
+  | "rows"
+  | "diffWidth"
+>;
+
 const key = () => JSON.stringify(location());
 
-function find(node, id) {
+function find(node: LayoutNode | null, id: string): LayoutNode | null {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
     const found = find(child, id);
@@ -36,13 +74,13 @@ function find(node, id) {
 }
 // A hidden copy keeps running, so it waits until the panel shows it.
 function shown() {
-  const tree = layout(),
+  const tree = layout() as LayoutNode | null,
     panel = find(tree, "panel"),
     body = find(tree, "panel-body");
   return !panel || (!panel.hidden && body?.active === "changes");
 }
 // Git's lock files come and go with every git command; refreshing on them alone never ends.
-const meaningful = (paths) =>
+const meaningful = (paths: string[]) =>
   paths.some((path) => !/\/\.git\/.*\.lock$|\/node_modules\//.test(path));
 // What a place's changes looked like when it was last shown, so switching back shows them at once
 // while git refreshes them; a few places are kept.
@@ -57,12 +95,13 @@ const SNAPSHOT = [
   "closed",
   "rows",
   "diffWidth",
-];
+] as const;
 const KEPT_PLACES = 20;
-const countLines = (text) => (text ? text.split("\n").length - Number(text.endsWith("\n")) : 0);
+const countLines = (text: string) =>
+  text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
 
 // Numbers each diff line once, so a frame only draws the rows on screen.
-function diffRows(lines) {
+function diffRows(lines: string[]): DiffRow[] {
   let old = 0,
     next = 0;
   return lines.map((line) => {
@@ -84,7 +123,29 @@ function diffRows(lines) {
 }
 
 export default class Changes extends View {
-  init(_props, cx) {
+  declare files: ChangedFile[];
+  declare rows: DiffRow[];
+  declare diffWidth: number;
+  declare message: string;
+  declare handle: FocusHandle;
+  declare kept: Map<string, Snapshot>;
+  declare input: InputState;
+  declare typing: boolean;
+  declare on: string | null;
+  declare watched: string | null;
+  declare root: string | null;
+  declare context: string;
+  declare limited: boolean;
+  declare loading: boolean;
+  declare busy: boolean;
+  declare stale: boolean;
+  declare error: string | null;
+  declare note: string | null;
+  declare open: string | null;
+  declare closed: boolean;
+  declare hasHead: boolean;
+
+  init(_props: unknown, cx: AsyncContext) {
     this.files = [];
     this.rows = [];
     this.diffWidth = 0;
@@ -109,7 +170,7 @@ export default class Changes extends View {
     cx.timer.every(10000, (cx) => this.refresh(cx));
   }
 
-  watch(root, cx) {
+  watch(root: string, cx: Context) {
     if (this.on || this.watched === root) return;
     this.watched = root;
     cx.spawn(async (cx) => {
@@ -126,7 +187,7 @@ export default class Changes extends View {
     });
   }
 
-  refresh(cx) {
+  refresh(cx: Context) {
     const { cwd, on } = location(),
       context = key();
     // Switch places before waiting on any git still running for the last one: its results check the place.
@@ -150,7 +211,7 @@ export default class Changes extends View {
           return;
         }
         const root = top.stdout.trim(),
-          git = (args) => exec("git", args, { cwd: root, on });
+          git = (args: string[]) => exec("git", args, { cwd: root, on });
         const status = await git([
           "--no-optional-locks",
           "status",
@@ -161,7 +222,7 @@ export default class Changes extends View {
         ]);
         if (status.code !== 0) throw new Error(status.stderr);
         const head = await git(["rev-parse", "--verify", "HEAD"]);
-        const stats = {};
+        const stats: Record<string, FileStats> = {};
         const results =
           head.code === 0
             ? [await git(["diff", "HEAD", "--numstat", "-z", "--no-renames"])]
@@ -183,7 +244,7 @@ export default class Changes extends View {
             };
           }
         }
-        const files = [];
+        const files: ChangedFile[] = [];
         const entries = status.stdout.split("\0").filter(Boolean);
         for (const entry of entries.slice(0, 1000)) {
           const xy = entry.slice(0, 2),
@@ -228,10 +289,13 @@ export default class Changes extends View {
   }
 
   // Keeps what this place shows and shows what the next one showed last, or nothing yet.
-  switchTo(context) {
+  switchTo(context: string) {
     if (this.context) {
       this.kept.delete(this.context);
-      this.kept.set(this.context, Object.fromEntries(SNAPSHOT.map((name) => [name, this[name]])));
+      this.kept.set(
+        this.context,
+        Object.fromEntries(SNAPSHOT.map((name) => [name, this[name]])) as Snapshot,
+      );
       if (this.kept.size > KEPT_PLACES) this.kept.delete(this.kept.keys().next().value);
     }
     const kept = this.kept.get(context);
@@ -252,14 +316,14 @@ export default class Changes extends View {
     }
   }
 
-  async load(path, context) {
+  async load(path: string, context: string) {
     const file = this.files.find((f) => f.path === path),
       root = this.root,
       on = this.on;
     if (!file) return;
-    let lines;
+    let lines: string[];
     if (file.fresh || (!this.hasHead && file.status === "A")) {
-      const text = await readTextFile(`${root}/${path}`, { on }).catch(() => null);
+      const text = await readTextFile(`${root}/${path}`, { on }).catch((): null => null);
       if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
       else if (text.includes("\0")) lines = ["Binary file · no text diff"];
       else {
@@ -304,12 +368,12 @@ export default class Changes extends View {
       );
   }
 
-  setLines(lines) {
+  setLines(lines: string[]) {
     this.rows = diffRows(lines);
     this.diffWidth = Math.max(300, ...lines.map((line) => line.length * 7 + 50));
   }
 
-  pick(path, cx) {
+  pick(path: string, cx: Context) {
     this.open = this.open === path ? null : path;
     this.setLines([]);
     this.note = null;
@@ -328,7 +392,7 @@ export default class Changes extends View {
     cx.notify();
   }
 
-  commit(cx) {
+  commit(cx: Context) {
     if (!this.message.trim() || !this.root || this.busy || this.loading || this.context !== key())
       return;
     const root = this.root,
@@ -361,7 +425,7 @@ export default class Changes extends View {
     cx.notify();
   }
 
-  diffRow({ kind, number, text }, t) {
+  diffRow({ kind, number, text }: DiffRow, t: Theme) {
     if (kind === "@")
       return div()
         .w_full()
@@ -377,8 +441,8 @@ export default class Changes extends View {
       .h(20)
       .flex_none()
       .gap(10)
-      .when(kind === "+", (e) => e.bg(t.ansi2 + "18"))
-      .when(kind === "-", (e) => e.bg(t.ansi1 + "18"))
+      .when(kind === "+", (e) => e.bg((t.ansi2 + "18") as Color))
+      .when(kind === "-", (e) => e.bg((t.ansi1 + "18") as Color))
       .child(
         div()
           .w(30)
@@ -390,13 +454,13 @@ export default class Changes extends View {
       .child(div().flex_1().min_w(0).truncate().child(text));
   }
 
-  render(cx) {
+  render(cx: Context) {
     if (this.stale && shown()) {
       this.stale = false;
       this.refresh(cx);
     }
     if (key() !== this.context) this.refresh(cx);
-    const t = theme(),
+    const t = theme() as Theme,
       add = this.files.reduce((n, f) => n + f.add, 0),
       del = this.files.reduce((n, f) => n + f.del, 0);
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
@@ -528,7 +592,7 @@ export default class Changes extends View {
           .flex_1()
           .min_h(0)
           .relative()
-          .font_family(settings().font_family ?? "JetBrains Mono")
+          .font_family((settings().font_family as string | undefined) ?? "JetBrains Mono")
           .text_size(11)
           .child(
             div()

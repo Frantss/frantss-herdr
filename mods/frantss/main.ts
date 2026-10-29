@@ -1,3 +1,4 @@
+import type { Context, AsyncContext, Element, ClickEvent, MouseButtonEvent } from "gpui-kit";
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import {
@@ -16,6 +17,44 @@ import {
   knownAgents,
 } from "herdr";
 
+import type { AgentInfo, SpaceInfo, TabInfo, PaneInfo, Program } from "herdr";
+
+type Theme = Record<string, `#${string}`>;
+type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
+type SavedWorkspace = { folder: string };
+type NamedWorkspace = SavedWorkspace & { key: string; repo: boolean; name: string };
+type SpaceGroup = {
+  key: string;
+  repo: boolean;
+  name: string;
+  folder: string;
+  local: boolean;
+  spaces: SpaceInfo[];
+};
+type RailRow = {
+  id: string;
+  current?: boolean;
+  lit?: boolean;
+  dim?: boolean;
+  indent?: number;
+  lead?: Element | false;
+  text: string;
+  value?: string;
+  end?: Element;
+  onClick: (event: ClickEvent, cx: Context) => unknown;
+  onMenu?: (event: MouseButtonEvent, cx: Context) => unknown;
+  collapsed?: boolean;
+  agent?: boolean;
+};
+type RailSection = {
+  id: string;
+  title: string;
+  count?: number;
+  status?: string;
+  action?: Element;
+  rows: RailRow[];
+};
+
 const GROUPS = [
   { status: "blocked", label: "NEEDS YOU" },
   { status: "working", label: "WORKING" },
@@ -30,16 +69,16 @@ const DOTS = "·".repeat(200);
 const RAIL = { pad: 16, header: 24, row: 24, rowGap: 2, sectionGap: 16, emptyGap: 6 };
 // Close to the site's dock ease (300ms, no overshoot); gpui-kit has no cubic-bezier easing.
 const GLIDE = { response: 300, damping: 1 };
-const glide = (e, y) => e.absolute().top(y).spring("top", GLIDE);
+const glide = (e: Element, y: number) => e.absolute().top(y).spring("top", GLIDE);
 
 // `status`: an agent state, which colors the label (theme colors named working, blocked, done, idle).
-const label = (t, text, status) =>
+const label = (t: Theme, text: string, status: string) =>
   div()
     .flex_none()
     .text_size(10)
     .text_color(t[status] ?? t.dim)
     .child(text);
-const icon = (t, program, size = 14) =>
+const icon = (t: Theme, program: Program, size = 14) =>
   !program?.icon
     ? null
     : (program.tint ? svg(program.icon).text_color(t.muted) : image(program.icon))
@@ -47,7 +86,7 @@ const icon = (t, program, size = 14) =>
         .flex_none();
 // Working pulses like the site's live dot; blocked pulses faster. A pulse keeps the window redrawing,
 // so a dot standing for nothing stays still.
-const dot = (t, status, pulse = true) =>
+const dot = (t: Theme, status: string, pulse = true) =>
   div()
     .size(6)
     .rounded(3)
@@ -62,7 +101,7 @@ const dot = (t, status, pulse = true) =>
 
 // Opens the right-click menu with the props Herdr gives it: `tab` names which menu, `target` what it acts on.
 // A popup is as tall as its items; height is only the most.
-const menu = (tab, target) =>
+const menu = (tab: string, target: Record<string, unknown>) =>
   openOverlay({
     mod: "frantss-menu",
     kind: "popup",
@@ -72,7 +111,8 @@ const menu = (tab, target) =>
   });
 
 // A space's or tab's status dot, only when something in it is going on.
-const statusDot = (t, status) => (status && status !== "idle" ? dot(t, status) : null);
+const statusDot = (t: Theme, status: string) =>
+  status && status !== "idle" ? dot(t, status) : null;
 // The rail's + is this wide, so rows without one can keep their dots in the same column.
 const PLUS_WIDTH = 14;
 const URGENT = ["blocked", "done", "working"];
@@ -80,7 +120,7 @@ const URGENT = ["blocked", "done", "working"];
 // What a program says it is doing, from its terminal title: Claude Code names its thread there
 // ("✳ Fix tab width"). Spinner glyphs go; paths, user@host and the program's own name aren't
 // telling (the agents mod's rule). Null when there is nothing telling.
-function threadTitle(title, program) {
+function threadTitle(title: string, program: Program) {
   const live = (title ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
   const telling =
     live &&
@@ -91,46 +131,46 @@ function threadTitle(title, program) {
   return telling ? live : null;
 }
 
-const base = (path) => path.replace(/\/+$/, "").split("/").pop();
+const base = (path: string) => path.replace(/\/+$/, "").split("/").pop();
 // A repo's own folder from its git folder (`frantssb/.git`); a bare repo is its git folder (`frantssb.git`).
-const repoRoot = (gitDir) => gitDir.replace(/\/\.git$/, "");
-const repoName = (gitDir) => base(repoRoot(gitDir)).replace(/\.git$/, "");
+const repoRoot = (gitDir: string) => gitDir.replace(/\/\.git$/, "");
+const repoName = (gitDir: string) => base(repoRoot(gitDir)).replace(/\.git$/, "");
 
 // The workspaces you added, kept in shared state (persisted, and the workspace menu changes it):
 // [{ folder }], folders on this machine. They stay in the rail when none of their spaces is open.
 const WORKSPACES = "frantss.workspaces";
-const savedWorkspaces = () => shared(WORKSPACES) ?? [];
+const savedWorkspaces = () => (shared(WORKSPACES) as SavedWorkspace[] | null) ?? [];
 // The agents each machine has ("" for this one), as frantss-new-menu and frantss-thread keep them; the
 // rail fills it when it starts, so those open with a fresh list.
 const AGENTS = "frantss.agents";
-async function refreshAgents(machine) {
+async function refreshAgents(machine: string) {
   const found = await knownAgents({ on: machine || null });
-  const known = shared(AGENTS) ?? {};
+  const known = (shared(AGENTS) as Record<string, KnownAgent[]> | null) ?? {};
   if (JSON.stringify(found) !== JSON.stringify(known[machine]))
     setShared(AGENTS, { ...known, [machine]: found });
 }
-const folderKey = (folder) => JSON.stringify([null, folder]);
+const folderKey = (folder: string) => JSON.stringify([null, folder]);
 // Each space's workspace key, published by the rail for other panels (the agent graph's Workspace filter).
 const SPACE_WORKSPACES = "frantss.spaceWorkspaces";
 // What you closed in the rail, kept in shared state (persisted): sections by id ("spaces" or an agent
 // status), workspaces as "workspace:<key>". Spaces are closed unless active, so for them it keeps what
 // you chose either way: "space:<id>:closed" or "space:<id>:open".
 const COLLAPSED = "frantss.collapsed";
-const collapsedIds = () => shared(COLLAPSED) ?? [];
-const toggleCollapsed = (id) =>
+const collapsedIds = () => (shared(COLLAPSED) as string[] | null) ?? [];
+const toggleCollapsed = (id: string) =>
   setShared(
     COLLAPSED,
     collapsedIds().includes(id)
       ? collapsedIds().filter((other) => other !== id)
       : [...collapsedIds(), id],
   );
-const chevron = (t, collapsed) =>
+const chevron = (t: Theme, collapsed: boolean) =>
   svg(`mods/frantss-files/chevron-${collapsed ? "right" : "down"}.svg`)
     .size(10)
     .flex_none()
     .text_color(t.dim);
 // Where a space is now, as the spaces mod tells it: its first terminal's live folder, else where it was made.
-function place(s, ps) {
+function place(s: SpaceInfo, ps: PaneInfo[]) {
   const tabs = new Set(s.tabs.map((tab) => tab.id));
   return JSON.stringify([
     s.machine ?? null,
@@ -140,7 +180,7 @@ function place(s, ps) {
 
 // An unnamed tab is called after its agent's thread, else its agent or first program, in lower case, as
 // the tab bar does.
-function tabName(tab, ps = panes()) {
+function tabName(tab: TabInfo, ps = panes()) {
   if (tab.named) return tab.name;
   const lead =
     ps.find((p) => p.tab === tab.id && p.program?.agent) ?? ps.find((p) => p.tab === tab.id);
@@ -152,14 +192,14 @@ function tabName(tab, ps = panes()) {
 }
 
 // "Personal herdr layout" -> "personal-herdr-layout", as the site's paths read.
-const slugify = (text) =>
+const slugify = (text: string) =>
   (text ?? "")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "");
 
 // A space you named shows that name; else its branch, else Herdr's name for it (its repo or folder).
-const spaceName = (s) => (s.named ? s.name : (s.branch ?? s.name));
+const spaceName = (s: SpaceInfo) => (s.named ? s.name : (s.branch ?? s.name));
 
 function activePlace() {
   const space = spaces().find((s) => s.active);
@@ -167,7 +207,10 @@ function activePlace() {
 }
 
 export default class Frantss extends View {
-  init(_p, _cx) {
+  declare repos: Record<string, string | null>;
+  declare checkouts: Record<string, "main" | "linked" | null>;
+  declare marks: Record<string, number>;
+  init(_p: unknown, _cx: AsyncContext) {
     // The rail and the breadcrumb both name workspaces by repo.
     if (props()?.role !== "rail" && props()?.role !== "top") return;
     this.repos = {}; // place() -> its repo's git folder, null outside a repo; a folder's repo doesn't change
@@ -181,7 +224,7 @@ export default class Frantss extends View {
 
   // Looks up places it hasn't seen. Render runs whenever spaces, panes or shared state change, so
   // no timer is needed.
-  track(cx) {
+  track(cx: Context) {
     if (!this.repos) return;
     const ps = panes();
     const keys = [
@@ -193,19 +236,19 @@ export default class Frantss extends View {
   }
 
   // A space's workspace: its repo on its machine, else its place.
-  workspaceKey(s, ps) {
+  workspaceKey(s: SpaceInfo, ps: PaneInfo[]) {
     const repo = this.repos?.[place(s, ps)];
     return repo ? JSON.stringify([s.machine ?? null, repo]) : place(s, ps);
   }
 
-  publishWorkspaces(ps) {
+  publishWorkspaces(ps: PaneInfo[]) {
     const bySpace = Object.fromEntries(spaces().map((s) => [s.id, this.workspaceKey(s, ps)]));
     if (JSON.stringify(bySpace) !== JSON.stringify(shared(SPACE_WORKSPACES)))
       setShared(SPACE_WORKSPACES, bySpace);
   }
 
   // The git folder a place shares with its worktrees. A machine that can't answer groups by folder.
-  lookUp(key, cx) {
+  lookUp(key: string, cx: Context) {
     this.repos[key] = null;
     const [on, cwd] = JSON.parse(key);
     cx.spawn(async (cx) => {
@@ -229,9 +272,9 @@ export default class Frantss extends View {
   }
 
   // Spaces in order, those of one repo (or, outside a repo, one folder) together where the first of them is.
-  spaceGroups(all) {
+  spaceGroups(all: SpaceInfo[]) {
     const ps = panes();
-    const groups = new Map();
+    const groups = new Map<string, SpaceGroup>();
     for (const s of all) {
       const repo = this.repos?.[place(s, ps)];
       const key = this.workspaceKey(s, ps);
@@ -250,7 +293,7 @@ export default class Frantss extends View {
   }
 
   // A saved workspace keyed as its spaces' group is (its repo, else its folder), so they find each other.
-  workspace(w) {
+  workspace(w: SavedWorkspace) {
     const repo = this.repos?.[folderKey(w.folder)];
     return {
       ...w,
@@ -260,7 +303,7 @@ export default class Frantss extends View {
     };
   }
 
-  top(t, list) {
+  top(t: Theme, list: AgentInfo[]) {
     const { space, tab } = activePlace();
     // Like the site's path line, faint crumbs joined by "/" with the current one accented, naming where
     // you stand in the rail: workspace / branch / tab. Each crumb opens what it names.
@@ -308,7 +351,10 @@ export default class Frantss extends View {
       },
     ].filter((crumb) => crumb?.text);
     // The bar drags the window, so a crumb with an action keeps its press to itself.
-    const crumbLink = (crumb, current) =>
+    const crumbLink = (
+      crumb: { id: string; text: string; onClick?: () => unknown },
+      current: boolean,
+    ) =>
       div()
         .id(`crumb-${crumb.id}`)
         .when(current, (e) => e.min_w(0).truncate().text_color(t.accent))
@@ -361,7 +407,10 @@ export default class Frantss extends View {
   // `lit`: bright without being current (a group holding the current space); `dim`: faint (a workspace
   // with nothing open). `collapsed`: a chevron in the first column, pointing the way what is under the
   // row is (true closed, false open); none when undefined.
-  row(t, { id, current, lit, dim, indent, lead, text, value, end, onClick, onMenu, collapsed }) {
+  row(
+    t: Theme,
+    { id, current, lit, dim, indent, lead, text, value, end, onClick, onMenu, collapsed }: RailRow,
+  ) {
     return (
       h_flex()
         .id(id)
@@ -408,7 +457,17 @@ export default class Frantss extends View {
 
   // A section's header; clicking it opens or closes the section. `action`: a control at the header's
   // end (the workspaces' +). The title takes its status's color, else the foreground.
-  header(t, { id, title, count, status, action, collapsed }) {
+  header(
+    t: Theme,
+    {
+      id,
+      title,
+      count,
+      status,
+      action,
+      collapsed,
+    }: Omit<RailSection, "rows"> & { collapsed: boolean },
+  ) {
     return h_flex()
       .id(`header-${id}`)
       .left(0)
@@ -433,7 +492,12 @@ export default class Frantss extends View {
   }
 
   // A small "+" in the rail; it doesn't select the row it sits on.
-  plus(t, id, tooltip, onClick) {
+  plus(
+    t: Theme,
+    id: string,
+    tooltip: string,
+    onClick: (event: ClickEvent, cx: Context) => unknown,
+  ) {
     return div()
       .id(id)
       .tooltip(tooltip)
@@ -452,7 +516,7 @@ export default class Frantss extends View {
       .child("+");
   }
 
-  addWorkspace(cx) {
+  addWorkspace(cx: Context) {
     cx.spawn(async () => {
       const folder = await pickFolder({ prompt: "Add workspace" });
       if (folder && !savedWorkspaces().some((w) => w.folder === folder))
@@ -461,14 +525,14 @@ export default class Frantss extends View {
   }
 
   // A marker hides in place when nothing is current, so it glides from where it was when something is again.
-  marker(id, y, draw) {
+  marker(id: string, y: number | null, draw: (element: Element) => Element) {
     if (y !== null) this.marks[id] = y;
     return glide(draw(div().id(id)), this.marks[id] ?? 0)
       .opacity(y === null ? 0 : 1)
       .transition("opacity", 150);
   }
 
-  rail(t, list) {
+  rail(t: Theme, list: AgentInfo[]) {
     const all = spaces();
     const groups = GROUPS.map((g) => ({ ...g, agents: list.filter((a) => a.status === g.status) }));
     setAgentOrder(groups.flatMap((g) => g.agents.map((a) => a.address)));
@@ -479,25 +543,25 @@ export default class Frantss extends View {
     // until you close it; the current space is lit and the current tab marked. Rows here are bare names,
     // a status dot after. A space with one tab stands for that tab: it shows its name, takes the marker
     // and has nothing to close.
-    const standsForTab = (s) => s.tabs.length === 1;
+    const standsForTab = (s: SpaceInfo) => s.tabs.length === 1;
     const collapsed = collapsedIds();
-    const spaceClosed = (s) =>
+    const spaceClosed = (s: SpaceInfo) =>
       collapsed.includes(`space:${s.id}:closed`) ||
       (!s.active && !collapsed.includes(`space:${s.id}:open`));
-    const toggleSpace = (s) =>
+    const toggleSpace = (s: SpaceInfo) =>
       setShared(COLLAPSED, [
         ...collapsedIds().filter((id) => !id.startsWith(`space:${s.id}:`)),
         `space:${s.id}:${spaceClosed(s) ? "open" : "closed"}`,
       ]);
     // A dot left of where a workspace row's + sits, under that row's own dot.
-    const dotEnd = (status) => {
+    const dotEnd = (status: string) => {
       const statusIndicator = statusDot(t, status);
       return (
         statusIndicator &&
         h_flex().gap(8).items_center().child(statusIndicator).child(div().w(PLUS_WIDTH))
       );
     };
-    const spaceRow = (s) => ({
+    const spaceRow = (s: SpaceInfo): RailRow => ({
       id: `space-${s.id}`,
       current: s.active && standsForTab(s),
       lit: s.active,
@@ -511,7 +575,7 @@ export default class Frantss extends View {
         menu("space", { id: s.id, name: spaceName(s), checkout: this.checkouts?.[place(s, ps)] }),
     });
     const ps = panes();
-    const tabRows = (s) =>
+    const tabRows = (s: SpaceInfo): RailRow[] =>
       standsForTab(s) || spaceClosed(s)
         ? []
         : s.tabs.map((tab) => ({
@@ -524,12 +588,12 @@ export default class Frantss extends View {
             onClick: () => run("tab.select", { id: tab.id }),
             onMenu: () => menu("tab", { id: tab.id, space: s.id, name: tabName(tab, ps) }),
           }));
-    const withTabs = (s) => [spaceRow(s), ...tabRows(s)];
+    const withTabs = (s: SpaceInfo) => [spaceRow(s), ...tabRows(s)];
     // A group row is a workspace: its open spaces (its own checkout and worktrees) are under it, unless
     // you closed it. Clicking opens or closes it; its + starts a thread (frantss-thread) in its own
     // checkout (not one of Herdr's worktrees), else its first space; its menu keeps or removes it
     // (frantss-workspace).
-    const newThread = (key, target) =>
+    const newThread = (key: string, target: Record<string, unknown>) =>
       this.plus(t, `new-${key}`, "New thread", () =>
         openOverlay({
           mod: "frantss-thread",
@@ -539,7 +603,7 @@ export default class Frantss extends View {
           props: target,
         }),
       );
-    const workspaceMenu = (folder, saved) =>
+    const workspaceMenu = (folder: string, saved: boolean) =>
       openOverlay({
         mod: "frantss-workspace",
         kind: "popup",
@@ -547,11 +611,11 @@ export default class Frantss extends View {
         height: 120,
         props: { folder, saved },
       });
-    const ownCheckout = (g) =>
+    const ownCheckout = (g: SpaceGroup) =>
       g.spaces.find((s) => !JSON.parse(place(s, ps))[1]?.includes("/.herdr/worktrees/")) ??
       g.spaces[0];
-    const workspaceClosed = (g) => collapsed.includes(`workspace:${g.key}`);
-    const groupRow = (g, saved) => {
+    const workspaceClosed = (g: SpaceGroup) => collapsed.includes(`workspace:${g.key}`);
+    const groupRow = (g: SpaceGroup, saved: NamedWorkspace): RailRow => {
       const s = ownCheckout(g);
       return {
         id: `group-${g.key}`,
@@ -582,7 +646,7 @@ export default class Frantss extends View {
       };
     };
     // A saved workspace with nothing open: clicking opens a space in its folder.
-    const closedRow = (w) => ({
+    const closedRow = (w: NamedWorkspace): RailRow => ({
       id: `group-${w.key}`,
       dim: true,
       lead: false,
@@ -599,7 +663,7 @@ export default class Frantss extends View {
     const saved = savedWorkspaces()
       .map((w) => this.workspace(w))
       .filter((w, i, list) => list.findIndex((o) => o.key === w.key) === i);
-    const groupRows = (g, w) => [
+    const groupRows = (g: SpaceGroup, w: NamedWorkspace) => [
       groupRow(g, w),
       ...(workspaceClosed(g) ? [] : g.spaces.flatMap(withTabs)),
     ];
@@ -610,7 +674,7 @@ export default class Frantss extends View {
       }),
       ...open.filter((g) => !saved.some((w) => w.key === g.key)).flatMap((g) => groupRows(g, null)),
     ];
-    const sections = [
+    const sections: RailSection[] = [
       {
         id: "spaces",
         title: "WORKSPACES",
@@ -659,7 +723,7 @@ export default class Frantss extends View {
     }
 
     this.marks ??= {};
-    const chevron = (e) =>
+    const chevron = (e: Element) =>
       e.left(12).h(RAIL.row).flex().items_center().text_size(12).text_color(t.accent).child("❯");
     return v_flex()
       .id("frantss-rail")
@@ -679,7 +743,7 @@ export default class Frantss extends View {
       );
   }
 
-  pane(t) {
+  pane(t: Theme) {
     const pane = panes().find((p) => p.pane === props().pane);
     const where = [pane?.branch, pane?.cwd?.split("/").pop()].filter(Boolean).join(" · ");
     return h_flex()
@@ -711,8 +775,8 @@ export default class Frantss extends View {
       );
   }
 
-  render(cx) {
-    const t = theme();
+  render(cx: Context) {
+    const t = theme() as Record<string, `#${string}`>;
     const role = props()?.role;
     if (role === "pane") return this.pane(t);
     this.track(cx);

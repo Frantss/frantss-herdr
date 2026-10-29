@@ -1,3 +1,7 @@
+import type { AsyncContext, Context, Element, Color } from "gpui-kit";
+import type { ExecResult, SpaceInfo } from "herdr";
+import type { InboxGroup, InboxItem, PullRequest, PullRequests } from "./github.ts";
+
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Button } from "gpui-base";
 import {
@@ -16,7 +20,19 @@ import {
   home,
   notify,
 } from "herdr";
-import { ACTIONS, buildInbox, findCheckout, loadPullRequests, squash, taskFor } from "./github.js";
+import { ACTIONS, buildInbox, findCheckout, loadPullRequests, squash, taskFor } from "./github.ts";
+
+interface LayoutNode {
+  id?: string;
+  children?: LayoutNode[];
+  hidden?: boolean;
+  active?: string;
+}
+interface Location {
+  cwd: string | null;
+  on: string | null;
+}
+type Theme = Record<string, Color>;
 
 const POLL_MS = 60000;
 // Agents commit only; set to true to let them push to the pull request branch.
@@ -36,7 +52,7 @@ const CHEVRON_RIGHT = "mods/workspace-chrome/chevron-right.svg",
 const SPINNER = "mods/workspace-chrome/spinner.svg",
   REFRESH = "mods/github/refresh.svg";
 
-function find(node, id) {
+function find(node: LayoutNode | null, id: string): LayoutNode | null {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
     const found = find(child, id);
@@ -45,7 +61,7 @@ function find(node, id) {
   return null;
 }
 
-function location() {
+function location(): Location {
   const explicit = props();
   if (explicit?.cwd) return { cwd: explicit.cwd, on: explicit.on ?? null };
   const space = spaces().find((s) => s.active),
@@ -58,13 +74,17 @@ function location() {
 }
 
 // Where a space is now: its first terminal's live folder, else where it was made.
-function spaceFolder(space) {
+function spaceFolder(space: SpaceInfo) {
   const tabs = new Set(space.tabs.map((tab) => tab.id));
   return panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || space.folder || null;
 }
 
 const contextKey = (place) => JSON.stringify(place);
-const errorText = (error) => String(error?.message ?? error).slice(0, 500);
+const errorText = (error: unknown) => {
+  const message = (error as { message?: unknown })?.message ?? error;
+  // oxlint-disable-next-line typescript/no-base-to-string -- Host rejections may contain arbitrary values.
+  return String(message).slice(0, 500);
+};
 const ago = (iso) => {
   const seconds = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
   return seconds < 3600
@@ -75,7 +95,7 @@ const ago = (iso) => {
 };
 const slug = (branch) => branch.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
 
-async function checked(promise, what) {
+async function checked(promise: Promise<ExecResult>, what: string) {
   const result = await promise;
   if (result.code !== 0)
     throw new Error(result.stderr?.trim() || result.stdout?.trim() || `${what} failed.`);
@@ -83,7 +103,22 @@ async function checked(promise, what) {
 }
 
 export default class GitHub extends View {
-  init(_props, cx) {
+  declare groups: InboxGroup[];
+  declare selected: Set<string>;
+  declare starting: Set<string>;
+  declare expanded: Set<string>;
+  declare inflight: Set<string>;
+  declare errors: Map<string, string>;
+  declare agentOptions: Awaited<ReturnType<typeof knownAgents>>;
+  declare agentKey: string | null;
+  declare cache: Map<string, PullRequests>;
+  declare repos: Map<string, string | null>;
+  declare collapsed: Set<string>;
+  declare context: string;
+  declare place: Location;
+  declare confirming: boolean;
+
+  init(_props, cx: AsyncContext) {
     this.groups = [];
     this.selected = new Set();
     this.starting = new Set();
@@ -93,7 +128,7 @@ export default class GitHub extends View {
     this.agentOptions = [];
     this.agentKey = localStorage.getItem("agent");
     // Saved results show at once after a restart or a code reload; a load replaces them.
-    let saved = {};
+    let saved: { cache?: [string, PullRequests][]; repos?: [string, string | null][] } = {};
     try {
       saved = JSON.parse(localStorage.getItem("cache") ?? "{}");
     } catch {
@@ -114,7 +149,7 @@ export default class GitHub extends View {
 
   visible() {
     if (props()?.cwd) return true;
-    const tree = layout(),
+    const tree = layout() as LayoutNode | null,
       panel = find(tree, "panel"),
       body = find(tree, "panel-body");
     return !panel || (!panel.hidden && body?.active === "github");
@@ -136,7 +171,7 @@ export default class GitHub extends View {
   }
 
   // The repository a folder belongs to: its common Git folder on its machine.
-  async repoOf(place) {
+  async repoOf(place: Location) {
     const key = contextKey(place);
     if (!this.repos.has(key)) {
       const result = await exec(
@@ -152,11 +187,11 @@ export default class GitHub extends View {
     return this.repos.get(key);
   }
 
-  load(place, cx) {
+  load(place: Location, cx: Context) {
     cx.spawn((cx) => this.loadPlace(place, cx));
   }
 
-  async loadPlace(place, cx) {
+  async loadPlace(place: Location, cx: Context) {
     let repo = null,
       started = false;
     try {
@@ -187,7 +222,7 @@ export default class GitHub extends View {
     }
   }
 
-  refresh(cx, notifyNow = true, loadNow = true) {
+  refresh(cx: Context, notifyNow = true, loadNow = true) {
     const place = location(),
       key = contextKey(place);
     if (key !== this.context) {
@@ -205,7 +240,7 @@ export default class GitHub extends View {
 
   // Every space's repository, so switching to any space shows results at once.
   // The shown one loads first; the others follow one at a time so they don't delay it.
-  refreshAll(cx) {
+  refreshAll(cx: Context) {
     this.refresh(cx, false, false);
     const places = [
       this.place,
@@ -216,7 +251,7 @@ export default class GitHub extends View {
     });
   }
 
-  loadAgents(cx, on) {
+  loadAgents(cx: Context, on) {
     cx.spawn(async (cx) => {
       try {
         this.agentOptions = (await knownAgents({ on })).filter((agent) => agent.installed);
@@ -233,7 +268,7 @@ export default class GitHub extends View {
     );
   }
 
-  cycleAgent(cx) {
+  cycleAgent(cx: Context) {
     if (!this.agentOptions.length) return;
     const index = this.agentOptions.indexOf(this.agent());
     this.agentKey = this.agentOptions[(index + 1) % this.agentOptions.length].key;
@@ -261,7 +296,7 @@ export default class GitHub extends View {
   }
 
   // A checkout of the pull request's branch: an existing one, else a new worktree beside the worktree mod's.
-  async checkout(pr, place) {
+  async checkout(pr: PullRequest, place: Location) {
     const git = (args) => exec("git", args, { cwd: place.cwd, on: place.on });
     const existing = findCheckout(
       await checked(git(["worktree", "list", "--porcelain"]), "git worktree list"),
@@ -289,7 +324,12 @@ export default class GitHub extends View {
   }
 
   // One agent for all of a pull request's items.
-  async startOne(items, place, repo, agent) {
+  async startOne(
+    items: InboxItem[],
+    place: Location,
+    repo: string,
+    agent: Awaited<ReturnType<typeof knownAgents>>[number],
+  ) {
     const { pr } = items[0];
     const path = await this.checkout(pr, place);
     const name = `#${pr.number} ${items.map((item) => ACTIONS[item.kind]).join(" + ")}`,
@@ -297,7 +337,7 @@ export default class GitHub extends View {
     const space = spaces().find(
       (s) => (s.machine ?? null) === (place.on ?? null) && spaceFolder(s) === path,
     );
-    const [command, args] = space
+    const [command, args]: [string, Record<string, unknown>] = space
       ? ["tab.new", { space: space.id, folder: path, name, argv: agent.run, task }]
       : ["space.new", { folder: path, machine: place.on, tab: name, argv: agent.run, task }];
     const made = JSON.parse(
@@ -316,7 +356,7 @@ export default class GitHub extends View {
     );
   }
 
-  start(items, cx) {
+  start(items: InboxItem[], cx: Context) {
     const agent = this.agent(),
       place = this.place,
       repo = this.data?.repo;
@@ -328,7 +368,7 @@ export default class GitHub extends View {
       });
       return;
     }
-    const byPr = new Map();
+    const byPr = new Map<number, InboxItem[]>();
     for (const item of items) byPr.set(item.pr.number, [...(byPr.get(item.pr.number) ?? []), item]);
     for (const item of items) this.starting.add(item.id);
     this.selected = new Set();
@@ -360,7 +400,7 @@ export default class GitHub extends View {
   }
 
   button(id, label, action, { disabled = false, tooltip = label, active = false } = {}) {
-    const t = theme();
+    const t = theme() as Theme;
     return Button.new(id)
       .tab_stop(true)
       .h(24)
@@ -386,8 +426,17 @@ export default class GitHub extends View {
       .child(label);
   }
 
-  iconButton(id, icon, action, { disabled = false, spinning = false, tooltip } = {}) {
-    const t = theme();
+  iconButton(
+    id,
+    icon,
+    action,
+    {
+      disabled = false,
+      spinning = false,
+      tooltip,
+    }: { disabled?: boolean; spinning?: boolean; tooltip?: string } = {},
+  ) {
+    const t = theme() as Theme;
     return Button.new(id)
       .tab_stop(true)
       .size(24)
@@ -451,7 +500,7 @@ export default class GitHub extends View {
       .child(div().text_color(t.muted).child(String(count)));
   }
 
-  itemRow(item, t) {
+  itemRow(item: InboxItem, t: Theme) {
     const agentKind = item.kind !== "open",
       selected = this.selected.has(item.id),
       starting = this.starting.has(item.id);
@@ -577,8 +626,8 @@ export default class GitHub extends View {
   }
 
   // The pull request's state at a glance: checks, review, conversations, size, draft and conflicts.
-  chips(pr, t) {
-    const chip = (label, color, icon) =>
+  chips(pr: PullRequest, t: Theme) {
+    const chip = (label: string, color: Color, icon?: Element) =>
       h_flex()
         .h(18)
         .px(6)
@@ -604,11 +653,13 @@ export default class GitHub extends View {
       chips.push(chip(`${checks.pending} checks running`, t.muted, dot(t.muted)));
     else if (checks.state === "SUCCESS")
       chips.push(chip("Checks passed", t.working, dot(t.working)));
-    const review = {
-      APPROVED: ["Approved", t.working],
-      CHANGES_REQUESTED: ["Changes requested", t.blocked],
-      REVIEW_REQUIRED: ["Needs review", t.muted],
-    }[pr.decision];
+    const review = (
+      {
+        APPROVED: ["Approved", t.working],
+        CHANGES_REQUESTED: ["Changes requested", t.blocked],
+        REVIEW_REQUIRED: ["Needs review", t.muted],
+      } satisfies Record<string, [string, Color]>
+    )[pr.decision];
     if (review) chips.push(chip(review[0], review[1]));
     if (pr.threads.length)
       chips.push(chip(String(pr.threads.length), t.foreground, svg(ICONS.address).size(10)));
@@ -631,7 +682,7 @@ export default class GitHub extends View {
   }
 
   // Failed checks for a CI item; the open conversations for every other item.
-  details(item, t) {
+  details(item: InboxItem, t: Theme) {
     const { pr } = item;
     const link = (id, url, content) =>
       v_flex()
@@ -857,9 +908,9 @@ export default class GitHub extends View {
       );
   }
 
-  render(cx) {
+  render(cx: Context) {
     if (this.visible() && contextKey(location()) !== this.context) this.refresh(cx, false);
-    const t = theme(),
+    const t = theme() as Theme,
       agent = this.agent();
     return v_flex()
       .id("github")

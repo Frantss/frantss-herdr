@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { linkPackage } from "./link.mjs";
+import { linkPackage } from "./link.ts";
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "frantss-herdr-link-"));
@@ -75,4 +75,26 @@ test("installs into missing layout, mod and theme directories", (t) => {
   rmSync(home, { recursive: true });
   assert.deepEqual(linkPackage(source, home), { linked: 3, backup: null });
   assert.equal(readFileSync(join(home, "themes/personal.json"), "utf8"), "{}");
+});
+
+test("migrates links from this checkout's source to its build output", (t) => {
+  const { source, home } = fixture(t);
+  const output = join(source, "dist");
+  for (const group of ["layouts", "mods", "themes"]) {
+    const name = group === "mods" ? "personal" : "personal.json";
+    const live = join(home, group, name);
+    rmSync(live, { recursive: true });
+    symlinkSync(join(source, group, name), live);
+    mkdirSync(join(output, group), { recursive: true });
+    if (group === "mods") {
+      mkdirSync(join(output, group, name));
+      writeFileSync(join(output, group, name, "main.js"), "compiled");
+    } else writeFileSync(join(output, group, name), "{}");
+  }
+  assert.throws(() => linkPackage(output, home), /Already linked elsewhere/);
+  const result = linkPackage(output, home, source);
+  assert.equal(result.linked, 3);
+  assert.equal(readlinkSync(join(home, "mods/personal")), join(output, "mods/personal"));
+  assert.equal(readlinkSync(join(result.backup, "mods/personal")), join(source, "mods/personal"));
+  assert.deepEqual(linkPackage(output, home, source), { linked: 0, backup: null });
 });

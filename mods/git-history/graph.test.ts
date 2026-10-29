@@ -1,6 +1,6 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
-import { layoutGraph } from "./graph.js";
+import { layoutGraph } from "./graph.ts";
 
 test("empty and linear histories use zero and one lanes", () => {
   assert.deepEqual(layoutGraph([]), { cols: [], colors: [], segments: [], lanes: 0 });

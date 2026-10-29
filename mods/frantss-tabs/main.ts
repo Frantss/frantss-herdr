@@ -1,9 +1,19 @@
+import type { Context, AsyncContext, Element, ClickEvent, MouseButtonEvent } from "gpui-kit";
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, nextCommand } from "herdr";
 
+import type { SpaceInfo, TabInfo, Program } from "herdr";
+
+interface LayoutNode {
+  id?: string;
+  children?: LayoutNode[];
+  active?: string;
+  hidden?: boolean;
+}
+
 // The frantss rail's status dot: working pulses like the site's live dot, blocked faster.
-const dot = (t, status) =>
+const dot = (t: Record<string, `#${string}`>, status: string) =>
   div()
     .size(6)
     .rounded(3)
@@ -14,7 +24,7 @@ const dot = (t, status) =>
 
 // The frantss rail's thread title (a mod can't import another's code): what a program says it is
 // doing in its terminal title, spinner glyphs gone; null for paths, user@host or its own name.
-function threadTitle(title, program) {
+function threadTitle(title: string, program: Program) {
   const live = (title ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
   const telling =
     live &&
@@ -26,7 +36,7 @@ function threadTitle(title, program) {
 }
 
 // An unnamed tab is called after its agent's thread, else its program, in lower case.
-function tabName(c, ps = panes()) {
+function tabName(c: TabInfo, ps = panes()) {
   if (c.named) return c.name;
   const lead = ps.find((p) => p.tab === c.id && p.program?.agent) ?? ps.find((p) => p.tab === c.id);
   return (
@@ -37,11 +47,11 @@ function tabName(c, ps = panes()) {
 }
 
 // The frantss rail's space name: the name you gave it, else its branch, else Herdr's.
-const spaceName = (s) => (s.named ? s.name : (s.branch ?? s.name));
+const spaceName = (s: SpaceInfo) => (s.named ? s.name : (s.branch ?? s.name));
 
 // Herdr's own rename prompt starts from the stored name (a number for an unnamed tab, the repo for an
 // unnamed space); this one starts from the name shown. `what`: "tab" or "space".
-const rename = (what, id, name) =>
+const rename = (what: string, id: string, name: string) =>
   openOverlay({
     mod: "prompt",
     kind: "dialog",
@@ -54,7 +64,7 @@ const rename = (what, id, name) =>
     },
   });
 
-function find(node, id) {
+function find(node: LayoutNode, id: string): LayoutNode | null {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
     const found = find(child, id);
@@ -64,7 +74,11 @@ function find(node, id) {
 }
 
 export default class Tabs extends View {
-  init(_props, cx) {
+  declare pressed: number | null;
+  declare panels: Record<string, string | null>;
+  declare space: string;
+  declare pending: { want: string | null; until: number } | null;
+  init(_props: unknown, cx: AsyncContext) {
     this.pressed = null;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
     // "rename" (F2 in this layout, keys.json): rename the current tab; "rename-space" (shift-F2): its space.
@@ -81,7 +95,7 @@ export default class Tabs extends View {
 
   // The side panel is remembered per space: switching shows that space's choice
   // (closed if it never had one), and opening or closing it records it.
-  syncPanel(space, panel, body, enabled) {
+  syncPanel(space: SpaceInfo, panel: LayoutNode, body: LayoutNode, enabled: string[]) {
     if (!space || !panel) return;
     const now = panel.hidden ? null : (body?.active ?? null);
     if (space.id !== this.space) {
@@ -112,11 +126,16 @@ export default class Tabs extends View {
   }
 
   render() {
-    const t = theme();
+    const t = theme() as Record<string, `#${string}`>;
     const space = spaces().find((p) => p.active);
     const shown = space?.tabs ?? [];
-    const stop = (_e, cx) => cx.stop_propagation();
-    const button = (id, label, tooltip, action) =>
+    const stop = (_e: ClickEvent | MouseButtonEvent, cx: Context) => cx.stop_propagation();
+    const button = (
+      id: string,
+      label: Element | string,
+      tooltip: string,
+      action: (e: ClickEvent, cx: Context) => unknown,
+    ) =>
       div()
         .id(id)
         .tooltip(tooltip)
@@ -133,7 +152,7 @@ export default class Tabs extends View {
         .on_mouse_down("left", stop)
         .on_click(action)
         .child(label);
-    const item = (c, i) => {
+    const item = (c: TabInfo, i: number) => {
       const program = (
         panes().find((p) => p.tab === c.id && p.program?.agent) ??
         panes().find((p) => p.tab === c.id)
@@ -218,17 +237,17 @@ export default class Tabs extends View {
           )
       );
     };
-    const panel = find(layout(), "panel"),
-      body = find(layout(), "panel-body");
+    const panel = find(layout() as LayoutNode, "panel"),
+      body = find(layout() as LayoutNode, "panel-body");
     // The welcome screen picks Files and Changes; custom panels stay available.
     const enabled = [
-      ...(shared("workspace.panels") ?? ["files", "changes"]),
+      ...((shared("workspace.panels") as string[] | null) ?? ["files", "changes"]),
       "agent-graph",
       "git-history",
       "github",
     ];
     this.syncPanel(space, panel, body, enabled);
-    const panelButton = (id, label, icon) => {
+    const panelButton = (id: string, label: string, icon: string) => {
       const on = panel && !panel.hidden && body?.active === id;
       return h_flex()
         .id(`panel-${id}`)

@@ -17,6 +17,6 @@ herdr-app do tab.new '{"name":"History","mod":"git-history","props":{"cwd":"/abs
 
 Use a configured machine name for `on` when the checkout is remote.
 
-Check changes with `herdr-app check ~/.config/herdr-app/mods/git-history`. From the repository root, run this panel's data and UI tests with `pnpm exec vp test mods/git-history`.
+Check changes with `herdr-app check ~/.config/herdr-app/mods/git-history`. From the repository root, run this panel's data and UI tests with `pnpm test -- mods/git-history`.
 
-`git.js` reads Git through an injected executor. `graph.js` assigns lanes without host APIs. `main.js` handles native rendering and per-copy state. The graph algorithm is adapted from the local `git-graph-claude-mod` project. Personal mod files survive Herdr updates; its generated type files describe the installed API.
+`git.ts` reads Git through an injected executor. `graph.ts` assigns lanes without host APIs. `main.ts` handles native rendering and per-copy state. The graph algorithm is adapted from the local `git-graph-claude-mod` project. Personal mod files survive Herdr updates; its generated type files describe the installed API.

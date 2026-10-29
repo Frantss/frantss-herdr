@@ -1,6 +1,6 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
-import { buildInbox, findCheckout, loadPullRequests, taskFor } from "./github.js";
+import { buildInbox, findCheckout, loadPullRequests, taskFor } from "./github.ts";
 
 const node = (overrides = {}) => ({
   number: 1,
@@ -36,12 +36,15 @@ function fakeGh(nodes, viewer = "me") {
 const rollup = (state, contexts) => ({
   nodes: [{ commit: { statusCheckRollup: { state, contexts: { nodes: contexts } } } }],
 });
-const thread = (fields) => ({
+const thread = (fields = {}) => ({
   isResolved: false,
   isOutdated: false,
   path: "src/a.ts",
   line: 3,
-  comments: { nodes: [{ author: { login: "leo" }, body: "rename\n this", url: "u" }] },
+  comments: {
+    totalCount: undefined as number | undefined,
+    nodes: [{ author: { login: "leo" }, body: "rename\n this", url: "u" }],
+  },
   ...fields,
 });
 
