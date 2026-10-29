@@ -12,10 +12,15 @@ export function layoutGraph(nodes) {
   };
   nodes.forEach((node, row) => {
     let col = lanes.indexOf(node.hash);
-    if (col < 0) { col = freeLane(); laneColors[col] = nextColor++; }
+    if (col < 0) {
+      col = freeLane();
+      laneColors[col] = nextColor++;
+    }
     cols.push(col);
     colors.push(laneColors[col]);
-    lanes.forEach((hash, lane) => { if (hash === node.hash) lanes[lane] = null; });
+    lanes.forEach((hash, lane) => {
+      if (hash === node.hash) lanes[lane] = null;
+    });
     lanes[col] = null;
     node.parents.forEach((parent, index) => {
       let lane = lanes.indexOf(parent);
@@ -39,11 +44,14 @@ export function layoutGraph(nodes) {
       continue;
     }
     const parentCol = cols[parentRow];
-    if (parentRow === edge.row + 1) { add(edge.col, edge.row, parentCol, parentRow); continue; }
+    if (parentRow === edge.row + 1) {
+      add(edge.col, edge.row, parentCol, parentRow);
+      continue;
+    }
     add(edge.col, edge.row, edge.lane, edge.row + 1);
     add(edge.lane, edge.row + 1, edge.lane, parentRow - 1);
     add(edge.lane, parentRow - 1, parentCol, parentRow);
   }
-  const used = [...cols, ...segments.flatMap(segment => [segment.x1, segment.x2])];
+  const used = [...cols, ...segments.flatMap((segment) => [segment.x1, segment.x2])];
   return { cols, colors, segments, lanes: used.length ? Math.max(...used) + 1 : 0 };
 }

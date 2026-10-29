@@ -24,7 +24,13 @@ const QUERY = `query($owner: String!, $name: String!) {
   }
 }`;
 
-const failedConclusions = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"]);
+const failedConclusions = new Set([
+  "FAILURE",
+  "TIMED_OUT",
+  "ACTION_REQUIRED",
+  "STARTUP_FAILURE",
+  "ERROR",
+]);
 const pendingStates = new Set(["PENDING", "EXPECTED"]);
 const threadLimit = 20;
 const bodyLimit = 400;
@@ -33,31 +39,59 @@ export const ACTIONS = Object.freeze({ "fix-ci": "Fix CI", address: "Address", r
 
 async function run(gh, args) {
   const result = await gh(args);
-  if (result.code !== 0) throw new Error(result.stderr?.trim() || `gh ${args[0]} failed (${result.code})`);
+  if (result.code !== 0)
+    throw new Error(result.stderr?.trim() || `gh ${args[0]} failed (${result.code})`);
   return result.stdout;
 }
 
 function parsePullRequest(node) {
   const rollup = node.commits.nodes[0]?.commit.statusCheckRollup;
-  const checks = (rollup?.contexts.nodes ?? []).map(c => c.__typename === "CheckRun"
-    ? { name: c.name, url: c.detailsUrl, failed: failedConclusions.has(c.conclusion), pending: c.status !== "COMPLETED" }
-    : { name: c.context, url: c.targetUrl, failed: failedConclusions.has(c.state), pending: pendingStates.has(c.state) });
+  const checks = (rollup?.contexts.nodes ?? []).map((c) =>
+    c.__typename === "CheckRun"
+      ? {
+          name: c.name,
+          url: c.detailsUrl,
+          failed: failedConclusions.has(c.conclusion),
+          pending: c.status !== "COMPLETED",
+        }
+      : {
+          name: c.context,
+          url: c.targetUrl,
+          failed: failedConclusions.has(c.state),
+          pending: pendingStates.has(c.state),
+        },
+  );
   const threads = node.reviewThreads.nodes
-    .filter(thread => !thread.isResolved && !thread.isOutdated)
-    .map(thread => {
+    .filter((thread) => !thread.isResolved && !thread.isOutdated)
+    .map((thread) => {
       const comment = thread.comments.nodes[0];
-      return { path: thread.path, line: thread.line, author: comment?.author?.login ?? "ghost", body: comment?.body ?? "", url: comment?.url, replies: Math.max(0, (thread.comments.totalCount ?? 1) - 1) };
+      return {
+        path: thread.path,
+        line: thread.line,
+        author: comment?.author?.login ?? "ghost",
+        body: comment?.body ?? "",
+        url: comment?.url,
+        replies: Math.max(0, (thread.comments.totalCount ?? 1) - 1),
+      };
     });
   return {
-    number: node.number, title: node.title, url: node.url, branch: node.headRefName,
-    draft: node.isDraft, author: node.author?.login ?? "ghost", decision: node.reviewDecision,
-    additions: node.additions ?? 0, deletions: node.deletions ?? 0, updatedAt: node.updatedAt ?? null,
+    number: node.number,
+    title: node.title,
+    url: node.url,
+    branch: node.headRefName,
+    draft: node.isDraft,
+    author: node.author?.login ?? "ghost",
+    decision: node.reviewDecision,
+    additions: node.additions ?? 0,
+    deletions: node.deletions ?? 0,
+    updatedAt: node.updatedAt ?? null,
     conflicts: node.mergeable === "CONFLICTING",
-    requested: node.reviewRequests.nodes.map(r => r.requestedReviewer?.login).filter(Boolean),
+    requested: node.reviewRequests.nodes.map((r) => r.requestedReviewer?.login).filter(Boolean),
     checks: {
-      state: rollup?.state ?? null, total: checks.length,
-      pending: checks.filter(c => c.pending).length,
-      failed: checks.filter(c => c.failed).map(({ name, url }) => ({ name, url })),
+      state: rollup?.state ?? null,
+      total: checks.length,
+      pending: checks.filter((c) => c.pending).length,
+      failed: checks.filter((c) => c.failed).map(({ name, url }) => ({ name, url })),
     },
     threads,
   };
@@ -66,7 +100,18 @@ function parsePullRequest(node) {
 // Open pull requests of the repository that `gh` resolves from its working folder.
 export async function loadPullRequests(gh) {
   const repo = JSON.parse(await run(gh, ["repo", "view", "--json", "owner,name"]));
-  const { data } = JSON.parse(await run(gh, ["api", "graphql", "-f", `query=${QUERY}`, "-f", `owner=${repo.owner.login}`, "-f", `name=${repo.name}`]));
+  const { data } = JSON.parse(
+    await run(gh, [
+      "api",
+      "graphql",
+      "-f",
+      `query=${QUERY}`,
+      "-f",
+      `owner=${repo.owner.login}`,
+      "-f",
+      `name=${repo.name}`,
+    ]),
+  );
   return {
     repo: data.repository.nameWithOwner,
     viewer: data.viewer.login,
@@ -74,7 +119,7 @@ export async function loadPullRequests(gh) {
   };
 }
 
-const unique = values => [...new Set(values)];
+const unique = (values) => [...new Set(values)];
 
 // Groups the work each pull request asks for. `busy` holds the item ids an agent already works on.
 export function buildInbox({ prs, viewer }, busy = new Set()) {
@@ -87,29 +132,48 @@ export function buildInbox({ prs, viewer }, busy = new Set()) {
   const [ci, comments, review, ready] = groups;
   for (const pr of prs) {
     const item = (kind, detail) => ({ id: `${pr.number}:${kind}`, kind, pr, detail });
-    if (pr.checks.failed.length) ci.items.push(item("fix-ci", unique(pr.checks.failed.map(c => c.name)).join(", ")));
-    if (pr.threads.length) comments.items.push(item("address", `${pr.threads.length} unresolved · ${unique(pr.threads.map(t => t.author)).join(", ")}`));
-    else if (pr.decision === "CHANGES_REQUESTED") comments.items.push(item("address", "Changes requested"));
-    if (pr.author !== viewer && pr.requested.includes(viewer)) review.items.push(item("review", `by ${pr.author}`));
-    if (!pr.draft && pr.decision === "APPROVED" && pr.checks.state === "SUCCESS") ready.items.push(item("open", `by ${pr.author}`));
+    if (pr.checks.failed.length)
+      ci.items.push(item("fix-ci", unique(pr.checks.failed.map((c) => c.name)).join(", ")));
+    if (pr.threads.length)
+      comments.items.push(
+        item(
+          "address",
+          `${pr.threads.length} unresolved · ${unique(pr.threads.map((t) => t.author)).join(", ")}`,
+        ),
+      );
+    else if (pr.decision === "CHANGES_REQUESTED")
+      comments.items.push(item("address", "Changes requested"));
+    if (pr.author !== viewer && pr.requested.includes(viewer))
+      review.items.push(item("review", `by ${pr.author}`));
+    if (!pr.draft && pr.decision === "APPROVED" && pr.checks.state === "SUCCESS")
+      ready.items.push(item("open", `by ${pr.author}`));
   }
-  for (const group of groups) group.items = group.items.filter(item => !busy.has(item.id));
+  for (const group of groups) group.items = group.items.filter((item) => !busy.has(item.id));
   return groups;
 }
 
-export const squash = text => text.replace(/\s+/g, " ").trim().slice(0, bodyLimit);
+export const squash = (text) => text.replace(/\s+/g, " ").trim().slice(0, bodyLimit);
 
 function section(item) {
   const { pr } = item;
   if (item.kind === "fix-ci") {
-    const checks = pr.checks.failed.map(c => `- ${c.name}${c.url ? ` (${c.url})` : ""}`).join("\n");
+    const checks = pr.checks.failed
+      .map((c) => `- ${c.name}${c.url ? ` (${c.url})` : ""}`)
+      .join("\n");
     return `These CI checks fail:\n${checks}\n\nRead the failure logs with \`gh pr checks ${pr.number}\` and \`gh run view <run-id> --log-failed\`. Find the cause, fix it, and run the same checks locally.`;
   }
   if (item.kind === "address") {
-    const shown = pr.threads.slice(0, threadLimit)
-      .map(t => `- ${t.path}${t.line ? `:${t.line}` : ""} (${t.author}): ${squash(t.body)}`).join("\n");
-    const more = pr.threads.length > threadLimit ? `\n- …and ${pr.threads.length - threadLimit} more. Read all of them with \`gh pr view ${pr.number} --comments\`.` : "";
-    const comments = shown ? `Unresolved review comments:\n${shown}${more}` : `The reviewers requested changes. Read the reviews with \`gh pr view ${pr.number} --comments\`.`;
+    const shown = pr.threads
+      .slice(0, threadLimit)
+      .map((t) => `- ${t.path}${t.line ? `:${t.line}` : ""} (${t.author}): ${squash(t.body)}`)
+      .join("\n");
+    const more =
+      pr.threads.length > threadLimit
+        ? `\n- …and ${pr.threads.length - threadLimit} more. Read all of them with \`gh pr view ${pr.number} --comments\`.`
+        : "";
+    const comments = shown
+      ? `Unresolved review comments:\n${shown}${more}`
+      : `The reviewers requested changes. Read the reviews with \`gh pr view ${pr.number} --comments\`.`;
     return `${comments}\n\nAddress each comment. Do not reply on GitHub or resolve threads. When done, list each comment with what you changed, or why you changed nothing.`;
   }
   if (item.kind === "review") {
@@ -122,7 +186,7 @@ function section(item) {
 export function taskFor(items, repo, { push = false } = {}) {
   const { pr } = items[0];
   const intro = `Pull request #${pr.number} "${pr.title}" in ${repo} (${pr.url}), branch ${pr.branch}. This folder has that branch checked out.`;
-  const changes = items.some(item => item.kind !== "review");
+  const changes = items.some((item) => item.kind !== "review");
   const finish = !changes
     ? "Do not change code."
     : push
@@ -135,7 +199,8 @@ export function taskFor(items, repo, { push = false } = {}) {
 export function findCheckout(porcelain, branch) {
   for (const block of porcelain.split(/\n\n+/)) {
     const lines = block.split("\n");
-    if (lines.includes(`branch refs/heads/${branch}`)) return lines.find(line => line.startsWith("worktree "))?.slice(9) ?? null;
+    if (lines.includes(`branch refs/heads/${branch}`))
+      return lines.find((line) => line.startsWith("worktree "))?.slice(9) ?? null;
   }
   return null;
 }

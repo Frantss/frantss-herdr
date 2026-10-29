@@ -17,6 +17,6 @@ herdr-app do tab.new '{"name":"History","mod":"git-history","props":{"cwd":"/abs
 
 Use a configured machine name for `on` when the checkout is remote.
 
-Check changes with `herdr-app check ~/.config/herdr-app/mods/git-history`. Run the data tests with `node --test git.test.mjs graph.test.mjs` from this folder. The UI controller tests use `node --experimental-vm-modules --test ui.test.mjs`.
+Check changes with `herdr-app check ~/.config/herdr-app/mods/git-history`. From the repository root, run this panel's data and UI tests with `pnpm exec vp test mods/git-history`.
 
 `git.js` reads Git through an injected executor. `graph.js` assigns lanes without host APIs. `main.js` handles native rendering and per-copy state. The graph algorithm is adapted from the local `git-graph-claude-mod` project. Personal mod files survive Herdr updates; its generated type files describe the installed API.

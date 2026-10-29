@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const binary = process.env.HERDR_APP_BIN || "herdr-app";
 for (const group of ["layouts", "themes"])
-  for (const name of readdirSync(join(root, group)).filter(name => name.endsWith(".json")))
+  for (const name of readdirSync(join(root, group)).filter((name) => name.endsWith(".json")))
     JSON.parse(readFileSync(join(root, group, name), "utf8"));
 
 const failed = [];

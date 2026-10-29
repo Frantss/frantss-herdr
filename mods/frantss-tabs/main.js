@@ -3,32 +3,56 @@ import { h_flex } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, nextCommand } from "herdr";
 
 // The frantss rail's status dot: working pulses like the site's live dot, blocked faster.
-const dot = (t, status) => div().size(6).rounded(3).flex_none().bg(t[status] ?? t.dim)
-  .when(status === "working", e => e.loop("opacity", { from: 0.35, to: 1, period: 2400 }))
-  .when(status === "blocked", e => e.loop("opacity", { from: 0.35, to: 1, period: 900 }));
+const dot = (t, status) =>
+  div()
+    .size(6)
+    .rounded(3)
+    .flex_none()
+    .bg(t[status] ?? t.dim)
+    .when(status === "working", (e) => e.loop("opacity", { from: 0.35, to: 1, period: 2400 }))
+    .when(status === "blocked", (e) => e.loop("opacity", { from: 0.35, to: 1, period: 900 }));
 
 // The frantss rail's thread title (a mod can't import another's code): what a program says it is
 // doing in its terminal title, spinner glyphs gone; null for paths, user@host or its own name.
 function threadTitle(title, program) {
   const live = (title ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
-  const telling = live && live !== program?.name && live.toLowerCase() !== program?.key && !/^[~/]|^[A-Za-z]:\\/.test(live) && !live.includes("@");
+  const telling =
+    live &&
+    live !== program?.name &&
+    live.toLowerCase() !== program?.key &&
+    !/^[~/]|^[A-Za-z]:\\/.test(live) &&
+    !live.includes("@");
   return telling ? live : null;
 }
 
 // An unnamed tab is called after its agent's thread, else its program, in lower case.
 function tabName(c, ps = panes()) {
   if (c.named) return c.name;
-  const lead = ps.find(p => p.tab === c.id && p.program?.agent) ?? ps.find(p => p.tab === c.id);
-  return (threadTitle(lead?.title, lead?.program) ?? lead?.program?.name ?? "terminal").toLowerCase();
+  const lead = ps.find((p) => p.tab === c.id && p.program?.agent) ?? ps.find((p) => p.tab === c.id);
+  return (
+    threadTitle(lead?.title, lead?.program) ??
+    lead?.program?.name ??
+    "terminal"
+  ).toLowerCase();
 }
 
 // The frantss rail's space name: the name you gave it, else its branch, else Herdr's.
-const spaceName = s => s.named ? s.name : s.branch ?? s.name;
+const spaceName = (s) => (s.named ? s.name : (s.branch ?? s.name));
 
 // Herdr's own rename prompt starts from the stored name (a number for an unnamed tab, the repo for an
 // unnamed space); this one starts from the name shown. `what`: "tab" or "space".
-const rename = (what, id, name) => openOverlay({ mod: "prompt", kind: "dialog", width: 400, height: 190,
-  props: { title: `rename ${what}`, value: name, command: { name: `${what}.rename`, args: { id } } } });
+const rename = (what, id, name) =>
+  openOverlay({
+    mod: "prompt",
+    kind: "dialog",
+    width: 400,
+    height: 190,
+    props: {
+      title: `rename ${what}`,
+      value: name,
+      command: { name: `${what}.rename`, args: { id } },
+    },
+  });
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -47,7 +71,8 @@ export default class Tabs extends View {
     cx.spawn(async () => {
       for (;;) {
         const command = await nextCommand();
-        const space = spaces().find(s => s.active), tab = space?.tabs.find(c => c.active);
+        const space = spaces().find((s) => s.active),
+          tab = space?.tabs.find((c) => c.active);
         if (command === "rename" && tab) rename("tab", tab.id, tabName(tab));
         if (command === "rename-space" && space) rename("space", space.id, spaceName(space));
       }
@@ -58,16 +83,20 @@ export default class Tabs extends View {
   // (closed if it never had one), and opening or closing it records it.
   syncPanel(space, panel, body, enabled) {
     if (!space || !panel) return;
-    const now = panel.hidden ? null : body?.active ?? null;
+    const now = panel.hidden ? null : (body?.active ?? null);
     if (space.id !== this.space) {
       const first = this.space === undefined;
-      this.space = space.id; this.pending = null;
+      this.space = space.id;
+      this.pending = null;
       if (!(first && !(space.id in this.panels))) {
-        const stored = this.panels[space.id] ?? null, want = enabled.includes(stored) ? stored : null;
+        const stored = this.panels[space.id] ?? null,
+          want = enabled.includes(stored) ? stored : null;
         if (want !== now) {
           this.pending = { want, until: Date.now() + 1000 };
-          if (want) { run("layout.select", { stack: "panel-body", child: want }); run("layout.show", { id: "panel" }); }
-          else run("layout.hide", { id: "panel" });
+          if (want) {
+            run("layout.select", { stack: "panel-body", child: want });
+            run("layout.show", { id: "panel" });
+          } else run("layout.hide", { id: "panel" });
           return;
         }
       }
@@ -84,64 +113,203 @@ export default class Tabs extends View {
 
   render() {
     const t = theme();
-    const space = spaces().find(p => p.active);
+    const space = spaces().find((p) => p.active);
     const shown = space?.tabs ?? [];
     const stop = (_e, cx) => cx.stop_propagation();
-    const button = (id, label, tooltip, action) => div().id(id).tooltip(tooltip).size(24).flex_none().cursor_pointer().flex().items_center().justify_center().rounded(3).text_size(12).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
-      .on_mouse_down("left", stop).on_click(action).child(label);
+    const button = (id, label, tooltip, action) =>
+      div()
+        .id(id)
+        .tooltip(tooltip)
+        .size(24)
+        .flex_none()
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(3)
+        .text_size(12)
+        .text_color(t.dim)
+        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .on_mouse_down("left", stop)
+        .on_click(action)
+        .child(label);
     const item = (c, i) => {
-      const program = (panes().find(p => p.tab === c.id && p.program?.agent) ?? panes().find(p => p.tab === c.id))?.program;
+      const program = (
+        panes().find((p) => p.tab === c.id && p.program?.agent) ??
+        panes().find((p) => p.tab === c.id)
+      )?.program;
       const name = tabName(c);
       // Like a rail row: the current tab is marked with ❯ and bright text rather than a raised box.
-      return h_flex().id(`tab-${c.id}`).h(24).px(8).gap(6).rounded(3).items_center().flex_none().text_size(12).cursor_pointer()
-        .text_color(c.active ? t.foreground : t.muted)
-        .hover(s => s.text_color(t.foreground))
-        .child(div().w(10).flex_none().text_color(t.accent).child(c.active ? "❯" : ""))
-        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) rename("tab", c.id, name); })
-        .on_mouse_up("left", () => {
-          const from = this.pressed; this.pressed = null;
-          if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex(x => x.id === c.id) + 1 });
-          else run("tab.select", { id: c.id });
-        })
-        .on_mouse_down("right", () => openOverlay({ mod: "frantss-menu", kind: "popup", width: 320, props: { tab: "tab", target: { id: c.id, space: space.id, name } } }))
-        .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
-        .child(div().max_w(170).truncate().child(c.zoomed ? `${name} Z` : name))
-        // Every agent tab shows its status, idle (grey) too; a tab with no agent has none.
-        .when(Boolean(c.status), el => el.child(dot(t, c.status)))
-        // Every tab keeps room for the close button, so selecting one doesn't change its width.
-        .child(c.active
-          ? div().id(`close-${c.id}`).tooltip("Close tab").size(12).flex_none().cursor_pointer().text_color(t.dim).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); }).child(svg("mods/pane/close.svg").size(12))
-          : div().size(12).flex_none());
+      return (
+        h_flex()
+          .id(`tab-${c.id}`)
+          .h(24)
+          .px(8)
+          .gap(6)
+          .rounded(3)
+          .items_center()
+          .flex_none()
+          .text_size(12)
+          .cursor_pointer()
+          .text_color(c.active ? t.foreground : t.muted)
+          .hover((s) => s.text_color(t.foreground))
+          .child(
+            div()
+              .w(10)
+              .flex_none()
+              .text_color(t.accent)
+              .child(c.active ? "❯" : ""),
+          )
+          .on_mouse_down("left", (e, cx) => {
+            cx.stop_propagation();
+            this.pressed = i;
+            if (e.click_count === 2) rename("tab", c.id, name);
+          })
+          .on_mouse_up("left", () => {
+            const from = this.pressed;
+            this.pressed = null;
+            if (from !== null && from !== i)
+              run("tab.move", {
+                id: shown[from].id,
+                index: space.tabs.findIndex((x) => x.id === c.id) + 1,
+              });
+            else run("tab.select", { id: c.id });
+          })
+          .on_mouse_down("right", () =>
+            openOverlay({
+              mod: "frantss-menu",
+              kind: "popup",
+              width: 320,
+              props: { tab: "tab", target: { id: c.id, space: space.id, name } },
+            }),
+          )
+          .when(Boolean(program?.icon), (el) =>
+            el.child(
+              program.tint
+                ? svg(program.icon).size(14).text_color(t.muted)
+                : image(program.icon).size(14),
+            ),
+          )
+          .child(
+            div()
+              .max_w(170)
+              .truncate()
+              .child(c.zoomed ? `${name} Z` : name),
+          )
+          // Every agent tab shows its status, idle (grey) too; a tab with no agent has none.
+          .when(Boolean(c.status), (el) => el.child(dot(t, c.status)))
+          // Every tab keeps room for the close button, so selecting one doesn't change its width.
+          .child(
+            c.active
+              ? div()
+                  .id(`close-${c.id}`)
+                  .tooltip("Close tab")
+                  .size(12)
+                  .flex_none()
+                  .cursor_pointer()
+                  .text_color(t.dim)
+                  .on_mouse_down("left", stop)
+                  .on_click((_e, cx) => {
+                    cx.stop_propagation();
+                    run("tab.close", { id: c.id });
+                  })
+                  .child(svg("mods/pane/close.svg").size(12))
+              : div().size(12).flex_none(),
+          )
+      );
     };
-    const panel = find(layout(), "panel"), body = find(layout(), "panel-body");
+    const panel = find(layout(), "panel"),
+      body = find(layout(), "panel-body");
     // The welcome screen picks Files and Changes; custom panels stay available.
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "agent-graph", "git-history", "github"];
+    const enabled = [
+      ...(shared("workspace.panels") ?? ["files", "changes"]),
+      "agent-graph",
+      "git-history",
+      "github",
+    ];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
-      return h_flex().id(`panel-${id}`).h(24).px(8).gap(6).flex_none().items_center().rounded(3)
-        .text_size(12).cursor_pointer().when(on, el => el.bg(t.selected)).text_color(on ? t.foreground : t.muted)
-        .hover(s => s.text_color(t.foreground)).on_mouse_down("left", stop)
+      return h_flex()
+        .id(`panel-${id}`)
+        .h(24)
+        .px(8)
+        .gap(6)
+        .flex_none()
+        .items_center()
+        .rounded(3)
+        .text_size(12)
+        .cursor_pointer()
+        .when(on, (el) => el.bg(t.selected))
+        .text_color(on ? t.foreground : t.muted)
+        .hover((s) => s.text_color(t.foreground))
+        .on_mouse_down("left", stop)
         .on_click(() => {
           if (on) run("layout.hide", { id: "panel" });
-          else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
-        }).child(svg(icon).size(14)).child(label);
+          else {
+            run("layout.select", { stack: "panel-body", child: id });
+            run("layout.show", { id: "panel" });
+          }
+        })
+        .child(svg(icon).size(14))
+        .child(label);
     };
     // No fill: the layout's dot texture shows through, as behind the rail and top bar.
-    return h_flex().size_full().min_w(0).px(10).gap(3).items_center().border_b(1).border_color(t.border)
-      .on_mouse_up("left", () => { this.pressed = null; })
-      .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
-      // + sits in the scrolling strip, right after the last tab. A 1px rule divides one tab from the next.
-      .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar()
-        .children(shown.flatMap((c, i) => i === 0 ? [item(c, i)] : [div().w(1).h(14).flex_none().bg(t.border), item(c, i)]))
-        .child(button("tab-new", "+", "New tab", () => openOverlay({ mod: "frantss-new-menu", kind: "popup", width: 250, height: 512 }))))
-      .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
-      .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
-      .child(panelButton("agent-graph", "Agents", "mods/agent-graph/graph.svg"))
-      .child(panelButton("git-history", "History", "mods/git-history/history.svg"))
-      .child(panelButton("github", "GitHub", "mods/github/github.svg"))
-      .when(window()?.buttons, el => el.child(button("minimize", "−", "Minimize", () => run("window.minimize")))
-        .child(button("maximize", "□", "Maximize", () => run("window.maximize")))
-        .child(button("close-window", svg("mods/pane/close.svg").size(13), "Close window", () => run("window.close"))));
+    return (
+      h_flex()
+        .size_full()
+        .min_w(0)
+        .px(10)
+        .gap(3)
+        .items_center()
+        .border_b(1)
+        .border_color(t.border)
+        .on_mouse_up("left", () => {
+          this.pressed = null;
+        })
+        .on_scroll_wheel((e) => {
+          if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next");
+        })
+        // + sits in the scrolling strip, right after the last tab. A 1px rule divides one tab from the next.
+        .child(
+          h_flex()
+            .id("tab-scroll")
+            .flex_1()
+            .min_w(0)
+            .h_full()
+            .items_center()
+            .gap(3)
+            .overflow_x_scrollbar()
+            .children(
+              shown.flatMap((c, i) =>
+                i === 0 ? [item(c, i)] : [div().w(1).h(14).flex_none().bg(t.border), item(c, i)],
+              ),
+            )
+            .child(
+              button("tab-new", "+", "New tab", () =>
+                openOverlay({ mod: "frantss-new-menu", kind: "popup", width: 250, height: 512 }),
+              ),
+            ),
+        )
+        .when(enabled.includes("files"), (el) =>
+          el.child(panelButton("files", "Files", "mods/files/file.svg")),
+        )
+        .when(enabled.includes("changes"), (el) =>
+          el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")),
+        )
+        .child(panelButton("agent-graph", "Agents", "mods/agent-graph/graph.svg"))
+        .child(panelButton("git-history", "History", "mods/git-history/history.svg"))
+        .child(panelButton("github", "GitHub", "mods/github/github.svg"))
+        .when(window()?.buttons, (el) =>
+          el
+            .child(button("minimize", "−", "Minimize", () => run("window.minimize")))
+            .child(button("maximize", "□", "Maximize", () => run("window.maximize")))
+            .child(
+              button("close-window", svg("mods/pane/close.svg").size(13), "Close window", () =>
+                run("window.close"),
+              ),
+            ),
+        )
+    );
   }
 }

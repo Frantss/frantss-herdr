@@ -5,12 +5,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export function forwardChange(root, appHome, filename) {
   const parts = filename.split(sep);
-  if (parts.some(part => part.startsWith(".") || part === "node_modules")) return false;
+  if (parts.some((part) => part.startsWith(".") || part === "node_modules")) return false;
   if (/\.d\.ts$|\.test\.mjs$|(^|\/)jsconfig\.json$/.test(filename)) return false;
   const [group, name] = parts;
   if (!["mods", "layouts", "themes"].includes(group) || !name) return false;
   if (group !== "mods" && (parts.length !== 2 || !name.endsWith(".json"))) return false;
-  const relative = join(group, name), target = join(appHome, relative);
+  const relative = join(group, name),
+    target = join(appHome, relative);
   if (!lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink()) return false;
   if (resolve(dirname(target), readlinkSync(target)) !== resolve(root, relative)) return false;
   const now = new Date();

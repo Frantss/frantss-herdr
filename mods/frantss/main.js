@@ -1,6 +1,20 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { agents, spaces, panes, props, run, theme, setAgentOrder, openOverlay, exec, shared, setShared, pickFolder, knownAgents } from "herdr";
+import {
+  agents,
+  spaces,
+  panes,
+  props,
+  run,
+  theme,
+  setAgentOrder,
+  openOverlay,
+  exec,
+  shared,
+  setShared,
+  pickFolder,
+  knownAgents,
+} from "herdr";
 
 const GROUPS = [
   { status: "blocked", label: "NEEDS YOU" },
@@ -19,21 +33,46 @@ const GLIDE = { response: 300, damping: 1 };
 const glide = (e, y) => e.absolute().top(y).spring("top", GLIDE);
 
 // `status`: an agent state, which colors the label (theme colors named working, blocked, done, idle).
-const label = (t, text, status) => div().flex_none().text_size(10).text_color(t[status] ?? t.dim).child(text);
-const icon = (t, program, size = 14) => !program?.icon ? null
-  : (program.tint ? svg(program.icon).text_color(t.muted) : image(program.icon)).size(size).flex_none();
+const label = (t, text, status) =>
+  div()
+    .flex_none()
+    .text_size(10)
+    .text_color(t[status] ?? t.dim)
+    .child(text);
+const icon = (t, program, size = 14) =>
+  !program?.icon
+    ? null
+    : (program.tint ? svg(program.icon).text_color(t.muted) : image(program.icon))
+        .size(size)
+        .flex_none();
 // Working pulses like the site's live dot; blocked pulses faster. A pulse keeps the window redrawing,
 // so a dot standing for nothing stays still.
-const dot = (t, status, pulse = true) => div().size(6).rounded(3).flex_none().bg(t[status] ?? t.dim)
-  .when(pulse && status === "working", e => e.loop("opacity", { from: 0.35, to: 1, period: 2400 }))
-  .when(pulse && status === "blocked", e => e.loop("opacity", { from: 0.35, to: 1, period: 900 }));
+const dot = (t, status, pulse = true) =>
+  div()
+    .size(6)
+    .rounded(3)
+    .flex_none()
+    .bg(t[status] ?? t.dim)
+    .when(pulse && status === "working", (e) =>
+      e.loop("opacity", { from: 0.35, to: 1, period: 2400 }),
+    )
+    .when(pulse && status === "blocked", (e) =>
+      e.loop("opacity", { from: 0.35, to: 1, period: 900 }),
+    );
 
 // Opens the right-click menu with the props Herdr gives it: `tab` names which menu, `target` what it acts on.
 // A popup is as tall as its items; height is only the most.
-const menu = (tab, target) => openOverlay({ mod: "frantss-menu", kind: "popup", width: 320, height: 260, props: { tab, target } });
+const menu = (tab, target) =>
+  openOverlay({
+    mod: "frantss-menu",
+    kind: "popup",
+    width: 320,
+    height: 260,
+    props: { tab, target },
+  });
 
 // A space's or tab's status dot, only when something in it is going on.
-const statusDot = (t, status) => status && status !== "idle" ? dot(t, status) : null;
+const statusDot = (t, status) => (status && status !== "idle" ? dot(t, status) : null);
 // The rail's + is this wide, so rows without one can keep their dots in the same column.
 const PLUS_WIDTH = 14;
 const URGENT = ["blocked", "done", "working"];
@@ -43,14 +82,19 @@ const URGENT = ["blocked", "done", "working"];
 // telling (the agents mod's rule). Null when there is nothing telling.
 function threadTitle(title, program) {
   const live = (title ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
-  const telling = live && live !== program?.name && live.toLowerCase() !== program?.key && !/^[~/]|^[A-Za-z]:\\/.test(live) && !live.includes("@");
+  const telling =
+    live &&
+    live !== program?.name &&
+    live.toLowerCase() !== program?.key &&
+    !/^[~/]|^[A-Za-z]:\\/.test(live) &&
+    !live.includes("@");
   return telling ? live : null;
 }
 
-const base = path => path.replace(/\/+$/, "").split("/").pop();
+const base = (path) => path.replace(/\/+$/, "").split("/").pop();
 // A repo's own folder from its git folder (`frantssb/.git`); a bare repo is its git folder (`frantssb.git`).
-const repoRoot = gitDir => gitDir.replace(/\/\.git$/, "");
-const repoName = gitDir => base(repoRoot(gitDir)).replace(/\.git$/, "");
+const repoRoot = (gitDir) => gitDir.replace(/\/\.git$/, "");
+const repoName = (gitDir) => base(repoRoot(gitDir)).replace(/\.git$/, "");
 
 // The workspaces you added, kept in shared state (persisted, and the workspace menu changes it):
 // [{ folder }], folders on this machine. They stay in the rail when none of their spaces is open.
@@ -62,9 +106,10 @@ const AGENTS = "frantss.agents";
 async function refreshAgents(machine) {
   const found = await knownAgents({ on: machine || null });
   const known = shared(AGENTS) ?? {};
-  if (JSON.stringify(found) !== JSON.stringify(known[machine])) setShared(AGENTS, { ...known, [machine]: found });
+  if (JSON.stringify(found) !== JSON.stringify(known[machine]))
+    setShared(AGENTS, { ...known, [machine]: found });
 }
-const folderKey = folder => JSON.stringify([null, folder]);
+const folderKey = (folder) => JSON.stringify([null, folder]);
 // Each space's workspace key, published by the rail for other panels (the agent graph's Workspace filter).
 const SPACE_WORKSPACES = "frantss.spaceWorkspaces";
 // What you closed in the rail, kept in shared state (persisted): sections by id ("spaces" or an agent
@@ -72,36 +117,57 @@ const SPACE_WORKSPACES = "frantss.spaceWorkspaces";
 // you chose either way: "space:<id>:closed" or "space:<id>:open".
 const COLLAPSED = "frantss.collapsed";
 const collapsedIds = () => shared(COLLAPSED) ?? [];
-const toggleCollapsed = id => setShared(COLLAPSED, collapsedIds().includes(id)
-  ? collapsedIds().filter(other => other !== id) : [...collapsedIds(), id]);
-const chevron = (t, collapsed) => svg(`mods/frantss-files/chevron-${collapsed ? "right" : "down"}.svg`).size(10).flex_none().text_color(t.dim);
+const toggleCollapsed = (id) =>
+  setShared(
+    COLLAPSED,
+    collapsedIds().includes(id)
+      ? collapsedIds().filter((other) => other !== id)
+      : [...collapsedIds(), id],
+  );
+const chevron = (t, collapsed) =>
+  svg(`mods/frantss-files/chevron-${collapsed ? "right" : "down"}.svg`)
+    .size(10)
+    .flex_none()
+    .text_color(t.dim);
 // Where a space is now, as the spaces mod tells it: its first terminal's live folder, else where it was made.
 function place(s, ps) {
-  const tabs = new Set(s.tabs.map(tab => tab.id));
-  return JSON.stringify([s.machine ?? null, ps.find(p => tabs.has(p.tab) && p.cwd)?.cwd || s.folder]);
+  const tabs = new Set(s.tabs.map((tab) => tab.id));
+  return JSON.stringify([
+    s.machine ?? null,
+    ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder,
+  ]);
 }
 
 // An unnamed tab is called after its agent's thread, else its agent or first program, in lower case, as
 // the tab bar does.
 function tabName(tab, ps = panes()) {
   if (tab.named) return tab.name;
-  const lead = ps.find(p => p.tab === tab.id && p.program?.agent) ?? ps.find(p => p.tab === tab.id);
-  return (threadTitle(lead?.title, lead?.program) ?? lead?.program?.name ?? "terminal").toLowerCase();
+  const lead =
+    ps.find((p) => p.tab === tab.id && p.program?.agent) ?? ps.find((p) => p.tab === tab.id);
+  return (
+    threadTitle(lead?.title, lead?.program) ??
+    lead?.program?.name ??
+    "terminal"
+  ).toLowerCase();
 }
 
 // "Personal herdr layout" -> "personal-herdr-layout", as the site's paths read.
-const slugify = text => (text ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "");
+const slugify = (text) =>
+  (text ?? "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
 
 // A space you named shows that name; else its branch, else Herdr's name for it (its repo or folder).
-const spaceName = s => s.named ? s.name : s.branch ?? s.name;
+const spaceName = (s) => (s.named ? s.name : (s.branch ?? s.name));
 
 function activePlace() {
-  const space = spaces().find(s => s.active);
-  return { space, tab: space?.tabs.find(t => t.active) };
+  const space = spaces().find((s) => s.active);
+  return { space, tab: space?.tabs.find((t) => t.active) };
 }
 
 export default class Frantss extends View {
-  init(_p, cx) {
+  init(_p, _cx) {
     // The rail and the breadcrumb both name workspaces by repo.
     if (props()?.role !== "rail" && props()?.role !== "top") return;
     this.repos = {}; // place() -> its repo's git folder, null outside a repo; a folder's repo doesn't change
@@ -109,7 +175,8 @@ export default class Frantss extends View {
     // menu's worktree items, handed to it so it opens without asking git itself.
     this.checkouts = {};
     if (props()?.role === "rail")
-      for (const machine of new Set(["", ...spaces().map(s => s.machine ?? "")])) refreshAgents(machine).catch(() => {});
+      for (const machine of new Set(["", ...spaces().map((s) => s.machine ?? "")]))
+        refreshAgents(machine).catch(() => {});
   }
 
   // Looks up places it hasn't seen. Render runs whenever spaces, panes or shared state change, so
@@ -117,7 +184,10 @@ export default class Frantss extends View {
   track(cx) {
     if (!this.repos) return;
     const ps = panes();
-    const keys = [...spaces().map(s => place(s, ps)), ...savedWorkspaces().map(w => folderKey(w.folder))];
+    const keys = [
+      ...spaces().map((s) => place(s, ps)),
+      ...savedWorkspaces().map((w) => folderKey(w.folder)),
+    ];
     for (const key of keys) if (!(key in this.repos)) this.lookUp(key, cx);
     if (props()?.role === "rail") this.publishWorkspaces(ps);
   }
@@ -129,20 +199,30 @@ export default class Frantss extends View {
   }
 
   publishWorkspaces(ps) {
-    const bySpace = Object.fromEntries(spaces().map(s => [s.id, this.workspaceKey(s, ps)]));
-    if (JSON.stringify(bySpace) !== JSON.stringify(shared(SPACE_WORKSPACES))) setShared(SPACE_WORKSPACES, bySpace);
+    const bySpace = Object.fromEntries(spaces().map((s) => [s.id, this.workspaceKey(s, ps)]));
+    if (JSON.stringify(bySpace) !== JSON.stringify(shared(SPACE_WORKSPACES)))
+      setShared(SPACE_WORKSPACES, bySpace);
   }
 
   // The git folder a place shares with its worktrees. A machine that can't answer groups by folder.
   lookUp(key, cx) {
     this.repos[key] = null;
     const [on, cwd] = JSON.parse(key);
-    cx.spawn(async cx => {
+    cx.spawn(async (cx) => {
       try {
-        const r = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
+        const r = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+          cwd,
+          on,
+        });
         if (r.code === 0) this.repos[key] = r.stdout.trim();
-        const top = r.code === 0 ? await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }) : null;
-        this.checkouts[key] = top?.code === 0 ? (this.repos[key] === `${top.stdout.trim()}/.git` ? "main" : "linked") : null;
+        const top =
+          r.code === 0 ? await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }) : null;
+        this.checkouts[key] =
+          top?.code === 0
+            ? this.repos[key] === `${top.stdout.trim()}/.git`
+              ? "main"
+              : "linked"
+            : null;
       } catch {}
       cx.notify();
     });
@@ -155,8 +235,15 @@ export default class Frantss extends View {
     for (const s of all) {
       const repo = this.repos?.[place(s, ps)];
       const key = this.workspaceKey(s, ps);
-      if (!groups.has(key)) groups.set(key, { key, repo: Boolean(repo), name: repo ? repoName(repo) : s.name,
-        folder: repo ? repoRoot(repo) : JSON.parse(place(s, ps))[1], local: !s.machine, spaces: [] });
+      if (!groups.has(key))
+        groups.set(key, {
+          key,
+          repo: Boolean(repo),
+          name: repo ? repoName(repo) : s.name,
+          folder: repo ? repoRoot(repo) : JSON.parse(place(s, ps))[1],
+          local: !s.machine,
+          spaces: [],
+        });
       groups.get(key).spaces.push(s);
     }
     return [...groups.values()];
@@ -165,46 +252,108 @@ export default class Frantss extends View {
   // A saved workspace keyed as its spaces' group is (its repo, else its folder), so they find each other.
   workspace(w) {
     const repo = this.repos?.[folderKey(w.folder)];
-    return { ...w, key: repo ? JSON.stringify([null, repo]) : folderKey(w.folder), repo: Boolean(repo), name: repo ? repoName(repo) : base(w.folder) };
+    return {
+      ...w,
+      key: repo ? JSON.stringify([null, repo]) : folderKey(w.folder),
+      repo: Boolean(repo),
+      name: repo ? repoName(repo) : base(w.folder),
+    };
   }
 
   top(t, list) {
     const { space, tab } = activePlace();
     // Like the site's path line, faint crumbs joined by "/" with the current one accented, naming where
     // you stand in the rail: workspace / branch / tab. Each crumb opens what it names.
-    const group = space && this.spaceGroups(spaces()).find(g => g.spaces.some(s => s.id === space.id));
-    const saved = group && savedWorkspaces().map(w => this.workspace(w)).find(w => w.key === group.key);
+    const group =
+      space && this.spaceGroups(spaces()).find((g) => g.spaces.some((s) => s.id === space.id));
+    const saved =
+      group &&
+      savedWorkspaces()
+        .map((w) => this.workspace(w))
+        .find((w) => w.key === group.key);
     const workspaceName = slugify(saved?.name ?? group?.name);
     const branchName = slugify(space && spaceName(space));
     const crumbs = [
       // A menu of apps to open its folder in (frantss-open), when it is on this machine.
-      group && { id: "workspace", text: workspaceName && `~/${workspaceName}`,
-        onClick: group.local ? () => openOverlay({ mod: "frantss-open", kind: "popup", width: 200, height: 160,
-          props: { folder: saved?.folder ?? group.folder } }) : null },
+      group && {
+        id: "workspace",
+        text: workspaceName && `~/${workspaceName}`,
+        onClick: group.local
+          ? () =>
+              openOverlay({
+                mod: "frantss-open",
+                kind: "popup",
+                width: 200,
+                height: 160,
+                props: { folder: saved?.folder ?? group.folder },
+              })
+          : null,
+      },
       // A space outside a repo is named like its workspace; one crumb says it.
-      space && branchName !== workspaceName && { id: "space", text: branchName, onClick: () => menu("space", { id: space.id, name: spaceName(space), checkout: this.checkouts?.[place(space, panes())] }) },
-      tab && { id: "tab", text: slugify(tabName(tab)), onClick: () => menu("tab", { id: tab.id, space: space.id, name: tabName(tab) }) },
-    ].filter(crumb => crumb?.text);
+      space &&
+        branchName !== workspaceName && {
+          id: "space",
+          text: branchName,
+          onClick: () =>
+            menu("space", {
+              id: space.id,
+              name: spaceName(space),
+              checkout: this.checkouts?.[place(space, panes())],
+            }),
+        },
+      tab && {
+        id: "tab",
+        text: slugify(tabName(tab)),
+        onClick: () => menu("tab", { id: tab.id, space: space.id, name: tabName(tab) }),
+      },
+    ].filter((crumb) => crumb?.text);
     // The bar drags the window, so a crumb with an action keeps its press to itself.
-    const crumbLink = (crumb, current) => div().id(`crumb-${crumb.id}`)
-      .when(current, e => e.min_w(0).truncate().text_color(t.accent)).when(!current, e => e.flex_none())
-      .when(Boolean(crumb.onClick), e => e.cursor_pointer().when(!current, e => e.hover(s => s.text_color(t.foreground)))
-        .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(crumb.onClick))
-      .child(crumb.text);
-    const path = h_flex().flex_1().min_w(0).items_center().text_color(t.dim)
-      .children(crumbs.flatMap((crumb, i) => i === crumbs.length - 1
-        ? [crumbLink(crumb, true)]
-        : [crumbLink(crumb, false), div().flex_none().child("/")]));
+    const crumbLink = (crumb, current) =>
+      div()
+        .id(`crumb-${crumb.id}`)
+        .when(current, (e) => e.min_w(0).truncate().text_color(t.accent))
+        .when(!current, (e) => e.flex_none())
+        .when(Boolean(crumb.onClick), (e) =>
+          e
+            .cursor_pointer()
+            .when(!current, (e) => e.hover((s) => s.text_color(t.foreground)))
+            .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+            .on_click(crumb.onClick),
+        )
+        .child(crumb.text);
+    const path = h_flex()
+      .flex_1()
+      .min_w(0)
+      .items_center()
+      .text_color(t.dim)
+      .children(
+        crumbs.flatMap((crumb, i) =>
+          i === crumbs.length - 1
+            ? [crumbLink(crumb, true)]
+            : [crumbLink(crumb, false), div().flex_none().child("/")],
+        ),
+      );
     // Room for macOS's window buttons, which stay drawn over the bar.
-    return h_flex().size_full().pl(96).pr(16).items_center().gap(8).text_size(12)
+    return h_flex()
+      .size_full()
+      .pl(96)
+      .pr(16)
+      .items_center()
+      .gap(8)
+      .text_size(12)
       .child(path)
-      .children(GROUPS.map(g => {
-        const count = list.filter(a => a.status === g.status).length;
-        return h_flex().items_center().gap(6).ml(10)
-          .child(dot(t, g.status, count > 0))
-          .child(label(t, g.label, g.status))
-          .child(div().text_size(10).text_color(t.muted).child(String(count)));
-      }));
+      .children(
+        GROUPS.map((g) => {
+          const count = list.filter((a) => a.status === g.status).length;
+          return h_flex()
+            .items_center()
+            .gap(6)
+            .ml(10)
+            .child(dot(t, g.status, count > 0))
+            .child(label(t, g.label, g.status))
+            .child(div().text_size(10).text_color(t.muted).child(String(count)));
+        }),
+      );
   }
 
   // One rail row: "❯ label ······ value" with a `value`, else "❯ label" with an optional `end` beside it.
@@ -213,142 +362,291 @@ export default class Frantss extends View {
   // with nothing open). `collapsed`: a chevron in the first column, pointing the way what is under the
   // row is (true closed, false open); none when undefined.
   row(t, { id, current, lit, dim, indent, lead, text, value, end, onClick, onMenu, collapsed }) {
-    return h_flex().id(id).left(0).right(0).h(RAIL.row).px(12).gap(8).items_center().text_size(12)
-      .text_color(current || lit ? t.foreground : dim ? t.dim : t.muted).hover(s => s.text_color(t.foreground))
-      .on_click(onClick)
-      .when(Boolean(onMenu), e => e.on_mouse_down("right", onMenu))
-      // The chevron sits at the row's indent, in the column a ❯ marks on other rows.
-      .child(h_flex().w(10 + (indent ?? 0)).flex_none().justify_end().when(collapsed !== undefined, e => e.child(chevron(t, collapsed))))
-      .when(lead !== false, e => e.child(lead ?? div().w(14).flex_none()))
-      .when(value === undefined, e => e.child(div().flex_1().min_w(0).truncate().child(text)))
-      .when(value !== undefined, e => e
-        .child(div().flex_none().max_w(110).truncate().child(text))
-        .child(div().flex_1().min_w(12).overflow_hidden().whitespace_nowrap().text_color(t.input).child(DOTS))
-        .child(div().flex_none().max_w(80).truncate().text_size(11).text_color(t.dim).child(value)))
-      .when(Boolean(end), e => e.child(end));
+    return (
+      h_flex()
+        .id(id)
+        .left(0)
+        .right(0)
+        .h(RAIL.row)
+        .px(12)
+        .gap(8)
+        .items_center()
+        .text_size(12)
+        .text_color(current || lit ? t.foreground : dim ? t.dim : t.muted)
+        .hover((s) => s.text_color(t.foreground))
+        .on_click(onClick)
+        .when(Boolean(onMenu), (e) => e.on_mouse_down("right", onMenu))
+        // The chevron sits at the row's indent, in the column a ❯ marks on other rows.
+        .child(
+          h_flex()
+            .w(10 + (indent ?? 0))
+            .flex_none()
+            .justify_end()
+            .when(collapsed !== undefined, (e) => e.child(chevron(t, collapsed))),
+        )
+        .when(lead !== false, (e) => e.child(lead ?? div().w(14).flex_none()))
+        .when(value === undefined, (e) => e.child(div().flex_1().min_w(0).truncate().child(text)))
+        .when(value !== undefined, (e) =>
+          e
+            .child(div().flex_none().max_w(110).truncate().child(text))
+            .child(
+              div()
+                .flex_1()
+                .min_w(12)
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_color(t.input)
+                .child(DOTS),
+            )
+            .child(
+              div().flex_none().max_w(80).truncate().text_size(11).text_color(t.dim).child(value),
+            ),
+        )
+        .when(Boolean(end), (e) => e.child(end))
+    );
   }
 
   // A section's header; clicking it opens or closes the section. `action`: a control at the header's
   // end (the workspaces' +). The title takes its status's color, else the foreground.
   header(t, { id, title, count, status, action, collapsed }) {
-    return h_flex().id(`header-${id}`).left(0).right(0).h(RAIL.header).px(12).gap(8).items_center().cursor_pointer()
+    return h_flex()
+      .id(`header-${id}`)
+      .left(0)
+      .right(0)
+      .h(RAIL.header)
+      .px(12)
+      .gap(8)
+      .items_center()
+      .cursor_pointer()
       .on_click(() => toggleCollapsed(id))
       .child(chevron(t, collapsed))
-      .child(div().flex_none().text_size(11).font_medium().text_color(t[status] ?? t.foreground).child(title))
+      .child(
+        div()
+          .flex_none()
+          .text_size(11)
+          .font_medium()
+          .text_color(t[status] ?? t.foreground)
+          .child(title),
+      )
       .child(div().text_size(11).text_color(t.muted).child(String(count)))
-      .when(Boolean(action), e => e.child(div().flex_1()).child(action));
+      .when(Boolean(action), (e) => e.child(div().flex_1()).child(action));
   }
 
   // A small "+" in the rail; it doesn't select the row it sits on.
   plus(t, id, tooltip, onClick) {
-    return div().id(id).tooltip(tooltip).w(PLUS_WIDTH).flex().justify_center().text_size(12).text_color(t.dim).cursor_pointer().hover(e => e.text_color(t.foreground))
+    return div()
+      .id(id)
+      .tooltip(tooltip)
+      .w(PLUS_WIDTH)
+      .flex()
+      .justify_center()
+      .text_size(12)
+      .text_color(t.dim)
+      .cursor_pointer()
+      .hover((e) => e.text_color(t.foreground))
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click((e, cx) => { cx.stop_propagation(); onClick(e, cx); })
+      .on_click((e, cx) => {
+        cx.stop_propagation();
+        onClick(e, cx);
+      })
       .child("+");
   }
 
   addWorkspace(cx) {
     cx.spawn(async () => {
       const folder = await pickFolder({ prompt: "Add workspace" });
-      if (folder && !savedWorkspaces().some(w => w.folder === folder)) setShared(WORKSPACES, [...savedWorkspaces(), { folder }]);
+      if (folder && !savedWorkspaces().some((w) => w.folder === folder))
+        setShared(WORKSPACES, [...savedWorkspaces(), { folder }]);
     });
   }
 
   // A marker hides in place when nothing is current, so it glides from where it was when something is again.
   marker(id, y, draw) {
     if (y !== null) this.marks[id] = y;
-    return glide(draw(div().id(id)), this.marks[id] ?? 0).opacity(y === null ? 0 : 1).transition("opacity", 150);
+    return glide(draw(div().id(id)), this.marks[id] ?? 0)
+      .opacity(y === null ? 0 : 1)
+      .transition("opacity", 150);
   }
 
   rail(t, list) {
     const all = spaces();
-    const groups = GROUPS.map(g => ({ ...g, agents: list.filter(a => a.status === g.status) }));
-    setAgentOrder(groups.flatMap(g => g.agents.map(a => a.address)));
-    const named = new Set(all.flatMap(s => s.tabs.filter(tab => tab.named).map(tab => tab.id)));
+    const groups = GROUPS.map((g) => ({ ...g, agents: list.filter((a) => a.status === g.status) }));
+    setAgentOrder(groups.flatMap((g) => g.agents.map((a) => a.address)));
+    const named = new Set(
+      all.flatMap((s) => s.tabs.filter((tab) => tab.named).map((tab) => tab.id)),
+    );
     // Each repo (or folder) is a row with its spaces under it, and each space with its tabs under it
     // until you close it; the current space is lit and the current tab marked. Rows here are bare names,
     // a status dot after. A space with one tab stands for that tab: it shows its name, takes the marker
     // and has nothing to close.
-    const standsForTab = s => s.tabs.length === 1;
+    const standsForTab = (s) => s.tabs.length === 1;
     const collapsed = collapsedIds();
-    const spaceClosed = s => collapsed.includes(`space:${s.id}:closed`) || !s.active && !collapsed.includes(`space:${s.id}:open`);
-    const toggleSpace = s => setShared(COLLAPSED, [...collapsedIds().filter(id => !id.startsWith(`space:${s.id}:`)),
-      `space:${s.id}:${spaceClosed(s) ? "open" : "closed"}`]);
+    const spaceClosed = (s) =>
+      collapsed.includes(`space:${s.id}:closed`) ||
+      (!s.active && !collapsed.includes(`space:${s.id}:open`));
+    const toggleSpace = (s) =>
+      setShared(COLLAPSED, [
+        ...collapsedIds().filter((id) => !id.startsWith(`space:${s.id}:`)),
+        `space:${s.id}:${spaceClosed(s) ? "open" : "closed"}`,
+      ]);
     // A dot left of where a workspace row's + sits, under that row's own dot.
-    const dotEnd = status => {
+    const dotEnd = (status) => {
       const statusIndicator = statusDot(t, status);
-      return statusIndicator && h_flex().gap(8).items_center().child(statusIndicator).child(div().w(PLUS_WIDTH));
+      return (
+        statusIndicator &&
+        h_flex().gap(8).items_center().child(statusIndicator).child(div().w(PLUS_WIDTH))
+      );
     };
-    const spaceRow = s => ({
-      id: `space-${s.id}`, current: s.active && standsForTab(s), lit: s.active,
-      indent: 14, lead: false, end: dotEnd(s.status), collapsed: standsForTab(s) ? undefined : spaceClosed(s),
+    const spaceRow = (s) => ({
+      id: `space-${s.id}`,
+      current: s.active && standsForTab(s),
+      lit: s.active,
+      indent: 14,
+      lead: false,
+      end: dotEnd(s.status),
+      collapsed: standsForTab(s) ? undefined : spaceClosed(s),
       text: standsForTab(s) ? tabName(s.tabs[0], ps) : spaceName(s),
-      onClick: () => standsForTab(s) ? run("space.select", { id: s.id }) : toggleSpace(s),
-      onMenu: () => menu("space", { id: s.id, name: spaceName(s), checkout: this.checkouts?.[place(s, ps)] }),
+      onClick: () => (standsForTab(s) ? run("space.select", { id: s.id }) : toggleSpace(s)),
+      onMenu: () =>
+        menu("space", { id: s.id, name: spaceName(s), checkout: this.checkouts?.[place(s, ps)] }),
     });
     const ps = panes();
-    const tabRows = s => standsForTab(s) || spaceClosed(s) ? [] : s.tabs.map(tab => ({
-      id: `tab-${tab.id}`, current: tab.active, indent: 28, lead: false, end: dotEnd(tab.status),
-      text: tabName(tab, ps),
-      onClick: () => run("tab.select", { id: tab.id }),
-      onMenu: () => menu("tab", { id: tab.id, space: s.id, name: tabName(tab, ps) }),
-    }));
-    const withTabs = s => [spaceRow(s), ...tabRows(s)];
+    const tabRows = (s) =>
+      standsForTab(s) || spaceClosed(s)
+        ? []
+        : s.tabs.map((tab) => ({
+            id: `tab-${tab.id}`,
+            current: tab.active,
+            indent: 28,
+            lead: false,
+            end: dotEnd(tab.status),
+            text: tabName(tab, ps),
+            onClick: () => run("tab.select", { id: tab.id }),
+            onMenu: () => menu("tab", { id: tab.id, space: s.id, name: tabName(tab, ps) }),
+          }));
+    const withTabs = (s) => [spaceRow(s), ...tabRows(s)];
     // A group row is a workspace: its open spaces (its own checkout and worktrees) are under it, unless
     // you closed it. Clicking opens or closes it; its + starts a thread (frantss-thread) in its own
     // checkout (not one of Herdr's worktrees), else its first space; its menu keeps or removes it
     // (frantss-workspace).
-    const newThread = (key, target) => this.plus(t, `new-${key}`, "New thread", () =>
-      openOverlay({ mod: "frantss-thread", kind: "popup", width: 260, height: 420, props: target }));
-    const workspaceMenu = (folder, saved) => openOverlay({ mod: "frantss-workspace", kind: "popup", width: 220, height: 120, props: { folder, saved } });
-    const ownCheckout = g => g.spaces.find(s => !JSON.parse(place(s, ps))[1]?.includes("/.herdr/worktrees/")) ?? g.spaces[0];
-    const workspaceClosed = g => collapsed.includes(`workspace:${g.key}`);
+    const newThread = (key, target) =>
+      this.plus(t, `new-${key}`, "New thread", () =>
+        openOverlay({
+          mod: "frantss-thread",
+          kind: "popup",
+          width: 260,
+          height: 420,
+          props: target,
+        }),
+      );
+    const workspaceMenu = (folder, saved) =>
+      openOverlay({
+        mod: "frantss-workspace",
+        kind: "popup",
+        width: 220,
+        height: 120,
+        props: { folder, saved },
+      });
+    const ownCheckout = (g) =>
+      g.spaces.find((s) => !JSON.parse(place(s, ps))[1]?.includes("/.herdr/worktrees/")) ??
+      g.spaces[0];
+    const workspaceClosed = (g) => collapsed.includes(`workspace:${g.key}`);
     const groupRow = (g, saved) => {
       const s = ownCheckout(g);
       return {
-        id: `group-${g.key}`, lit: g.spaces.some(s => s.active), lead: false, text: saved?.name ?? g.name,
+        id: `group-${g.key}`,
+        lit: g.spaces.some((s) => s.active),
+        lead: false,
+        text: saved?.name ?? g.name,
         collapsed: workspaceClosed(g),
-        end: h_flex().gap(8).items_center()
-          .child(statusDot(t, URGENT.find(st => g.spaces.some(s => s.status === st))) ?? div().w(6))
-          .child(newThread(g.key, { space: s.id, folder: JSON.parse(place(s, ps))[1], machine: s.machine, repo: g.repo })),
+        end: h_flex()
+          .gap(8)
+          .items_center()
+          .child(
+            statusDot(
+              t,
+              URGENT.find((st) => g.spaces.some((s) => s.status === st)),
+            ) ?? div().w(6),
+          )
+          .child(
+            newThread(g.key, {
+              space: s.id,
+              folder: JSON.parse(place(s, ps))[1],
+              machine: s.machine,
+              repo: g.repo,
+            }),
+          ),
         onClick: () => toggleCollapsed(`workspace:${g.key}`),
         // Only folders on this machine can be kept (the folder picker's, and new spaces', machine).
         onMenu: () => g.local && workspaceMenu(saved?.folder ?? g.folder, Boolean(saved)),
       };
     };
     // A saved workspace with nothing open: clicking opens a space in its folder.
-    const closedRow = w => ({
-      id: `group-${w.key}`, dim: true, lead: false, text: w.name,
-      end: h_flex().gap(8).items_center().child(div().w(6)).child(newThread(w.key, { folder: w.folder, repo: w.repo })),
+    const closedRow = (w) => ({
+      id: `group-${w.key}`,
+      dim: true,
+      lead: false,
+      text: w.name,
+      end: h_flex()
+        .gap(8)
+        .items_center()
+        .child(div().w(6))
+        .child(newThread(w.key, { folder: w.folder, repo: w.repo })),
       onClick: () => run("space.new", { folder: w.folder }),
       onMenu: () => workspaceMenu(w.folder, true),
     });
     const open = this.spaceGroups(all);
-    const saved = savedWorkspaces().map(w => this.workspace(w)).filter((w, i, list) => list.findIndex(o => o.key === w.key) === i);
-    const groupRows = (g, w) => [groupRow(g, w), ...(workspaceClosed(g) ? [] : g.spaces.flatMap(withTabs))];
+    const saved = savedWorkspaces()
+      .map((w) => this.workspace(w))
+      .filter((w, i, list) => list.findIndex((o) => o.key === w.key) === i);
+    const groupRows = (g, w) => [
+      groupRow(g, w),
+      ...(workspaceClosed(g) ? [] : g.spaces.flatMap(withTabs)),
+    ];
     const workspaceRows = [
-      ...saved.flatMap(w => {
-        const g = open.find(g => g.key === w.key);
+      ...saved.flatMap((w) => {
+        const g = open.find((g) => g.key === w.key);
         return g ? groupRows(g, w) : [closedRow(w)];
       }),
-      ...open.filter(g => !saved.some(w => w.key === g.key)).flatMap(g => groupRows(g, null)),
+      ...open.filter((g) => !saved.some((w) => w.key === g.key)).flatMap((g) => groupRows(g, null)),
     ];
     const sections = [
-      { id: "spaces", title: "WORKSPACES", count: saved.length + open.filter(g => !saved.some(w => w.key === g.key)).length,
-        action: this.plus(t, "add-workspace", "Add workspace", (_e, cx) => this.addWorkspace(cx)), rows: workspaceRows },
-      ...groups.map(g => ({ id: g.status, title: g.label, status: g.status, rows: g.agents.map(a => ({
-        id: `agent-${a.address}`, current: a.focused, lead: icon(t, a.program), agent: true,
-        text: named.has(a.tab) ? a.tab_name : (threadTitle(a.title, a.program) ?? a.program.name).toLowerCase(), value: a.space_name,
-        onClick: () => run("agent.focus", { terminal: a.address }),
-        onMenu: () => menu("pane", { pane: a.pane, terminal: a.address }),
-      })) })),
+      {
+        id: "spaces",
+        title: "WORKSPACES",
+        count: saved.length + open.filter((g) => !saved.some((w) => w.key === g.key)).length,
+        action: this.plus(t, "add-workspace", "Add workspace", (_e, cx) => this.addWorkspace(cx)),
+        rows: workspaceRows,
+      },
+      ...groups.map((g) => ({
+        id: g.status,
+        title: g.label,
+        status: g.status,
+        rows: g.agents.map((a) => ({
+          id: `agent-${a.address}`,
+          current: a.focused,
+          lead: icon(t, a.program),
+          agent: true,
+          text: named.has(a.tab)
+            ? a.tab_name
+            : (threadTitle(a.title, a.program) ?? a.program.name).toLowerCase(),
+          value: a.space_name,
+          onClick: () => run("agent.focus", { terminal: a.address }),
+          onMenu: () => menu("pane", { pane: a.pane, terminal: a.address }),
+        })),
+      })),
     ];
 
     const items = [];
-    let y = RAIL.pad, gap = 0, spaceY = null, agentY = null;
+    let y = RAIL.pad,
+      gap = 0,
+      spaceY = null,
+      agentY = null;
     for (const s of sections) {
       const closed = collapsed.includes(s.id);
-      items.push(glide(this.header(t, { ...s, count: s.count ?? s.rows.length, collapsed: closed }), y));
+      items.push(
+        glide(this.header(t, { ...s, count: s.count ?? s.rows.length, collapsed: closed }), y),
+      );
       y += RAIL.header + RAIL.rowGap;
       for (const r of closed ? [] : s.rows) {
         items.push(glide(this.row(t, r), y));
@@ -361,24 +659,56 @@ export default class Frantss extends View {
     }
 
     this.marks ??= {};
-    const chevron = e => e.left(12).h(RAIL.row).flex().items_center().text_size(12).text_color(t.accent).child("❯");
-    return v_flex().id("frantss-rail").size_full().overflow_y_scrollbar()
-      .child(div().relative().w_full().flex_none().h(y - gap + RAIL.pad)
-        .children(items)
-        .child(this.marker("mark-space", spaceY, chevron))
-        .child(this.marker("mark-agent", agentY, chevron))
-        // The site's outline bar: one accent bar on the rail's right rule, beside the focused agent.
-        .child(this.marker("mark-bar", agentY, e => e.right(0).w(2).h(RAIL.row).bg(t.accent))));
+    const chevron = (e) =>
+      e.left(12).h(RAIL.row).flex().items_center().text_size(12).text_color(t.accent).child("❯");
+    return v_flex()
+      .id("frantss-rail")
+      .size_full()
+      .overflow_y_scrollbar()
+      .child(
+        div()
+          .relative()
+          .w_full()
+          .flex_none()
+          .h(y - gap + RAIL.pad)
+          .children(items)
+          .child(this.marker("mark-space", spaceY, chevron))
+          .child(this.marker("mark-agent", agentY, chevron))
+          // The site's outline bar: one accent bar on the rail's right rule, beside the focused agent.
+          .child(this.marker("mark-bar", agentY, (e) => e.right(0).w(2).h(RAIL.row).bg(t.accent))),
+      );
   }
 
   pane(t) {
-    const pane = panes().find(p => p.pane === props().pane);
+    const pane = panes().find((p) => p.pane === props().pane);
     const where = [pane?.branch, pane?.cwd?.split("/").pop()].filter(Boolean).join(" · ");
-    return h_flex().size_full().px(10).gap(8).items_center().border_b(1).border_color(t.border).text_size(11)
+    return h_flex()
+      .size_full()
+      .px(10)
+      .gap(8)
+      .items_center()
+      .border_b(1)
+      .border_color(t.border)
+      .text_size(11)
       .child(icon(t, pane?.program, 13) ?? div())
-      .child(div().flex_none().text_color(pane?.focused ? t.foreground : t.muted).child(pane?.program?.name ?? "Terminal"))
+      .child(
+        div()
+          .flex_none()
+          .text_color(pane?.focused ? t.foreground : t.muted)
+          .child(pane?.program?.name ?? "Terminal"),
+      )
       .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(where))
-      .when(Boolean(pane?.status), e => e.child(dot(t, pane.status)).child(label(t, GROUPS.find(g => g.status === pane.status)?.label ?? pane.status.toUpperCase(), pane.status)));
+      .when(Boolean(pane?.status), (e) =>
+        e
+          .child(dot(t, pane.status))
+          .child(
+            label(
+              t,
+              GROUPS.find((g) => g.status === pane.status)?.label ?? pane.status.toUpperCase(),
+              pane.status,
+            ),
+          ),
+      );
   }
 
   render(cx) {

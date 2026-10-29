@@ -59,13 +59,16 @@ function duration(ms) {
 
 function icon(p, size, color) {
   if (!p?.icon) return null;
-  return p.tint ? svg(p.icon).size(size).flex_none().text_color(color) : image(p.icon).w(size).h(size).flex_none();
+  return p.tint
+    ? svg(p.icon).size(size).flex_none().text_color(color)
+    : image(p.icon).w(size).h(size).flex_none();
 }
 
 // Each subtree gets the width of its children side by side; a parent sits centered above them.
 function measure(node) {
   node.kids.forEach(measure);
-  const kidsWidth = node.kids.reduce((w, k) => w + k.width, 0) + GAP_X * Math.max(0, node.kids.length - 1);
+  const kidsWidth =
+    node.kids.reduce((w, k) => w + k.width, 0) + GAP_X * Math.max(0, node.kids.length - 1);
   node.kidsWidth = kidsWidth;
   node.width = Math.max(CARD_W, kidsWidth);
 }
@@ -103,7 +106,9 @@ function find(node, id) {
 }
 // A hidden copy keeps running, so it waits until the panel shows it.
 function shown() {
-  const tree = layout(), panel = find(tree, "panel"), body = find(tree, "panel-body");
+  const tree = layout(),
+    panel = find(tree, "panel"),
+    body = find(tree, "panel-body");
   return !panel || (!panel.hidden && body?.active === "agent-graph");
 }
 
@@ -127,8 +132,13 @@ export default class AgentGraph extends View {
   }
 
   syncFinished(cx) {
-    if (!shown()) { this.stale = true; return; }
-    const key = terminals().map((k) => k.address).join(" ");
+    if (!shown()) {
+      this.stale = true;
+      return;
+    }
+    const key = terminals()
+      .map((k) => k.address)
+      .join(" ");
     if (key === this.liveKey) return;
     this.liveKey = key;
     cx.spawn(async (cx) => {
@@ -136,7 +146,9 @@ export default class AgentGraph extends View {
       if (result.code !== 0) return;
       // hc ls gives short records without times; a finished sub-agent's full record never
       // changes, so hc get fetches it once.
-      const ended = JSON.parse(result.stdout).terminals.filter((k) => k.state !== "live" && k.parent);
+      const ended = JSON.parse(result.stdout).terminals.filter(
+        (k) => k.state !== "live" && k.parent,
+      );
       for (const k of ended) {
         if (this.ended.has(k.address)) continue;
         const full = await hc(["get", k.address, "--json"]);
@@ -159,13 +171,15 @@ export default class AgentGraph extends View {
     const byAddress = new Map(all.map((k) => [k.address, k]));
     const workspaces = shared(SPACE_WORKSPACES) ?? {};
     const workspaceOf = (id) => workspaces[id] ?? id;
-    const inScope = {
-      workspace: (k) => workspaceOf(spaceOf(k)) === workspaceOf(here?.space),
-      space: (k) => spaceOf(k) === here?.space,
-      tab: (k) => tabOf(k) === here?.tab,
-      all: () => true,
-    }[this.scope] ?? (() => true);
-    const kidsOf = (address) => all.filter((k) => k.parent === address).sort((a, b) => a.created_ms - b.created_ms);
+    const inScope =
+      {
+        workspace: (k) => workspaceOf(spaceOf(k)) === workspaceOf(here?.space),
+        space: (k) => spaceOf(k) === here?.space,
+        tab: (k) => tabOf(k) === here?.tab,
+        all: () => true,
+      }[this.scope] ?? (() => true);
+    const kidsOf = (address) =>
+      all.filter((k) => k.parent === address).sort((a, b) => a.created_ms - b.created_ms);
     const build = (k) => ({
       k,
       status: statusOf(k, listed),
@@ -186,18 +200,50 @@ export default class AgentGraph extends View {
   }
 
   status(t, s) {
-    if (s === "working") return svg("mods/workspace-chrome/spinner.svg").size(12).mx(1).flex_none().text_color(t.working).spin(900);
-    if (s === "blocked") return div().flex_none().px(5).h(16).rounded(3).bg(t.blocked + "26").text_size(10).text_color(t.blocked).flex().items_center().child("Needs you");
-    if (s === "idle") return div().size(7).mx(3).flex_none().rounded(4).border(1.5).border_color(t.idle ?? t.dim);
+    if (s === "working")
+      return svg("mods/workspace-chrome/spinner.svg")
+        .size(12)
+        .mx(1)
+        .flex_none()
+        .text_color(t.working)
+        .spin(900);
+    if (s === "blocked")
+      return div()
+        .flex_none()
+        .px(5)
+        .h(16)
+        .rounded(3)
+        .bg(t.blocked + "26")
+        .text_size(10)
+        .text_color(t.blocked)
+        .flex()
+        .items_center()
+        .child("Needs you");
+    if (s === "idle")
+      return div()
+        .size(7)
+        .mx(3)
+        .flex_none()
+        .rounded(4)
+        .border(1.5)
+        .border_color(t.idle ?? t.dim);
     if (s === "done") return div().size(7).mx(3).flex_none().rounded(4).bg(t.done);
     return null;
   }
 
   // What a card says at its bottom right: how long it has had its status, or how it ended.
   detail(t, k, now) {
-    if (k.state === "live") return div().text_color(t.dim).child(k.status_ms ? duration(now - k.status_ms) : "");
-    if (k.exit_code == null) return div().text_color(t.dim).child(k.reason ?? "ended");
-    return div().text_color(k.exit_code === 0 ? t.dim : t.blocked).child(`exit ${k.exit_code}`);
+    if (k.state === "live")
+      return div()
+        .text_color(t.dim)
+        .child(k.status_ms ? duration(now - k.status_ms) : "");
+    if (k.exit_code == null)
+      return div()
+        .text_color(t.dim)
+        .child(k.reason ?? "ended");
+    return div()
+      .text_color(k.exit_code === 0 ? t.dim : t.blocked)
+      .child(`exit ${k.exit_code}`);
   }
 
   card(t, node, shown, now) {
@@ -226,13 +272,29 @@ export default class AgentGraph extends View {
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .tooltip(`${k.address} · ${k.cwd ?? ""}`)
       .on_click(() => this.open(k))
-      .child(h_flex().gap(8).items_center()
-        .when(Boolean(pic), (el) => el.child(pic))
-        .child(div().flex_1().min_w(0).truncate().child(name))
-        .child(this.status(t, status) ?? div()))
-      .child(h_flex().gap(8).items_center().text_size(11)
-        .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(k.title || k.address))
-        .child(this.detail(t, k, now)));
+      .child(
+        h_flex()
+          .gap(8)
+          .items_center()
+          .when(Boolean(pic), (el) => el.child(pic))
+          .child(div().flex_1().min_w(0).truncate().child(name))
+          .child(this.status(t, status) ?? div()),
+      )
+      .child(
+        h_flex()
+          .gap(8)
+          .items_center()
+          .text_size(11)
+          .child(
+            div()
+              .flex_1()
+              .min_w(0)
+              .truncate()
+              .text_color(t.dim)
+              .child(k.title || k.address),
+          )
+          .child(this.detail(t, k, now)),
+      );
   }
 
   // Where lines leave a parent and reach a child: centered in a tree, at the left in an outline.
@@ -241,7 +303,9 @@ export default class AgentGraph extends View {
   }
 
   entry(node) {
-    return this.outline ? { x: node.x, y: node.y + CARD_H / 2 } : { x: node.x + node.w / 2, y: node.y };
+    return this.outline
+      ? { x: node.x, y: node.y + CARD_H / 2 }
+      : { x: node.x + node.w / 2, y: node.y };
   }
 
   // The fold button where a parent's lines leave; folded, it counts the sub-agents it hides.
@@ -268,10 +332,15 @@ export default class AgentGraph extends View {
       .tooltip(open ? "Fold sub-agents" : "Show sub-agents")
       .on_click((_e, cx) => {
         cx.stop_propagation();
-        open ? this.folded.add(node.k.address) : this.folded.delete(node.k.address);
+        if (open) this.folded.add(node.k.address);
+        else this.folded.delete(node.k.address);
         cx.notify();
       })
-      .child(svg(`mods/frantss-files/chevron-${open ? "down" : "right"}.svg`).size(10).flex_none())
+      .child(
+        svg(`mods/frantss-files/chevron-${open ? "down" : "right"}.svg`)
+          .size(10)
+          .flex_none(),
+      )
       .when(!open, (el) => el.child(String(node.allKids.length)));
   }
 
@@ -285,20 +354,28 @@ export default class AgentGraph extends View {
     // Right angles only. A tree's line drops halfway, crosses, then drops into the child;
     // an outline's drops to the child's middle, then turns right into it.
     const mid = (from.y + to.y) / 2;
-    const corners = this.outline ? [[from.x, to.y]] : [[from.x, mid], [to.x, mid]];
+    const corners = this.outline
+      ? [[from.x, to.y]]
+      : [
+          [from.x, mid],
+          [to.x, mid],
+        ];
     let path = PathBuilder.stroke(kid.status === "blocked" ? 2 : 1.5);
     if (kid.status === "finished") path = path.dash_array([4, 4]);
     path = path.move_to(px(from.x), py(from.y));
     for (const [x, y] of [...corners, [to.x, to.y]]) path = path.line_to(px(x), py(y));
     path = path.build();
-    const color = { working: t.working, blocked: t.blocked, finished: t.border }[kid.status] ?? t.input;
+    const color =
+      { working: t.working, blocked: t.blocked, finished: t.border }[kid.status] ?? t.input;
     return div()
       .absolute()
       .left(0)
       .top(0)
       .w(width)
       .h(height)
-      .when(kid.status === "working", (el) => el.loop("opacity", { from: 0.35, to: 1, period: 1400 }))
+      .when(kid.status === "working", (el) =>
+        el.loop("opacity", { from: 0.35, to: 1, period: 1400 }),
+      )
       .child(window.paint_path(path, color).size_full());
   }
 
@@ -316,36 +393,50 @@ export default class AgentGraph extends View {
       .border_b(1)
       .border_color(t.border)
       .child(div().child("Agents"))
-      .when(blocked > 0, (el) => el.child(div().text_size(10).text_color(t.blocked).child(`${blocked} need you`)))
-      .when(working > 0, (el) => el.child(div().text_size(10).text_color(t.working).child(`${working} working`)))
+      .when(blocked > 0, (el) =>
+        el.child(div().text_size(10).text_color(t.blocked).child(`${blocked} need you`)),
+      )
+      .when(working > 0, (el) =>
+        el.child(div().text_size(10).text_color(t.working).child(`${working} working`)),
+      )
       .child(div().flex_1())
-      .children(SCOPES.map((s) => div()
-        .id(`scope-${s.id}`)
-        .h(20)
-        .px(6)
-        .flex()
-        .items_center()
-        .rounded(3)
-        .text_color(this.scope === s.id ? t.foreground : t.muted)
-        .when(this.scope === s.id, (el) => el.bg(t.selected))
-        .cursor_pointer()
-        .hover((el) => el.text_color(t.foreground))
-        .tooltip(s.tooltip)
-        .on_click((_e, cx) => {
-          this.setScope(s.id);
-          cx.notify();
-        })
-        .child(s.label)));
+      .children(
+        SCOPES.map((s) =>
+          div()
+            .id(`scope-${s.id}`)
+            .h(20)
+            .px(6)
+            .flex()
+            .items_center()
+            .rounded(3)
+            .text_color(this.scope === s.id ? t.foreground : t.muted)
+            .when(this.scope === s.id, (el) => el.bg(t.selected))
+            .cursor_pointer()
+            .hover((el) => el.text_color(t.foreground))
+            .tooltip(s.tooltip)
+            .on_click((_e, cx) => {
+              this.setScope(s.id);
+              cx.notify();
+            })
+            .child(s.label),
+        ),
+      );
   }
 
   render(cx) {
-    if (this.stale && shown()) { this.stale = false; this.liveKey = null; this.syncFinished(cx); }
+    if (this.stale && shown()) {
+      this.stale = false;
+      this.liveKey = null;
+      this.syncFinished(cx);
+    }
     const t = theme();
     const listed = new Map(agents().map((a) => [a.address, a.status]));
     const live = terminals();
     const liveAddresses = new Set(live.map((k) => k.address));
     const now = Date.now();
-    const recent = [...this.ended.values()].filter((k) => !liveAddresses.has(k.address) && now - (k.finished_ms ?? 0) < FINISHED_FOR_MS);
+    const recent = [...this.ended.values()].filter(
+      (k) => !liveAddresses.has(k.address) && now - (k.finished_ms ?? 0) < FINISHED_FOR_MS,
+    );
     const all = [...live, ...recent];
     const roots = this.forest(all, listed, focused());
     roots.forEach(measure);
@@ -353,7 +444,8 @@ export default class AgentGraph extends View {
     this.outline = this.size.width < OUTLINE_BELOW || total + 2 * PAD > this.size.width;
     if (this.outline) {
       let y = PAD;
-      for (const root of roots) y = placeOutline(root, 0, y, this.size.width) + OUTLINE_TREE_GAP - OUTLINE_GAP;
+      for (const root of roots)
+        y = placeOutline(root, 0, y, this.size.width) + OUTLINE_TREE_GAP - OUTLINE_GAP;
     } else {
       let x = (this.size.width - total) / 2;
       for (const root of roots) {
@@ -370,32 +462,44 @@ export default class AgentGraph extends View {
       .relative()
       .w(width)
       .h(height)
-      .children(nodes
-        .flatMap((n) => n.kids.map((kid) => [n, kid]))
-        .sort(([, a], [, b]) => (EDGE_ORDER[a.status] ?? 1) - (EDGE_ORDER[b.status] ?? 1))
-        .map(([n, kid]) => this.edge(t, n, kid, width, height)))
+      .children(
+        nodes
+          .flatMap((n) => n.kids.map((kid) => [n, kid]))
+          .sort(([, a], [, b]) => (EDGE_ORDER[a.status] ?? 1) - (EDGE_ORDER[b.status] ?? 1))
+          .map(([n, kid]) => this.edge(t, n, kid, width, height)),
+      )
       .children(nodes.map((n) => this.card(t, n, shown, now)))
       .children(nodes.filter((n) => n.allKids.length).map((n) => this.foldButton(t, n)));
 
-    return v_flex()
-      .id("agent-graph")
-      .size_full()
-      .min_h(0)
-      .rounded(3)
-      .overflow_hidden()
-      .border_1()
-      .border_color(t.border)
-      .text_color(t.foreground)
-      .text_size(12)
-      // The size comes zoomed, and the lengths this mod sets are zoomed again when drawn.
-      .on_size_change((size, cx) => {
-        const zoom = settings().zoom ?? 1;
-        this.size = { width: size.width / zoom, height: size.height / zoom };
-        cx.notify();
-      })
-      .child(this.header(t, roots))
-      .when(roots.length === 0, (el) => el.child(div().p(8).text_color(t.dim)
-        .child("No agents here. Sub-agents started with hc run appear under the agent that started them.")))
-      .child(div().id("graph").flex_1().min_h(0).overflow_scrollbar().child(canvas));
+    return (
+      v_flex()
+        .id("agent-graph")
+        .size_full()
+        .min_h(0)
+        .rounded(3)
+        .overflow_hidden()
+        .border_1()
+        .border_color(t.border)
+        .text_color(t.foreground)
+        .text_size(12)
+        // The size comes zoomed, and the lengths this mod sets are zoomed again when drawn.
+        .on_size_change((size, cx) => {
+          const zoom = settings().zoom ?? 1;
+          this.size = { width: size.width / zoom, height: size.height / zoom };
+          cx.notify();
+        })
+        .child(this.header(t, roots))
+        .when(roots.length === 0, (el) =>
+          el.child(
+            div()
+              .p(8)
+              .text_color(t.dim)
+              .child(
+                "No agents here. Sub-agents started with hc run appear under the agent that started them.",
+              ),
+          ),
+        )
+        .child(div().id("graph").flex_1().min_h(0).overflow_scrollbar().child(canvas))
+    );
   }
 }

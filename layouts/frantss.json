@@ -176,10 +176,7 @@
       "font": "Geist Mono",
       "font_size": 13,
       "ui_font": "Geist Mono",
-      "terminal_padding": [
-        10,
-        8
-      ],
+      "terminal_padding": [10, 8],
       "terminal_opacity": 1,
       "resizable": false,
       "titlebar": "none",

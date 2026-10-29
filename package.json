@@ -6,7 +6,17 @@
   "scripts": {
     "dev": "node scripts/watch.mjs",
     "link": "node scripts/link.mjs",
-    "check": "node scripts/check.mjs",
-    "test": "node scripts/test.mjs"
-  }
+    "check": "vp check --deny-warnings",
+    "test": "vp test",
+    "check:mods": "node scripts/check-mods.mjs",
+    "fmt": "vp fmt",
+    "lint": "vp lint --deny-warnings"
+  },
+  "devDependencies": {
+    "vite-plus": "1.4.0"
+  },
+  "engines": {
+    "node": "^22.18.0 || ^24.11.0 || >=26.0.0"
+  },
+  "packageManager": "pnpm@12.16.1"
 }

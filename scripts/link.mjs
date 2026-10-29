@@ -1,32 +1,57 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  renameSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const generated = name => name.endsWith(".d.ts") || name === "jsconfig.json" || name === ".DS_Store";
+const generated = (name) =>
+  name.endsWith(".d.ts") || name === "jsconfig.json" || name === ".DS_Store";
 
 function sameContents(source, target) {
   if (lstatSync(source).isDirectory() !== lstatSync(target).isDirectory()) return false;
   if (!lstatSync(source).isDirectory()) return readFileSync(source).equals(readFileSync(target));
-  const names = path => readdirSync(path).filter(name => !generated(name)).sort();
-  const left = names(source), right = names(target);
-  return JSON.stringify(left) === JSON.stringify(right)
-    && left.every(name => sameContents(join(source, name), join(target, name)));
+  const names = (path) =>
+    readdirSync(path)
+      .filter((name) => !generated(name))
+      .sort();
+  const left = names(source),
+    right = names(target);
+  return (
+    JSON.stringify(left) === JSON.stringify(right) &&
+    left.every((name) => sameContents(join(source, name), join(target, name)))
+  );
 }
 
 export function linkPackage(packageRoot, appHome) {
   const installed = existsSync(join(appHome, "installed.json"))
-    ? JSON.parse(readFileSync(join(appHome, "installed.json"), "utf8")) : {};
-  const entries = ["layouts", "mods", "themes"].flatMap(group =>
-    readdirSync(join(packageRoot, group)).filter(name => group === "mods" || name.endsWith(".json"))
-      .map(name => ({ relative: join(group, name), source: join(packageRoot, group, name), target: join(appHome, group, name) })));
-  const pending = entries.filter(entry => {
+    ? JSON.parse(readFileSync(join(appHome, "installed.json"), "utf8"))
+    : {};
+  const entries = ["layouts", "mods", "themes"].flatMap((group) =>
+    readdirSync(join(packageRoot, group))
+      .filter((name) => group === "mods" || name.endsWith(".json"))
+      .map((name) => ({
+        relative: join(group, name),
+        source: join(packageRoot, group, name),
+        target: join(appHome, group, name),
+      })),
+  );
+  const pending = entries.filter((entry) => {
     if (entry.relative.startsWith(`mods/`) && installed[entry.relative.slice(5)])
       throw new Error(`Refusing to replace a shipped mod: ${entry.relative}`);
     const stat = lstatSync(entry.target, { throwIfNoEntry: false });
     if (!stat) return true;
     if (stat.isSymbolicLink()) {
-      if (resolve(dirname(entry.target), readlinkSync(entry.target)) === resolve(entry.source)) return false;
+      if (resolve(dirname(entry.target), readlinkSync(entry.target)) === resolve(entry.source))
+        return false;
       throw new Error(`Already linked elsewhere: ${entry.target}`);
     }
     if (!sameContents(entry.source, entry.target))
@@ -46,11 +71,16 @@ export function linkPackage(packageRoot, appHome) {
         renameSync(entry.target, original);
       }
       changed.push({ ...entry, original });
-      symlinkSync(resolve(entry.source), entry.target, lstatSync(entry.source).isDirectory() ? "dir" : "file");
+      symlinkSync(
+        resolve(entry.source),
+        entry.target,
+        lstatSync(entry.source).isDirectory() ? "dir" : "file",
+      );
     }
   } catch (error) {
     for (const entry of changed.reverse()) {
-      if (lstatSync(entry.target, { throwIfNoEntry: false })?.isSymbolicLink()) unlinkSync(entry.target);
+      if (lstatSync(entry.target, { throwIfNoEntry: false })?.isSymbolicLink())
+        unlinkSync(entry.target);
       if (entry.original) renameSync(entry.original, entry.target);
     }
     throw error;
