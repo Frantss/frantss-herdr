@@ -561,13 +561,23 @@ export default class Frantss extends View {
         h_flex().gap(8).items_center().child(statusIndicator).child(div().w(PLUS_WIDTH))
       );
     };
+    // A worktree space has a branch icon left of its dot's column, as Codex marks worktree threads.
+    const spaceEnd = (s: SpaceInfo) => {
+      const dotted = dotEnd(s.status);
+      if (this.checkouts?.[place(s, ps)] !== "linked") return dotted;
+      return h_flex()
+        .gap(8)
+        .items_center()
+        .child(svg("mods/workspace-chrome/branch.svg").size(12).flex_none().text_color(t.dim))
+        .child(dotted ?? div().w(6 + 8 + PLUS_WIDTH));
+    };
     const spaceRow = (s: SpaceInfo): RailRow => ({
       id: `space-${s.id}`,
       current: s.active && standsForTab(s),
       lit: s.active,
       indent: 14,
       lead: false,
-      end: dotEnd(s.status),
+      end: spaceEnd(s),
       collapsed: standsForTab(s) ? undefined : spaceClosed(s),
       text: standsForTab(s) ? tabName(s.tabs[0], ps) : spaceName(s),
       onClick: () => (standsForTab(s) ? run("space.select", { id: s.id }) : toggleSpace(s)),
