@@ -4,7 +4,7 @@ export type MenuAction =
   | "toggle"
   | "copy"
   | "copy-relative"
-  | "reveal"
+  | "open-in"
   | "new-file"
   | "new-folder"
   | "rename"
@@ -17,10 +17,10 @@ export interface MenuItem {
 
 const chrome = (name: string) => `mods/workspace-chrome/${name}.svg`;
 
-// null separates groups. Finder exists only on this Mac.
+// null separates groups. Other apps open only what is on this Mac.
 export function menuItems(
   row: { dir: boolean; open: boolean },
-  finder: boolean,
+  local: boolean,
 ): (MenuItem | null)[] {
   const item = (action: MenuAction, label: string, icon: string) => ({ action, label, icon });
   return [
@@ -39,7 +39,7 @@ export function menuItems(
     null,
     item("copy", "Copy path", chrome("files")),
     item("copy-relative", "Copy relative path", chrome("files")),
-    ...(finder ? [item("reveal", "Reveal in Finder", chrome("folder"))] : []),
+    ...(local ? [item("open-in", "Open in", chrome("folder"))] : []),
     null,
     item("new-file", "New file…", chrome("plus")),
     item("new-folder", "New folder…", chrome("folder-plus")),

@@ -14,6 +14,7 @@ async function harness(refresh = false) {
     texts: {},
     commands: [],
     notices: [],
+    shared: {},
     zoom: 0.8,
     cwd: "/repo",
     on: null,
@@ -61,6 +62,8 @@ async function harness(refresh = false) {
           if (String(name).startsWith("on_")) {
             assert.notEqual(phase, "layout", "Handlers must be registered outside list layout");
             node.handlers[name] = args.at(-1);
+            // One handler per button, as GPUI keeps them.
+            if (name === "on_mouse_down") node.handlers[`${name}:${args[0]}`] = args.at(-1);
           } else if (name === "when") {
             if (args[0]) args[1](proxy);
           } else if (name === "child") node.childNodes.push(args[0]);
@@ -142,6 +145,13 @@ async function harness(refresh = false) {
         },
       ]),
       ["spaces", () => []],
+      ["shared", (key) => state.shared[key] ?? null],
+      [
+        "setShared",
+        (key, value) => {
+          state.shared[key] = value;
+        },
+      ],
       ["panes", () => []],
       [
         "focused",
@@ -1045,7 +1055,7 @@ async function menuHarness() {
   const press = (path, x = 40, y = 30, width = 300, height = 600) => {
     const tree = h.render();
     h.state.lists.at(-1).node.handlers.on_item_secondary_click(path, {}, h.cx);
-    findNode(tree, byId("files")).handlers.on_mouse_down(
+    findNode(tree, byId("files")).handlers["on_mouse_down:right"](
       { button: "right", local_position: { x, y }, bounds: { x: 0, y: 0, width, height } },
       h.cx,
     );
@@ -1136,4 +1146,60 @@ test("rename and new entries take their name in the tree and refuse clashes", as
   pick("new-folder");
   h.files.key("escape", h.cx);
   assert.equal(h.files.editing, null);
+});
+
+test("Open in shows the installed apps beside the menu and opens files as each app takes them", async () => {
+  const { h, press } = await menuHarness();
+  h.state.shared["frantss.apps"] = ["zed"];
+  h.state.run = (command, args) =>
+    command === "open" && args[0] === "-Ra"
+      ? { code: args[1] === "Finder" || args[1] === "Zed" ? 0 : 1, stdout: "", stderr: "" }
+      : undefined;
+  press("src/main.ts");
+  assert.deepEqual(
+    Array.from(h.files.apps as { key: string }[], (app) => app.key),
+    ["zed"],
+  );
+  await h.drain();
+  assert.deepEqual(
+    Array.from(h.files.apps as { key: string }[], (app) => app.key),
+    ["finder", "zed"],
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(h.state.shared["frantss.apps"])), ["finder", "zed"]);
+  const opener = findNode(h.render(), byId("files-menu-open-in"));
+  assert.equal(findNode(h.render(), byId("files-menu-apps")), undefined);
+  opener.handlers.on_hover(true, h.cx);
+  const apps = findNode(h.render(), byId("files-menu-apps"));
+  assert.ok(textOf(apps).includes("Finder") && textOf(apps).includes("Zed"));
+  findNode(apps, byId("files-app-zed")).handlers.on_click({}, h.cx);
+  assert.deepEqual(h.state.commands.at(-1), ["open", "-a", "Zed", "/repo/src/main.ts", null]);
+  assert.equal(h.files.menu, null);
+  press("src");
+  findNode(h.render(), byId("files-menu-open-in")).handlers.on_click({}, h.cx);
+  findNode(h.render(), byId("files-app-finder")).handlers.on_click({}, h.cx);
+  assert.deepEqual(h.state.commands.at(-1), ["open", "-a", "Finder", "/repo/src", null]);
+  press("a.ts");
+  h.files.key("down", h.cx);
+  for (let i = 0; i < 4; i++) h.files.key("down", h.cx);
+  h.files.key("right", h.cx);
+  assert.equal(h.files.menu.sub, true);
+  h.files.key("enter", h.cx);
+  assert.deepEqual(h.state.commands.at(-1), ["open", "-R", "/repo/a.ts", null]);
+  const tree = h.render();
+  findNode(tree, byId("files")).handlers["on_mouse_down:left"](
+    {
+      button: "left",
+      local_position: { x: 250, y: 10 },
+      bounds: { x: 0, y: 0, width: 300, height: 600 },
+    },
+    h.cx,
+  );
+  findNode(tree, byId("files-root")).handlers.on_click({}, h.cx);
+  const header = findNode(h.render(), byId("files-menu"));
+  assert.ok(textOf(header).startsWith("Open in"));
+  findNode(header, byId("files-app-zed")).handlers.on_click({}, h.cx);
+  assert.deepEqual(h.state.commands.at(-1), ["open", "-a", "Zed", "/repo", null]);
+  h.files.on = "server";
+  assert.equal(findNode(h.render(), byId("files-root")).handlers.on_click, undefined);
+  assert.equal(findNode(press("a.ts"), byId("files-menu-open-in")), undefined);
 });

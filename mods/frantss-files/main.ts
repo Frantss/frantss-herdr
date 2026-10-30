@@ -42,12 +42,15 @@ import {
   run,
   notify,
   terminals,
+  shared,
+  setShared,
 } from "herdr";
 import { iconFile, type IconManifest } from "./icons.ts";
 import { statusMarks, type Mark } from "./status.ts";
 import { daemonName, daemonRunning, freshConfig, freshTheme, FRESH_THEME } from "./fresh.ts";
 import { editorLanguage, previewKind, previewText } from "./preview.ts";
 import { checkName, menuItems, parentOf, type MenuItem } from "./menu.ts";
+import { appIcon, findApps, INSTALLED, knownApps, openArgs, type App } from "./apps.ts";
 
 interface LayoutNode {
   id?: string;
@@ -128,6 +131,7 @@ const openEditorTab = (folder: string, argv: string[]) =>
   run("tab.new", { name: "editor", folder, argv });
 
 const PEN = "mods/workspace-chrome/square-pen.svg",
+  CHEVRON = "mods/workspace-chrome/chevron-right.svg",
   CLOSE = "mods/workspace-chrome/x.svg",
   MENU_WIDTH = 210,
   // An edit row's key: no file path holds a NUL.
@@ -213,8 +217,22 @@ export default class Files extends View {
   declare code: EditorState | null;
   declare source: boolean;
   declare handle: FocusHandle;
-  // The right-clicked row's menu, where it opens in the panel, and the keyboard's item.
-  declare menu: { row: FileRow; x: number; y: number; at: number; confirm: boolean } | null;
+  // The right-clicked row's menu (row null: the panel folder's apps), where it opens in the panel,
+  // the keyboard's item, and whether its Open in submenu shows.
+  declare menu: {
+    row: FileRow | null;
+    x: number;
+    y: number;
+    width: number;
+    bottom: number;
+    at: number;
+    sub: boolean;
+    subAt: number;
+    confirm: boolean;
+  } | null;
+  // The panel's last left press, for the header's menu.
+  declare lastPress: import("gpui-kit").MouseButtonEvent | null;
+  declare apps: App[];
   // The row a right press landed on, until the panel learns where it landed.
   declare pressed: FileRow | null;
   // A rename (path: the entry) or a new entry (path: its folder) waiting for a name.
@@ -241,6 +259,8 @@ export default class Files extends View {
     this.source = false;
     this.menu = null;
     this.pressed = null;
+    this.lastPress = null;
+    this.apps = [];
     this.editing = null;
     this.editError = null;
     this.handle = cx.focus_handle();
@@ -614,36 +634,77 @@ export default class Files extends View {
   openMenu(event: import("gpui-kit").MouseButtonEvent, cx: Context) {
     const row = this.pressed;
     this.pressed = null;
-    if (!row || !event.local_position || !event.bounds) {
+    if (row) this.placeMenu(event, row, cx);
+    else {
       this.menu = null;
       cx.notify();
-      return;
     }
+  }
+
+  // Opens the menu at a press, inside the panel. A null row lists the panel folder's apps.
+  placeMenu(event: import("gpui-kit").MouseButtonEvent | null, row: FileRow | null, cx: Context) {
+    if (!event?.local_position || !event.bounds) return;
+    if (this.local()) this.loadApps(cx);
     const scale = zoom(),
-      height = menuItems(row, this.finder()).reduce((h, item) => h + (item ? 24 : 9), 8),
       x = event.local_position.x / scale,
       y = event.local_position.y / scale,
       width = event.bounds.width / scale,
-      bottom = event.bounds.height / scale;
+      bottom = event.bounds.height / scale,
+      height = row
+        ? menuItems(row, this.local()).reduce((h, item) => h + (item ? 24 : 9), 8)
+        : (Math.max(1, this.apps.length) + 1) * 24 + 8;
     this.menu = {
       row,
       x: Math.max(0, x + MENU_WIDTH > width ? x - MENU_WIDTH : x),
       y: Math.max(0, y + height > bottom ? y - height : y),
+      width,
+      bottom,
       at: -1,
+      sub: false,
+      subAt: -1,
       confirm: false,
     };
     this.handle.focus();
     cx.notify();
   }
 
-  finder() {
+  // Other apps open only files on this Mac.
+  local() {
     return !this.on && window()?.platform === "macos";
+  }
+
+  // The apps found last time show at once; a fresh look replaces them.
+  loadApps(cx: Context) {
+    const known = shared(INSTALLED);
+    this.apps = knownApps(known);
+    cx.spawn(async (cx) => {
+      const found = await findApps(exec),
+        keys = found.map((app) => app.key);
+      if (JSON.stringify(keys) !== JSON.stringify(known)) setShared(INSTALLED, keys);
+      this.apps = found;
+      cx.notify();
+    });
+  }
+
+  // A folder opens in every app; a file opens as each app takes it (frantss-open's apps).
+  openApp(app: App, cx: Context) {
+    const row = this.menu?.row,
+      absolute = row ? `${this.root}/${row.path}` : this.root,
+      folder = !row || row.dir ? absolute : `${this.root}/${parentOf(row.path)}`.replace(/\/$/, "");
+    this.menu = null;
+    void exec("open", openArgs(app, folder, row && !row.dir ? absolute : undefined));
+    cx.notify();
   }
 
   choose({ action }: MenuItem, cx: Context) {
     const { row } = this.menu,
       path = row.path,
       absolute = `${this.root}/${path}`;
+    if (action === "open-in") {
+      this.menu.sub = true;
+      cx.notify();
+      return;
+    }
     if (action === "trash" && !this.menu.confirm) {
       this.menu.confirm = true;
       cx.notify();
@@ -655,7 +716,6 @@ export default class Files extends View {
     else if (action === "toggle") this.toggle(path, cx);
     else if (action === "copy") cx.write_to_clipboard(absolute);
     else if (action === "copy-relative") cx.write_to_clipboard(path);
-    else if (action === "reveal") void exec("open", ["-R", absolute]);
     else if (action === "trash") this.trash(path, cx);
     else if (action === "rename") this.startEdit("rename", path, row.name, cx);
     else this.startEdit(action, row.dir ? path : parentOf(path), "", cx);
@@ -961,6 +1021,9 @@ export default class Files extends View {
       .track_focus(this.handle)
       .on_key_down((e, cx) => this.key(e.key, cx))
       .on_mouse_down("right", (e, cx) => this.openMenu(e, cx))
+      .on_mouse_down("left", (e) => {
+        this.lastPress = e;
+      })
       .size_full()
       .min_h(0)
       .rounded(3)
@@ -981,13 +1044,27 @@ export default class Files extends View {
           .border_color(t.border)
           .child(div().child("Files"))
           .child(
-            div()
+            h_flex()
               .flex_1()
               .min_w(0)
-              .truncate()
-              .text_right()
-              .text_color(t.dim)
-              .child(this.root?.split(/[\\/]/).pop() ?? ""),
+              .justify_end()
+              .child(
+                div()
+                  .id("files-root")
+                  .min_w(0)
+                  .px(4)
+                  .rounded(3)
+                  .truncate()
+                  .text_color(t.dim)
+                  .when(Boolean(this.root) && this.local(), (e) =>
+                    e
+                      .cursor_pointer()
+                      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                      .on_click((_e, cx) => this.placeMenu(this.lastPress, null, cx))
+                      .tooltip("Open in…"),
+                  )
+                  .child(this.root?.split(/[\\/]/).pop() ?? ""),
+              ),
           ),
       )
       .child(
@@ -1004,58 +1081,130 @@ export default class Files extends View {
       .when(Boolean(this.menu), (e) => e.child(this.contextMenu(t)));
   }
 
-  // The menu takes ↑/↓, Enter and Esc; Esc also leaves a name input.
+  // The menu takes ↑/↓, Enter and Esc; → and ← enter and leave its Open in submenu. Esc also leaves
+  // a name input.
   key(key: string, cx: Context) {
     const menu = this.menu;
-    if (menu) {
-      const items = menuItems(menu.row, this.finder()).filter(Boolean);
-      if (key === "down") menu.at = (menu.at + 1) % items.length;
-      else if (key === "up") menu.at = (menu.at + items.length - 1) % items.length;
-      else if (key === "enter" && menu.at >= 0) return this.choose(items[menu.at], cx);
-      else if (key === "escape") this.menu = null;
-      else return;
-      cx.notify();
-    } else if (key === "escape" && this.editing) this.cancelEdit(cx);
+    if (!menu) {
+      if (key === "escape" && this.editing) this.cancelEdit(cx);
+      return;
+    }
+    const items = menu.row ? menuItems(menu.row, this.local()).filter(Boolean) : [],
+      apps = this.apps,
+      inApps = !menu.row || menu.sub,
+      count = inApps ? apps.length : items.length,
+      at = inApps && menu.row ? menu.subAt : menu.at,
+      move = (next: number) => {
+        if (inApps && menu.row) menu.subAt = next;
+        else menu.at = next;
+      };
+    if (key === "escape") this.menu = null;
+    else if ((key === "left" || key === "escape") && menu.sub) menu.sub = false;
+    else if (!count) return;
+    else if (key === "down") move((at + 1) % count);
+    else if (key === "up") move((at + count - 1) % count);
+    else if (key === "right" && items[menu.at]?.action === "open-in") {
+      menu.sub = true;
+      menu.subAt = 0;
+    } else if (key === "enter" && at >= 0)
+      return inApps ? this.openApp(apps[at], cx) : this.choose(items[at], cx);
+    else return;
+    cx.notify();
+  }
+
+  menuRow(id: string, t: Theme, selected: boolean) {
+    return h_flex()
+      .id(id)
+      .h(24)
+      .flex_none()
+      .px(6)
+      .gap(8)
+      .rounded(3)
+      .items_center()
+      .cursor_pointer()
+      .text_color(selected ? t.foreground : t.muted)
+      .when(selected, (e) => e.bg(t.selected))
+      .hover((s) => s.bg(t.hover).text_color(t.foreground));
+  }
+
+  menuFrame(id: string, t: Theme) {
+    return v_flex()
+      .id(id)
+      .absolute()
+      .w(MENU_WIDTH)
+      .p(4)
+      .rounded(3)
+      .border_1()
+      .border_color(t.border)
+      .bg(t.popover ?? t.raised)
+      .text_size(12);
+  }
+
+  appRows(t: Theme, at: number) {
+    if (!this.apps.length)
+      return [div().h(24).px(6).flex().items_center().text_color(t.dim).child("No apps found")];
+    return this.apps.map((app, i) =>
+      this.menuRow(`files-app-${app.key}`, t, i === at)
+        .on_click((_e, cx) => this.openApp(app, cx))
+        .child(image(appIcon(app)).size(14).flex_none())
+        .child(div().flex_1().min_w(0).truncate().child(app.name)),
+    );
   }
 
   contextMenu(t: Theme) {
-    const { row, x, y, at, confirm } = this.menu;
-    let index = -1;
+    const { row, x, y, width, bottom, at, sub, subAt, confirm } = this.menu,
+      items = row ? menuItems(row, this.local()) : [];
+    let index = -1,
+      offset = 4,
+      subTop = 0;
+    for (const item of items) {
+      if (item?.action === "open-in") subTop = offset - 5;
+      offset += item ? 24 : 9;
+    }
+    const subHeight = Math.max(1, this.apps.length) * 24 + 10,
+      // The side with more room, and no lower than the panel.
+      subLeft = width - (x + MENU_WIDTH) >= x ? MENU_WIDTH - 4 : 4 - MENU_WIDTH;
+    subTop = Math.min(subTop, bottom - y - subHeight);
     return (
-      v_flex()
-        .id("files-menu")
-        .absolute()
+      this.menuFrame("files-menu", t)
         .left(x)
         .top(y)
-        .w(MENU_WIDTH)
-        .p(4)
-        .rounded(3)
-        .border_1()
-        .border_color(t.border)
-        .bg(t.popover ?? t.raised)
-        .text_size(12)
         // A right press reopens or closes the menu through the panel's own handler.
         .on_mouse_down_out((e, cx) => {
           if (e.button === "right") return;
           this.menu = null;
           cx.notify();
         })
+        .when(!row, (e) =>
+          e
+            .child(
+              div()
+                .h(24)
+                .px(6)
+                .flex()
+                .items_center()
+                .text_size(11)
+                .text_color(t.dim)
+                .child("Open in"),
+            )
+            .children(this.appRows(t, at)),
+        )
         .children(
-          menuItems(row, this.finder()).map((item) => {
+          items.map((item) => {
             if (!item) return div().mx(4).my(4).h(1).bg(t.border);
             const i = ++index,
-              danger = item.action === "trash";
-            return h_flex()
-              .id(`files-menu-${item.action}`)
-              .h(24)
-              .px(6)
-              .gap(8)
-              .rounded(3)
-              .items_center()
-              .cursor_pointer()
-              .text_color(danger && confirm ? t.ansi1 : i === at ? t.foreground : t.muted)
-              .when(i === at, (e) => e.bg(t.selected))
-              .hover((s) => s.bg(t.hover).text_color(danger && confirm ? t.ansi1 : t.foreground))
+              danger = item.action === "trash",
+              opens = item.action === "open-in";
+            return this.menuRow(`files-menu-${item.action}`, t, i === at || (opens && sub))
+              .when(danger && confirm, (e) =>
+                e.text_color(t.ansi1).hover((s) => s.text_color(t.ansi1)),
+              )
+              .on_hover((hovered, cx) => {
+                if (!hovered || !this.menu || this.menu.sub === opens) return;
+                this.menu.sub = opens;
+                this.menu.subAt = -1;
+                cx.notify();
+              })
               .on_click((_e, cx) => this.choose(item, cx))
               .child(
                 svg(item.icon)
@@ -1069,8 +1218,17 @@ export default class Files extends View {
                   .min_w(0)
                   .truncate()
                   .child(danger && confirm ? "Click again to move to Trash" : item.label),
-              );
+              )
+              .when(opens, (e) => e.child(svg(CHEVRON).size(12).flex_none().text_color(t.dim)));
           }),
+        )
+        .when(Boolean(row) && sub, (e) =>
+          e.child(
+            this.menuFrame("files-menu-apps", t)
+              .left(subLeft)
+              .top(subTop)
+              .children(this.appRows(t, subAt)),
+          ),
         )
     );
   }

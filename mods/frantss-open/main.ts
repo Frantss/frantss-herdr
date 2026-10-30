@@ -5,52 +5,31 @@ import type { AsyncContext, FocusHandle } from "gpui-kit";
 import { View, div, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, exec, closeOverlay, props, shared, setShared } from "herdr";
-
-// `app`: the name `open -a` takes.
-const APPS = [
-  { key: "finder", name: "Finder", app: "Finder" },
-  { key: "terminal", name: "Terminal", app: "Terminal" },
-  { key: "ghostty", name: "Ghostty", app: "Ghostty" },
-  { key: "vscode", name: "VS Code", app: "Visual Studio Code" },
-  { key: "zed", name: "Zed", app: "Zed" },
-];
-
-// The keys of the apps found last time, kept in shared state (persisted) so the menu opens at once
-// while it looks again.
-const INSTALLED = "frantss.apps";
+import { appIcon, findApps, INSTALLED, knownApps, openArgs, type App } from "./apps.ts";
 
 export default class Open extends View {
-  declare installed: (typeof APPS)[number][];
+  declare installed: App[];
   declare handle: FocusHandle;
   init(_props: unknown, cx: AsyncContext) {
-    const known = (shared(INSTALLED) as string[] | null) ?? [];
-    this.installed = APPS.filter((a) => known.includes(a.key));
+    const known = shared(INSTALLED);
+    this.installed = knownApps(known);
     this.handle = cx.focus_handle();
     this.handle.focus();
     cx.spawn(async (cx) => {
-      // `open -Ra` finds an app without opening it, and fails when there is none.
-      const found = await Promise.all(
-        APPS.map((a) =>
-          exec("open", ["-Ra", a.app]).then(
-            (r) => r.code === 0,
-            () => false,
-          ),
-        ),
-      );
-      this.installed = APPS.filter((_a, i) => found[i]);
+      this.installed = await findApps(exec);
       const keys = this.installed.map((a) => a.key);
       if (JSON.stringify(keys) !== JSON.stringify(known)) setShared(INSTALLED, keys);
       cx.notify();
     });
   }
 
-  open(app: (typeof APPS)[number]) {
+  open(app: App) {
     closeOverlay(props()?.overlay);
-    void exec("open", ["-a", app.app, props()?.folder]);
+    void exec("open", openArgs(app, props()?.folder));
   }
 
   // Like frantss-menu's rows: 24px, 3px corners, muted until hovered.
-  row(t: Record<string, `#${string}`>, app: (typeof APPS)[number]) {
+  row(t: Record<string, `#${string}`>, app: App) {
     return h_flex()
       .id(app.key)
       .h(24)
@@ -63,7 +42,7 @@ export default class Open extends View {
       .text_color(t.muted)
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click(() => this.open(app))
-      .child(image(`mods/frantss-open/icons/${app.key}.png`).size(14).flex_none())
+      .child(image(appIcon(app)).size(14).flex_none())
       .child(div().flex_1().min_w(0).truncate().child(app.name));
   }
 

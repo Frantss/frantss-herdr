@@ -5,21 +5,21 @@ import { checkName, menuItems, parentOf } from "./menu.ts";
 const actions = (items: ReturnType<typeof menuItems>) =>
   items.map((item) => (item === null ? "—" : item.action));
 
-test("files offer preview, Fresh, copying, and changes; Finder only on this Mac", () => {
+test("files offer preview, Fresh, copying, and changes; other apps only on this Mac", () => {
   assert.deepEqual(actions(menuItems({ dir: false, open: false }, true)), [
     "preview",
     "fresh",
     "—",
     "copy",
     "copy-relative",
-    "reveal",
+    "open-in",
     "—",
     "new-file",
     "new-folder",
     "rename",
     "trash",
   ]);
-  assert.ok(!actions(menuItems({ dir: false, open: false }, false)).includes("reveal"));
+  assert.ok(!actions(menuItems({ dir: false, open: false }, false)).includes("open-in"));
 });
 
 test("folders toggle open or closed and keep the rest", () => {
@@ -31,7 +31,7 @@ test("folders toggle open or closed and keep the rest", () => {
     "—",
     "copy",
     "copy-relative",
-    "reveal",
+    "open-in",
     "—",
     "new-file",
     "new-folder",
