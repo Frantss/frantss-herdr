@@ -60,3 +60,17 @@ export function followedPane(focus = focused()) {
     null
   );
 }
+
+// The folder the panels describe and the machine it is on (null: this one).
+export function followedPlace() {
+  const space = spaces().find((s) => s.active),
+    focus = focused();
+  const pane = followedPane(focus);
+  const on =
+    focus?.pane === null
+      ? focus.terminal?.includes("/")
+        ? focus.terminal.split("/")[0]
+        : null
+      : (space?.machine ?? null);
+  return { cwd: pane?.cwd || focus?.cwd || space?.folder, on };
+}

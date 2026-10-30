@@ -26,8 +26,6 @@ import {
   Input,
 } from "gpui-base";
 import {
-  spaces,
-  focused,
   exec,
   readTextFile,
   writeTextFile,
@@ -49,20 +47,8 @@ import { daemonName, daemonRunning, freshConfig, freshTheme, FRESH_THEME } from 
 import { editorLanguage, previewKind, previewText } from "./preview.ts";
 import { checkName, menuItems, parentOf, type MenuItem } from "./menu.ts";
 import { appIcon, findApps, INSTALLED, knownApps, openArgs, type App } from "./apps.ts";
-import { followedPane, panelShown } from "./panel.ts";
+import { followedPlace, panelShown } from "./panel.ts";
 
-function location() {
-  const space = spaces().find((s) => s.active),
-    f = focused();
-  const pane = followedPane(f);
-  const on =
-    f?.pane === null
-      ? f.terminal?.includes("/")
-        ? f.terminal.split("/")[0]
-        : null
-      : (space?.machine ?? null);
-  return { cwd: pane?.cwd || f?.cwd || space?.folder, on };
-}
 interface FileEntry {
   name: string;
   dir: boolean;
@@ -79,7 +65,7 @@ interface FileRow extends FileEntry {
 type Theme = Record<string, Color>;
 type FileSnapshot = Pick<Files, "entries" | "folders" | "marks" | "error" | "limited">;
 
-const key = () => JSON.stringify(location());
+const key = () => JSON.stringify(followedPlace());
 
 // Git's lock files come and go with every git command; refreshing on them alone never ends.
 const meaningful = (path: string) => !/\/\.git\/.*\.lock$|\/node_modules\//.test(path);
@@ -360,7 +346,7 @@ export default class Files extends View {
   }
 
   refresh(cx: Context, changedPaths?: string[]) {
-    const { cwd, on } = location(),
+    const { cwd, on } = followedPlace(),
       context = JSON.stringify({ cwd, on });
     let changed = context !== this.context;
     if (changed) {

@@ -33,7 +33,7 @@ import {
 import { LINE_LIMIT, trackedPreview, untrackedPreview } from "./preview.ts";
 import { expandGaps, fileLines } from "./gaps.ts";
 import { button } from "./button.ts";
-import { followedPane, panelShown } from "./panel.ts";
+import { followedPlace, panelShown } from "./panel.ts";
 import {
   DEFAULT_NOTE,
   lineSide,
@@ -55,18 +55,6 @@ import {
   type Span,
 } from "./highlight.ts";
 
-function location() {
-  const space = spaces().find((s) => s.active),
-    f = focused();
-  const pane = followedPane(f);
-  const on =
-    f?.pane === null
-      ? f.terminal?.includes("/")
-        ? f.terminal.split("/")[0]
-        : null
-      : (space?.machine ?? null);
-  return { cwd: pane?.cwd || f?.cwd || space?.folder, on };
-}
 type Theme = Record<string, Color>;
 
 interface FileStats {
@@ -101,7 +89,7 @@ type Snapshot = Pick<
   | "agentAddress"
 >;
 
-const key = () => JSON.stringify(location());
+const key = () => JSON.stringify(followedPlace());
 const TRASH = "mods/frantss-changes/trash.svg",
   CHEVRON = "mods/workspace-chrome/chevron-down.svg";
 // Diff rows indent their text past the line number and the hover "+".
@@ -274,7 +262,7 @@ export default class Changes extends View {
   }
 
   refresh(cx: Context) {
-    const { cwd, on } = location(),
+    const { cwd, on } = followedPlace(),
       context = JSON.stringify({ cwd, on });
     // Switch places before waiting on any git still running for the last one: its results check the place.
     if (context !== this.context) this.switchTo(context);
