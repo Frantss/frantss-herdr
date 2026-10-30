@@ -1,4 +1,4 @@
-// What an agent card's menu offers, and the lines of a blocked agent's screen that hold its question.
+// What an agent card's menu offers.
 
 export type MenuAction =
   | "focus"
@@ -48,17 +48,4 @@ export function menuItems(card: {
     null,
     item("kill", "Kill", chrome("x")),
   ];
-}
-
-// Box borders and rules carry no words; a line inside a box loses its side borders.
-const RULE = /^[\s─━═┄┈╌\-│┃║╭╮╯╰┌┐└┘├┤┬┴┼]*$/;
-const SIDES = /^\s*[│┃║]\s?|\s?[│┃║]\s*$/g;
-
-// The last lines of a screen that hold text: where an agent's question and its choices are.
-export function questionLines(screen: string, count = 4) {
-  return screen
-    .split("\n")
-    .filter((line) => !RULE.test(line))
-    .map((line) => line.replace(SIDES, "").trimEnd())
-    .slice(-count);
 }

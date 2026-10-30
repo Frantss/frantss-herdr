@@ -22,7 +22,6 @@ import {
   focused,
   run,
   hc,
-  notify,
   openOverlay,
   setAgentOrder,
   settings,
@@ -31,7 +30,8 @@ import {
 } from "herdr";
 import { panelShown } from "./panel.ts";
 import { button } from "./button.ts";
-import { menuItems, questionLines, INTERRUPT_ICON, PEEK_ICON, type MenuItem } from "./actions.ts";
+import { menuItems, INTERRUPT_ICON, PEEK_ICON, type MenuItem } from "./actions.ts";
+import { hcOrToast, readQuestion, replyArgs } from "./agent-hc.ts";
 
 type AgentStatus = "working" | "blocked" | "idle" | "done" | "finished" | "error";
 interface TerminalRecord {
@@ -394,13 +394,8 @@ export default class AgentGraph extends View {
     setAgentOrder(order);
   }
 
-  // Runs an hc command on an agent in the background; a failure shows as a toast.
   hcAction(args: string[], failure: string, cx: Context) {
-    cx.spawn(async () => {
-      const result = await hc(args).catch(() => null);
-      if (result?.code !== 0)
-        notify({ title: failure, body: result?.stderr.trim() || undefined, level: "error" });
-    });
+    cx.spawn(() => hcOrToast(args, failure));
   }
 
   // Opens a card's menu in the canvas: under its top row, or above it when the panel ends first.
@@ -458,19 +453,12 @@ export default class AgentGraph extends View {
     this.replyInput.focus();
   }
 
-  // A blocked agent only takes text with --force: the reply may answer its question.
   sendReply(cx: Context) {
     const text = this.replyInput.value().trim(),
       address = this.replyTo;
     this.replyTo = null;
     cx.notify();
-    if (!text || !address) return;
-    const blocked = agents().find((a) => a.address === address)?.status === "blocked";
-    this.hcAction(
-      ["send", ...(blocked ? ["--force"] : []), address, text],
-      "Could not send the reply",
-      cx,
-    );
+    if (text && address) this.hcAction(replyArgs(address, text), "Could not send the reply", cx);
   }
 
   // Reads a blocked agent's screen once per status change, while its card shows.
@@ -480,12 +468,10 @@ export default class AgentGraph extends View {
     this.reading.add(k.address);
     cx.spawn(async (cx) => {
       try {
-        const result = await hc(["read", k.address, "--json"]);
-        const lines =
-          result.code === 0
-            ? questionLines(JSON.parse(result.stdout).text ?? "", QUESTION_LINES)
-            : ["Could not read the screen"];
-        this.questions.set(k.address, { since, lines });
+        this.questions.set(k.address, {
+          since,
+          lines: await readQuestion(k.address, QUESTION_LINES),
+        });
       } catch {
         this.questions.set(k.address, { since, lines: ["Could not read the screen"] });
       } finally {

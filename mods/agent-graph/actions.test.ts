@@ -1,6 +1,6 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
-import { menuItems, questionLines } from "./actions.ts";
+import { menuItems } from "./actions.ts";
 
 const actions = (card: { live: boolean; pane: boolean; reply?: boolean }) =>
   menuItems({ reply: true, ...card }).map((item) => item?.action ?? null);
@@ -29,25 +29,5 @@ test("a finished sub-agent's menu only copies or removes it", () => {
     "copy-folder",
     null,
     "remove",
-  ]);
-});
-
-test("question lines skip rules and box borders and keep the last lines with text", () => {
-  const screen = [
-    "earlier output",
-    "╭──────────────────────────╮",
-    "│ Bash command             │",
-    "│   rm -rf dist            │",
-    "│ Do you want to proceed?  │",
-    "│ ❯ 1. Yes                 │",
-    "│   2. No                  │",
-    "╰──────────────────────────╯",
-    "",
-  ].join("\n");
-  assert.deepEqual(questionLines(screen, 4), [
-    "  rm -rf dist",
-    "Do you want to proceed?",
-    "❯ 1. Yes",
-    "  2. No",
   ]);
 });
