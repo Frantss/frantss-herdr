@@ -267,6 +267,8 @@ export default class Frantss extends View {
   declare checkouts: Record<string, "main" | "linked" | null>;
   declare marks: Record<string, number>;
   declare terminalsKey: string;
+  // The local agents shown since the rail last recorded them, by address.
+  declare seenAgents: Map<string, AgentInfo>;
   init(_p: unknown, _cx: AsyncContext) {
     // The rail and the breadcrumb both name workspaces by repo.
     if (props()?.role !== "rail" && props()?.role !== "top") return;
@@ -291,22 +293,14 @@ export default class Frantss extends View {
     if (role === "rail") this.publishWorkspaces(snapshot);
   }
 
-  // Records the local agents, and asks the core which terminals finished whenever an agent or a pane
-  // goes (a closed tab takes both).
+  // Asks the core which terminals finished whenever an agent or a pane goes (a closed tab takes
+  // both), and records the local agents with its answer. Titles change often and a shared write
+  // re-renders every mod, so until then the latest of each agent stays here.
   trackAgents(cx: Context, list: AgentInfo[], snapshot: WorkspaceSnapshot) {
     const remote = new Set(snapshot.spaces.filter((s) => s.machine).map((s) => s.id));
     const local = list.filter((a) => !remote.has(a.space));
-    saveRecords(
-      recordAgents(
-        agentRecords(),
-        local.map((a) => ({
-          address: a.address,
-          app: a.app,
-          program: a.program,
-          title: threadTitle(a.title, a.program),
-        })),
-      ),
-    );
+    this.seenAgents ??= new Map();
+    for (const a of local) this.seenAgents.set(a.address, a);
     const shown = [
       ...local.map((a) => a.address),
       ...[...snapshot.panesByTab.values()].flat().map((pane) => pane.terminal),
@@ -314,6 +308,7 @@ export default class Frantss extends View {
     const key = JSON.stringify(shown);
     if (key === this.terminalsKey) return;
     this.terminalsKey = key;
+    const live = new Set(local.map((a) => a.address));
     // A closed tab's terminals take a moment to finish, so it asks again while a recorded agent
     // that is gone from the window is still live.
     const gone = (terminal: CoreTerminal) =>
@@ -326,7 +321,16 @@ export default class Frantss extends View {
           const result = await hc(["ls", "--all", "--json"]);
           if (result.code !== 0) return;
           const terminals: CoreTerminal[] = JSON.parse(result.stdout).terminals;
-          saveRecords(settleAgents(agentRecords(), terminals, Date.now()));
+          const seen = [...this.seenAgents.values()].map((a) => ({
+            address: a.address,
+            app: a.app,
+            program: a.program,
+            title: threadTitle(a.title, a.program),
+          }));
+          saveRecords(settleAgents(recordAgents(agentRecords(), seen), terminals, Date.now()));
+          // Gone agents are recorded now; keeping them would bring back one that settling dropped.
+          for (const address of this.seenAgents.keys())
+            if (!live.has(address)) this.seenAgents.delete(address);
           if (!terminals.some(gone)) return;
         } catch {
           return;
@@ -399,11 +403,15 @@ export default class Frantss extends View {
   }
 
   publishWorkspaces(snapshot: WorkspaceSnapshot) {
-    const bySpace = Object.fromEntries(
-      snapshot.spaces.map((s) => [s.id, this.workspaceKey(s, snapshot)]),
-    );
-    if (JSON.stringify(bySpace) !== JSON.stringify(shared(SPACE_WORKSPACES)))
-      setShared(SPACE_WORKSPACES, bySpace);
+    const published = (shared(SPACE_WORKSPACES) as Record<string, string> | null) ?? {};
+    const changed =
+      Object.keys(published).length !== snapshot.spaces.length ||
+      snapshot.spaces.some((s) => published[s.id] !== this.workspaceKey(s, snapshot));
+    if (changed)
+      setShared(
+        SPACE_WORKSPACES,
+        Object.fromEntries(snapshot.spaces.map((s) => [s.id, this.workspaceKey(s, snapshot)])),
+      );
   }
 
   // The git folder a place shares with its worktrees. A machine that can't answer groups by folder.

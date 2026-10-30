@@ -79,7 +79,8 @@ async function harness(role = "rail") {
     overlays: [] as any[],
     commands: [] as any[],
     calls: { spaces: 0, panes: 0, paneVisits: 0 },
-    tasks: [] as unknown[],
+    tasks: [] as ((cx: unknown) => Promise<void>)[],
+    terminals: [] as { address: string; state: string; cwd?: string }[],
   };
   function element(kind = "div", source?) {
     const node: any = {
@@ -154,7 +155,7 @@ async function harness(role = "rail") {
       exec: unused,
       pickFolder: unused,
       knownAgents: unused,
-      hc: unused,
+      hc: async () => ({ code: 0, stdout: JSON.stringify({ terminals: state.terminals }) }),
     },
   };
   const module = new vm.SourceTextModule(
@@ -274,6 +275,17 @@ test("rail keeps workspace order, global-first cwd, tab names, worktree marks, a
     "build/remote": remoteGroup,
     outside: key("/outside"),
   });
+});
+
+test("rail publishes space workspaces again only when one changes", async () => {
+  const h = await harness();
+  h.render();
+  const published = h.state.shared.get("frantss.spaceWorkspaces");
+  h.render();
+  assert.equal(h.state.shared.get("frantss.spaceWorkspaces"), published);
+  h.view.repos[key("/outside")] = "/outside/.git";
+  h.render();
+  assert.equal(h.state.shared.get("frantss.spaceWorkspaces")["outside"], key("/outside/.git"));
 });
 
 test("rail shows a tab's panes in its place when it has more than one", async () => {
@@ -471,13 +483,32 @@ test("the rail records local agents and lists closed ones with history, resume, 
       closed: Date.now() - 5 * 60_000,
     },
   ]);
-  const tree = h.render();
+  h.state.terminals = [
+    { address: "t7", state: "finished", cwd: "/elsewhere" },
+    { address: "t8", state: "finished", cwd: "/project/live" },
+    { address: "t9", state: "live", cwd: "/project/live" },
+  ];
   const records = () => h.state.shared.get("frantss.closedAgents") as any[];
+  const settle = () => h.state.tasks.at(-1)({ sleep: async () => {} });
+  const tree = h.render();
+  assert.equal(h.state.tasks.length, 1);
+  await settle();
   assert.deepEqual(plain(records().map((r) => r.address)), ["t7", "t8", "t9"]);
   assert.equal(records()[2].title, "Fix API");
-  assert.equal(h.state.tasks.length, 1);
+
+  // A new title alone doesn't write shared state; the agent's last one is saved when it goes.
+  const saved = records();
+  h.state.agents[0].title = "✳ Fix rail";
   h.render();
   assert.equal(h.state.tasks.length, 1);
+  assert.equal(records(), saved);
+  h.state.agents.shift();
+  h.state.terminals[2].state = "finished";
+  h.render();
+  assert.equal(h.state.tasks.length, 2);
+  await settle();
+  assert.equal(records().find((r) => r.address === "t9").title, "Fix rail");
+  assert.ok(records().find((r) => r.address === "t9").closed);
 
   const ids = descendants(tree)
     .map((node) => node?.elementId)
