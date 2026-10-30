@@ -179,11 +179,9 @@ async function harness(refresh = false) {
       const query = args.includes("status")
         ? "status"
         : args.includes("--numstat")
-          ? args.includes("HEAD")
-            ? "head"
-            : args.includes("--cached")
-              ? "cached"
-              : "unstaged"
+          ? args.includes("--cached")
+            ? "cached"
+            : "unstaged"
           : args.includes("--show-toplevel")
             ? "root"
             : "other";
@@ -194,14 +192,29 @@ async function harness(refresh = false) {
         if (state.block) await state.block;
         return { code: 0, stdout: `${options.cwd}\n${options.cwd}/.git\n`, stderr: "" };
       }
-      if (args.includes("status")) return { code: 0, stdout: state.status, stderr: "" };
-      if (args.includes("--numstat"))
+      if (args.includes("status"))
         return {
-          code: query === "head" ? (state.headCode ?? 0) : 0,
-          stdout: args.includes("--cached") ? (state.cachedStats ?? state.stats) : state.stats,
+          code: 0,
+          stdout: `## ${state.unborn ? "No commits yet on main" : "main"}\0${state.status}`,
           stderr: "",
         };
-      if (args.includes("diff")) return { code: 0, stdout: state.diff, stderr: "" };
+      if (args.includes("--numstat"))
+        return {
+          code: 0,
+          stdout: args.includes("--cached") ? (state.cachedStats ?? "") : state.stats,
+          stderr: "",
+        };
+      if (args.includes("diff"))
+        return {
+          code: 0,
+          stdout: args.includes("--cached") ? (state.cachedDiff ?? state.diff) : state.diff,
+          stderr: "",
+        };
+      if (args[0] === "show") return { code: 0, stdout: state.index ?? "", stderr: "" };
+      if (args[0] === "add" || args[0] === "reset") {
+        state.indexCalls = [...(state.indexCalls ?? []), args];
+        return state.indexResult ?? { code: 0, stdout: "", stderr: "" };
+      }
       throw new Error(`Unexpected Git args ${args}`);
     };
     natives.herdr.readTextFile = async () => state.untracked ?? "first\nsecond\n";
@@ -319,28 +332,37 @@ test("hidden Changes renders retain selection and skip list work without forcing
   assert.equal(refreshes, 1);
 });
 
-const file = (path: string) => ({ path, status: "M", fresh: false, add: 1, del: 2 });
+const file = (path: string, section = "unstaged") => ({
+  section,
+  path,
+  status: "M",
+  fresh: false,
+  add: 1,
+  del: 2,
+});
 const text = (node) =>
   typeof node === "string" ? node : (node?.childNodes ?? []).map(text).join(" ");
 
 test("Changes constructs only requested file rows and selects by stable path after reorder", async () => {
   const h = await harness();
   h.changes.files = Array.from({ length: 1000 }, (_, i) => file(`src/file-${i}.ts`));
-  h.changes.open = "src/file-300.ts";
+  h.changes.open = "unstaged:src/file-300.ts";
   h.render();
   assert.equal(h.state.rows.length, 0);
   const list = h.state.lists.find((list) => list.id === "changes-files");
-  assert.equal(list.count, 1000);
+  assert.equal(list.count, 1001);
   assert.equal(list.extent, 26 * h.state.zoom);
-  assert.equal(list.key(300), "src/file-300.ts");
-  const rows = h.range(list, 300, 308);
+  assert.equal(list.key(0), "unstaged:");
+  assert.equal(list.key(301), "unstaged:src/file-300.ts");
+  const rows = h.range(list, 301, 309);
   assert.equal(h.state.rows.length, 8);
   assert.ok(h.state.rows[0].styles.some(([key, value]) => key === "bg" && value === "#333333"));
   assert.ok(text(rows[0]).includes("src/ file-300.ts +1 −2"));
   h.changes.files.reverse();
   h.render();
-  h.state.lists.at(-1).node.handlers.on_item_click("src/file-300.ts", {});
-  assert.deepEqual(h.state.calls, [["pick", "src/file-300.ts"]]);
+  h.state.lists.at(-1).node.handlers.on_item_click("unstaged:src/file-300.ts", {});
+  h.state.lists.at(-1).node.handlers.on_item_click("unstaged:", {});
+  assert.deepEqual(h.state.calls, [["pick", "unstaged:src/file-300.ts"]]);
 });
 
 test("Changes shows files as a tree whose folders collapse on click", async () => {
@@ -352,15 +374,22 @@ test("Changes shows files as a tree whose folders collapse on click", async () =
   let list = h.state.lists.findLast((list) => list.id === "changes-files");
   assert.deepEqual(
     Array.from({ length: list.count }, (_, i) => list.key(i)),
-    ["src/", "src/lib/", "src/lib/a.ts", "src/b.ts", "README.md"],
+    [
+      "unstaged:",
+      "unstaged:src/",
+      "unstaged:src/lib/",
+      "unstaged:src/lib/a.ts",
+      "unstaged:src/b.ts",
+      "unstaged:README.md",
+    ],
   );
-  assert.ok(text(h.range(list, 2, 3)[0]).includes("a.ts +1 −2"));
-  assert.ok(!text(h.range(list, 2, 3)[0]).includes("src/"));
-  assert.ok(text(h.range(list, 0, 1)[0]).includes("src +2 −4"));
-  list.node.handlers.on_item_click("src/lib/", { notify });
+  assert.ok(text(h.range(list, 3, 4)[0]).includes("a.ts +1 −2"));
+  assert.ok(!text(h.range(list, 3, 4)[0]).includes("src/"));
+  assert.ok(text(h.range(list, 1, 2)[0]).includes("src +2 −4"));
+  list.node.handlers.on_item_click("unstaged:src/lib/", { notify });
   h.render();
   list = h.state.lists.findLast((list) => list.id === "changes-files");
-  assert.equal(list.count, 4);
+  assert.equal(list.count, 5);
   assert.deepEqual(h.state.calls, []);
 });
 
@@ -396,7 +425,7 @@ test("Changes totals follow untracked count updates and restored places", async 
   const files = h.changes.files;
   assert.ok(text(h.render()).includes("+2 −0"));
   h.state.untracked = "one\ntwo\nthree\nfour\n";
-  await h.changes.load("file.txt", h.changes.context, h.cx);
+  await h.changes.load("unstaged:file.txt", h.changes.context, h.cx);
   await h.drain();
   assert.equal(h.changes.files, files);
   assert.ok(text(h.render()).includes("+4 −0"));
@@ -458,7 +487,7 @@ test("Changes reuses synchronous context snapshots while keeping async context g
   await h.drain();
   assert.equal(h.changes.root, "/repo");
   assert.equal(h.changes.files[0].path, "file.ts");
-  assert.deepEqual(h.state.hostReads, { spaces: 8, panes: 8, focused: 8, paneRecords: 8000 });
+  assert.deepEqual(h.state.hostReads, { spaces: 6, panes: 6, focused: 6, paneRecords: 6000 });
 
   const previousFiles = h.changes.files,
     heldStatus = deferred(),
@@ -575,7 +604,7 @@ test("unchanged untracked previews retain their computed counts and references",
   assert.equal(h.state.notifications, 0);
   assert.equal(h.changes.files, files);
   assert.equal(h.changes.rows, rows);
-  assert.equal(h.changes.open, "file.txt");
+  assert.equal(h.changes.open, "unstaged:file.txt");
 });
 
 test("a render that starts a Changes refresh records its displayed loading state", async () => {
@@ -595,42 +624,128 @@ const ticks = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
 
-test("Changes overlaps status and HEAD statistics after resolving the repository root", async () => {
+test("Changes overlaps status and section statistics after resolving the repository root", async () => {
   const h = await harness(true);
-  const status = deferred(),
-    head = deferred();
+  const status = deferred();
   h.state.queryBlocks.set("status", status.promise);
-  h.state.queryBlocks.set("head", head.promise);
   h.changes.refresh(h.cx);
   await ticks();
   const started = h.state.queryStarts.slice();
-  head.resolve();
-  await ticks();
-  assert.equal(h.state.queryStarts.includes("unstaged"), false);
   status.resolve();
   await h.drain();
-  assert.deepEqual(started, ["root", "status", "head"]);
+  assert.deepEqual(started, ["root", "status", "cached", "unstaged"]);
 });
 
-test("Changes overlaps unborn repository statistics and sums staged and unstaged counts", async () => {
+test("a partly staged file shows in both sections with each section's counts", async () => {
   const h = await harness(true);
-  h.state.headCode = 1;
+  h.state.status = "MM file.ts\0";
   h.state.cachedStats = "2\t3\tfile.ts\0";
   h.state.stats = "5\t7\tfile.ts\0";
-  const cached = deferred(),
-    unstaged = deferred();
-  h.state.queryBlocks.set("cached", cached.promise);
-  h.state.queryBlocks.set("unstaged", unstaged.promise);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.deepEqual(
+    plain(h.changes.files).map(({ section, add, del }) => [section, add, del]),
+    [
+      ["staged", 2, 3],
+      ["unstaged", 5, 7],
+    ],
+  );
+  const header = text(h.render());
+  assert.ok(header.includes("1 files") && header.includes("+7 −10"));
+  const list = h.state.lists.findLast((list) => list.id === "changes-files");
+  assert.deepEqual(
+    Array.from({ length: list.count }, (_, i) => list.key(i)),
+    ["staged:", "staged:file.ts", "unstaged:", "unstaged:file.ts"],
+  );
+  assert.ok(text(h.range(list, 0, 1)[0]).includes("Staged Changes"));
+});
+
+test("a press on a row's right end stages or unstages what the row holds", async () => {
+  const h = await harness(true);
+  h.state.status = "M  src/a.ts\0 M src/b.ts\0";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.changes.setTree(true, h.cx);
+  h.render();
+  const list = h.state.lists.findLast((list) => list.id === "changes-files"),
+    press = (right: number, key: string) => {
+      list.node.handlers.on_mouse_down({
+        local_position: { x: 300 - right, y: 0 },
+        bounds: { width: 300, height: 400 },
+      });
+      list.node.handlers.on_item_click(key, h.cx);
+    };
+  press(10, "staged:src/a.ts");
+  await h.drain();
+  press(10, "unstaged:src/");
+  await h.drain();
+  press(10, "unstaged:");
+  await h.drain();
+  press(10, "staged:");
+  await h.drain();
+  assert.deepEqual(plain(h.state.indexCalls), [
+    ["reset", "-q", "--", "src/a.ts"],
+    ["add", "-A", "--", "src"],
+    ["add", "-A", "--", "."],
+    ["reset", "-q", "--", "."],
+  ]);
+  press(100, "unstaged:src/b.ts");
+  assert.equal(h.changes.open, "unstaged:src/b.ts");
+  assert.equal(h.state.indexCalls.length, 4);
+});
+
+test("the shown file follows a stage into its new section, and Git's errors show", async () => {
+  const h = await harness(true);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.open, "unstaged:file.ts");
+  h.state.status = "M  file.ts\0";
+  h.changes.runGit(["add", "-A", "--", "file.ts"], h.cx);
+  await h.drain();
+  assert.equal(h.changes.open, "staged:file.ts");
+  assert.equal(h.changes.acting, false);
+  h.state.indexResult = { code: 128, stdout: "", stderr: "fatal: index.lock exists" };
+  h.changes.runGit(["reset", "-q", "--", "file.ts"], h.cx);
+  await h.drain();
+  assert.ok(String(h.changes.note).includes("index.lock exists"));
+});
+
+test("a stage asked for while a refresh runs shows once that refresh ends", async () => {
+  const h = await harness(true);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  const held = deferred();
+  h.state.queryBlocks.set("status", held.promise);
   h.changes.refresh(h.cx);
   await ticks();
-  const started = h.state.queryStarts.slice();
-  unstaged.resolve();
-  await ticks();
-  cached.resolve();
+  h.state.queryBlocks.delete("status");
+  h.state.status = "M  file.ts\0";
+  h.changes.refresh(h.cx);
+  held.resolve();
   await h.drain();
-  assert.ok(started.includes("cached") && started.includes("unstaged"));
-  assert.equal(h.changes.files[0].add, 7);
-  assert.equal(h.changes.files[0].del, 10);
+  assert.equal(h.changes.files[0].section, "staged");
+});
+
+test("a staged diff runs from HEAD to the index and colors both from Git", async () => {
+  const h = await harness(true);
+  h.state.status = "M  file.ts\0";
+  h.state.cachedStats = "1\t1\tfile.ts\0";
+  h.state.cachedDiff = "@@ -1 +1 @@\n-old\n+staged\n";
+  h.state.index = "staged\n";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.deepEqual(plain(h.changes.rows.map((row) => row.text)), ["@@ -1 +1 @@", "old", "staged"]);
+  assert.deepEqual(plain(h.changes.fileLines), ["staged"]);
+  assert.deepEqual(h.state.highlights, [
+    ["old", "file.ts", "HEAD:"],
+    ["old", "file.ts", ":"],
+  ]);
+  h.state.highlights = [];
+  h.state.unborn = true;
+  h.changes.setLines([]);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.deepEqual(h.state.highlights, [["old", "file.ts", ":"]]);
 });
 
 // Values built inside the module's VM realm compare by structure once copied here.
@@ -648,7 +763,7 @@ test("Changes shows plain diff rows first and colors them once from bat", async 
   assert.equal(h.changes.rows.length, 3);
   assert.ok(h.changes.rows.every((row) => row.spans === undefined));
   assert.deepEqual(h.state.highlights, [
-    ["old", "file.ts", "HEAD:"],
+    ["old", "file.ts", ":"],
     ["new", "file.ts"],
   ]);
   h.state.notifications = 0;
@@ -793,6 +908,7 @@ test("comments collect under their lines until the review is sent", async () => 
   const { h, click, comment } = await reviewing();
   click(2);
   assert.deepEqual(plain(h.changes.target), {
+    section: "unstaged",
     path: "file.ts",
     side: "new",
     number: 1,

@@ -19,8 +19,8 @@ export interface DiffRow {
 // tabs, so the text equals the diff's.
 const BAT =
   'head -c 400000 | bat --color=always --style=plain --paging=never --wrap=never --tabs=0 --theme=ansi --file-name "$1"';
-// `$1` is the path; `$2` is `HEAD:`, or `:` for the index of a repository without commits.
-export const OLD_SOURCE = `git show "$2$1" | ${BAT}`;
+// `$1` is the path; `$2` is `HEAD:` for the last commit, or `:` for the index.
+export const REVISION_SOURCE = `git show "$2$1" | ${BAT}`;
 export const NEW_SOURCE = `cat -- "$1" | ${BAT}`;
 
 function sgrColor(codes: number[], color: number | undefined) {

@@ -28,10 +28,12 @@ const byName = (left: string, right: string) => (left < right ? -1 : left > righ
 const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 // Folders come before files, each sorted by name. A folder that holds only one folder joins it in
-// one row ("src/lib"), so deep paths do not take a row per level.
+// one row ("src/lib"), so deep paths do not take a row per level. Collapsed paths start with
+// `keyPrefix`, so lists that share one set keep their folders apart.
 export function treeRows<File extends Counted>(
   files: File[],
   collapsed: ReadonlySet<string>,
+  keyPrefix = "",
 ): TreeRow<File>[] {
   const emptyFolder = (): Folder<File> => ({ folders: new Map(), files: [], add: 0, del: 0 });
   const root = emptyFolder();
@@ -57,7 +59,7 @@ export function treeRows<File extends Counted>(
         inner = only;
       }
       const path = prefix + shown,
-        open = !collapsed.has(path);
+        open = !collapsed.has(keyPrefix + path);
       rows.push({ kind: "folder", path, name: shown, depth, open, add: inner.add, del: inner.del });
       if (open) walk(inner, `${path}/`, depth + 1);
     }

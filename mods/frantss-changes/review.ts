@@ -1,8 +1,10 @@
 import type { Program } from "herdr";
 import type { DiffRow } from "./highlight.ts";
+import { entryKey, type Section } from "./status.ts";
 
 export type Side = "old" | "new";
 export interface ReviewComment {
+  section: Section;
   path: string;
   side: Side;
   number: number;
@@ -20,11 +22,14 @@ export const DEFAULT_NOTE = "Address all comments above.";
 
 export function reviewMessage(comments: ReviewComment[], note: string) {
   const parts = ["Review comments:"];
-  for (const { path, side, number, quote, text } of comments)
+  // A staged line's number is the index's, which unstaged edits can shift in the file.
+  for (const { section, path, side, number, quote, text } of comments)
     parts.push(
-      [`${path}:${number}${side === "old" ? " (removed line)" : ""}`, `> ${quote}`, text].join(
-        "\n",
-      ),
+      [
+        `${path}:${number}${section === "staged" ? " (staged)" : ""}${side === "old" ? " (removed line)" : ""}`,
+        `> ${quote}`,
+        text,
+      ].join("\n"),
     );
   if (note.trim()) parts.push(note.trim());
   return parts.join("\n\n");
@@ -57,9 +62,10 @@ export function pickAgent<A extends Agent>(
 
 // Comment rows follow the line they quote. Comments whose line changed or left the diff are
 // outdated and follow the last row.
-export function withComments(rows: DiffRow[], comments: ReviewComment[], path: string | null) {
+// `open` is the shown file's entry key.
+export function withComments(rows: DiffRow[], comments: ReviewComment[], open: string | null) {
   const own = comments.flatMap((comment, index) =>
-    comment.path === path ? [{ comment, index }] : [],
+    entryKey(comment) === open ? [{ comment, index }] : [],
   );
   if (!own.length) return rows;
   const placed = new Set<number>(),

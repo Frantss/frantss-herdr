@@ -16,7 +16,9 @@ const comment = (
   number: number,
   quote: string,
   text: string,
+  section: "staged" | "unstaged" = "unstaged",
 ) => ({
+  section,
   path,
   side,
   number,
@@ -30,6 +32,7 @@ test("review messages quote each line and end with the note", () => {
       [
         comment("a.ts", "new", 42, "const x = 1;", "Rename this."),
         comment("b.ts", "old", 17, "old code", "Why remove this?"),
+        comment("c.ts", "new", 3, "staged code", "Check this.", "staged"),
       ],
       "  Looks close.  ",
     ),
@@ -43,6 +46,10 @@ test("review messages quote each line and end with the note", () => {
       "b.ts:17 (removed line)",
       "> old code",
       "Why remove this?",
+      "",
+      "c.ts:3 (staged)",
+      "> staged code",
+      "Check this.",
       "",
       "Looks close.",
     ].join("\n"),
@@ -98,9 +105,10 @@ test("comments show under their line, and changed or missing lines are outdated 
     comment("other.ts", "new", 1, "b", "Elsewhere"),
     comment("x.ts", "new", 2, "was c", "Changed"),
     comment("x.ts", "new", 9, "gone", "Missing"),
+    comment("x.ts", "new", 1, "b", "On the staged b", "staged"),
   ];
   assert.deepEqual(
-    withComments(rows, comments, "x.ts").map((row) => [
+    withComments(rows, comments, "unstaged:x.ts").map((row) => [
       row.kind,
       row.text,
       row.comment,
@@ -116,7 +124,7 @@ test("comments show under their line, and changed or missing lines are outdated 
       ["#", "Missing", 4, true],
     ],
   );
-  assert.equal(withComments(rows, [], "x.ts"), rows);
+  assert.equal(withComments(rows, [], "unstaged:x.ts"), rows);
 });
 
 test("the comment box follows its line, or replaces the comment it edits", () => {
@@ -125,7 +133,13 @@ test("the comment box follows its line, or replaces the comment it edits", () =>
     { kind: "+", number: 1, text: "b" },
     { kind: "#", text: "On b", comment: 0 },
   ];
-  const line = { path: "x.ts", side: "old" as const, number: 1, quote: "a" };
+  const line = {
+    section: "unstaged" as const,
+    path: "x.ts",
+    side: "old" as const,
+    number: 1,
+    quote: "a",
+  };
   assert.deepEqual(
     withComposer(rows, { ...line, index: null }).map((row) => row.kind),
     ["-", "compose", "+", "#"],

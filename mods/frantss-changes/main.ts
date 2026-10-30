@@ -51,23 +51,24 @@ import {
   colorRows,
   parseAnsi,
   NEW_SOURCE,
-  OLD_SOURCE,
+  REVISION_SOURCE,
   type DiffRow,
   type Span,
 } from "./highlight.ts";
+import {
+  SECTIONS,
+  changedFiles,
+  entryKey,
+  parseNumstat,
+  parseStatus,
+  type ChangedFile,
+  type Section,
+} from "./status.ts";
 
 type Theme = Record<string, Color>;
 
-interface FileStats {
-  add: number;
-  del: number;
-  binary?: boolean;
-}
-interface ChangedFile extends FileStats {
-  path: string;
-  status: string;
-  fresh: boolean;
-}
+// A section's header row leads its files in the list.
+type ListRow = (TreeRow<ChangedFile> | { kind: "section"; count: number }) & { section: Section };
 type Snapshot = Pick<
   Changes,
   | "root"
@@ -96,11 +97,16 @@ const TRASH = "mods/frantss-changes/trash.svg",
   CHEVRON = "mods/workspace-chrome/chevron-down.svg",
   FOLDED = "mods/workspace-chrome/chevron-right.svg",
   LIST = "mods/frantss-changes/list.svg",
-  TREE = "mods/frantss-changes/tree.svg";
+  TREE = "mods/frantss-changes/tree.svg",
+  PLUS = "mods/frantss-changes/plus.svg",
+  MINUS = "mods/frantss-changes/minus.svg";
+const SECTION_TITLE: Record<Section, string> = { staged: "Staged Changes", unstaged: "Changes" };
 const TREE_SETTING = "changes-tree";
 // Diff rows indent their text past the line number and the hover "+".
 const GUTTER = 62,
   COMPOSER = 48;
+// A list row's stage or unstage button, from the list's right edge.
+const INDEX_ACTION = 26;
 const zoom = () => (settings().zoom as number | undefined) ?? 1;
 
 // Git's lock files come and go with every git command; refreshing on them alone never ends.
@@ -158,6 +164,7 @@ const sameFiles = (left: ChangedFile[], right: ChangedFile[]) =>
   left.every((file, i) => {
     const other = right[i];
     return (
+      file.section === other.section &&
       file.path === other.path &&
       file.status === other.status &&
       file.fresh === other.fresh &&
@@ -175,7 +182,7 @@ const sameRows = (left: DiffRow[], right: DiffRow[]) =>
 
 export default class Changes extends View {
   declare files: ChangedFile[];
-  declare totals: { files: ChangedFile[]; add: number; del: number } | null;
+  declare totals: { files: ChangedFile[]; count: number; add: number; del: number } | null;
   // Show the files as a folder tree instead of a flat list; folder rows hold the collapsed paths.
   declare tree: boolean;
   declare collapsed: ReadonlySet<string>;
@@ -183,7 +190,7 @@ export default class Changes extends View {
     files: ChangedFile[];
     tree: boolean;
     collapsed: ReadonlySet<string>;
-    rows: TreeRow<ChangedFile>[];
+    rows: ListRow[];
   } | null;
   // Shown rows: the diff's plain rows with expanded gaps and colors.
   declare rows: DiffRow[];
@@ -207,6 +214,8 @@ export default class Changes extends View {
   declare target: Target | null;
   // Where the last press in the diff landed, since a row click reports only the row.
   declare pressX: number;
+  // How far left of the file list's right edge its last press landed.
+  declare pressRight: number;
   declare sending: boolean;
   // The agent picked for the review; null sends to this space's latest one.
   declare agentAddress: string | null;
@@ -219,6 +228,9 @@ export default class Changes extends View {
   declare context: string;
   declare limited: boolean;
   declare loading: boolean;
+  declare again: boolean;
+  // A stage or unstage is running; one runs at a time.
+  declare acting: boolean;
   declare loadingRendered: boolean;
   declare watchToken: object;
   declare stale: boolean;
@@ -236,6 +248,9 @@ export default class Changes extends View {
     this.reviewNote = DEFAULT_NOTE;
     this.target = null;
     this.agentAddress = null;
+    this.acting = false;
+    this.again = false;
+    this.pressRight = Infinity;
     this.setLines([]);
     this.handle = cx.focus_handle();
     this.kept = new Map();
@@ -292,7 +307,13 @@ export default class Changes extends View {
       context = JSON.stringify({ cwd, on });
     // Switch places before waiting on any git still running for the last one: its results check the place.
     if (context !== this.context) this.switchTo(context);
-    if (this.loading || !cwd) return;
+    if (!cwd) return;
+    // A refresh asked for while one runs follows it, so a stage or unstage always shows.
+    if (this.loading) {
+      this.again = true;
+      return;
+    }
+    this.again = false;
     if (!panelShown("changes")) {
       this.stale = true;
       return;
@@ -324,64 +345,45 @@ export default class Changes extends View {
         const git = (args: string[]) => exec("git", args, { cwd: root, on }),
           numstat = (...args: string[]) =>
             git(["diff", ...args, "--numstat", "-z", "--no-renames"]);
-        const [status, head] = await Promise.all([
+        const results = await Promise.all([
           git([
             "--no-optional-locks",
             "status",
             "--porcelain=v1",
             "-z",
+            "--branch",
             "--no-renames",
             "--untracked-files=all",
           ]),
-          numstat("HEAD"),
+          numstat("--cached"),
+          numstat(),
         ]);
         if (key() !== context) return;
-        if (status.code !== 0) throw new Error(status.stderr);
-        const stats: Record<string, FileStats> = {};
-        // Before the first commit there is no HEAD: count the staged and unstaged changes.
-        const results =
-          head.code === 0 ? [head] : await Promise.all([numstat("--cached"), numstat()]);
-        if (key() !== context) return;
-        for (const result of results) {
-          if (result.code !== 0) throw new Error(result.stderr);
-          for (const entry of result.stdout.split("\0")) {
-            const [a, d, ...parts] = entry.split("\t");
-            if (!parts.length) continue;
-            const path = parts.join("\t"),
-              old = stats[path] ?? { add: 0, del: 0 };
-            stats[path] = {
-              add: old.add + (Number(a) || 0),
-              del: old.del + (Number(d) || 0),
-              binary: a === "-",
-            };
-          }
-        }
-        const files: ChangedFile[] = [];
-        const entries = status.stdout.split("\0").filter(Boolean);
-        for (const entry of entries.slice(0, 1000)) {
-          const xy = entry.slice(0, 2),
-            path = entry.slice(3),
-            fresh = xy === "??";
-          const conflict = xy.includes("U") || xy === "AA" || xy === "DD";
-          const s = conflict ? "U" : xy.includes("D") ? "D" : fresh || xy.includes("A") ? "A" : "M";
-          const stat = stats[path] ?? { add: 0, del: 0 };
-          files.push({ path, status: s, fresh, ...stat });
-        }
-        if (key() !== context) return;
+        for (const result of results) if (result.code !== 0) throw new Error(result.stderr);
+        const [status, staged, unstaged] = results.map((result) => result.stdout),
+          { hasHead, entries } = parseStatus(status),
+          files = changedFiles(
+            entries.slice(0, 1000),
+            parseNumstat(staged),
+            parseNumstat(unstaged),
+          );
         this.root = root;
         this.gitDir = gitDir;
         this.on = on;
-        this.hasHead = head.code === 0;
+        this.hasHead = hasHead;
         this.files = files;
         this.limited = entries.length > 1000;
         this.error = null;
         this.watch(root, cx);
-        if (this.open && !files.some((f) => f.path === this.open)) {
-          this.open = null;
+        // A file staged or unstaged while shown stays shown in the section it moved to.
+        if (this.open && !files.some((f) => entryKey(f) === this.open)) {
+          const path = this.open.slice(this.open.indexOf(":") + 1),
+            moved = files.find((f) => f.path === path);
+          this.open = moved ? entryKey(moved) : null;
           this.setLines([]);
         }
         // The first file's diff shows until you pick another.
-        if (!this.open && !this.closed && files.length) this.open = files[0].path;
+        if (!this.open && !this.closed && files.length) this.open = entryKey(files[0]);
         if (this.open) {
           try {
             await this.load(this.open, context, cx);
@@ -411,7 +413,7 @@ export default class Changes extends View {
         const notify = changed || this.loadingRendered;
         this.loading = false;
         // The place changed while git ran: refresh the one now shown.
-        if (currentKey !== context) this.refresh(cx);
+        if (currentKey !== context || this.again) this.refresh(cx);
         if (notify) cx.notify();
       }
     });
@@ -450,12 +452,14 @@ export default class Changes extends View {
     this.noteInput.set_value(this.reviewNote);
   }
 
-  async load(path: string, context: string, cx: Context) {
-    const file = this.files.find((f) => f.path === path),
+  // The staged diff runs from HEAD to the index; the unstaged one from the index to the files.
+  async load(open: string, context: string, cx: Context) {
+    const file = this.files.find((f) => entryKey(f) === open),
       root = this.root,
       on = this.on;
     if (!file) return;
-    const fresh = file.fresh || (!this.hasHead && file.status === "A");
+    const { path, fresh } = file,
+      staged = file.section === "staged";
     let lines: string[],
       text: string | null = null;
     if (fresh) {
@@ -475,7 +479,7 @@ export default class Changes extends View {
           "git",
           [
             "diff",
-            ...(this.hasHead ? ["HEAD"] : []),
+            ...(staged ? ["--cached"] : []),
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
@@ -486,13 +490,18 @@ export default class Changes extends View {
         ),
         file.status === "D" || file.binary
           ? null
-          : readTextFile(`${root}/${path}`, { on }).catch((): null => null),
+          : staged
+            ? exec("git", ["show", `:${path}`], { cwd: root, on }).then(
+                (r) => (r.code === 0 ? r.stdout : null),
+                (): null => null,
+              )
+            : readTextFile(`${root}/${path}`, { on }).catch((): null => null),
       ]);
       if (r.code !== 0) throw new Error(r.stderr);
       lines = trackedPreview(r.stdout, Boolean(file.binary));
       text = current;
     }
-    if (key() !== context || this.open !== path) return;
+    if (key() !== context || this.open !== open) return;
     const rows = diffRows(lines);
     // An unchanged diff keeps its expanded gaps and colors without running bat again.
     if (sameRows(this.plainRows, rows)) return;
@@ -503,22 +512,24 @@ export default class Changes extends View {
     this.newSpans = [];
     this.show();
     if (!file.binary && rows.some((row) => row.number !== undefined))
-      this.highlight(path, fresh, rows, cx);
+      this.highlight(file, rows, cx);
   }
 
   // Shows the plain rows first and colors them when bat answers.
-  highlight(path: string, fresh: boolean, rows: DiffRow[], cx: Context) {
+  highlight({ path, fresh, section }: ChangedFile, rows: DiffRow[], cx: Context) {
     const context = this.context,
+      open = this.open,
+      staged = section === "staged",
       source = (script: string, ...args: string[]) =>
         exec("sh", ["-c", script, "bat", path, ...args], { cwd: this.root, on: this.on }).catch(
           (): null => null,
         );
     cx.spawn(async (cx) => {
       const [old, next] = await Promise.all([
-        fresh ? null : source(OLD_SOURCE, this.hasHead ? "HEAD:" : ":"),
-        source(NEW_SOURCE),
+        fresh || (staged && !this.hasHead) ? null : source(REVISION_SOURCE, staged ? "HEAD:" : ":"),
+        staged ? source(REVISION_SOURCE, ":") : source(NEW_SOURCE),
       ]);
-      if (key() !== context || this.open !== path || this.plainRows !== rows) return;
+      if (key() !== context || this.open !== open || this.plainRows !== rows) return;
       if (old?.code === 127 || next?.code === 127) {
         if (!this.note) {
           this.note = "Install bat for syntax colors";
@@ -581,9 +592,17 @@ export default class Changes extends View {
       this.commentInput.set_value(text);
       this.commentInput.focus();
     } else {
-      const side = lineSide(row);
-      if (!side) return;
-      this.target = { path: this.open, side, number: row.number, quote: row.text, index: null };
+      const side = lineSide(row),
+        file = this.openFile();
+      if (!side || !file) return;
+      this.target = {
+        section: file.section,
+        path: file.path,
+        side,
+        number: row.number,
+        quote: row.text,
+        index: null,
+      };
       this.commentInput.set_value("");
       this.commentInput.focus();
     }
@@ -652,8 +671,12 @@ export default class Changes extends View {
     cx.notify();
   }
 
-  pick(path: string, cx: Context) {
-    this.open = this.open === path ? null : path;
+  openFile() {
+    return this.files.find((file) => entryKey(file) === this.open);
+  }
+
+  pick(open: string, cx: Context) {
+    this.open = this.open === open ? null : open;
     this.closeComment();
     this.setLines([]);
     this.note = null;
@@ -662,9 +685,9 @@ export default class Changes extends View {
     if (this.open)
       cx.spawn(async (cx) => {
         try {
-          await this.load(path, context, cx);
+          await this.load(open, context, cx);
         } catch (e) {
-          if (key() === context && this.open === path)
+          if (key() === context && this.open === open)
             this.note = `Cannot preview this diff (too large or unreadable): ${e}`;
         }
         cx.notify();
@@ -678,7 +701,7 @@ export default class Changes extends View {
     if (row.kind === "#") return row.comment === target.index;
     return (
       target.index === null &&
-      target.path === this.open &&
+      entryKey(target) === this.open &&
       target.number === row.number &&
       target.side === lineSide(row)
     );
@@ -817,9 +840,11 @@ export default class Changes extends View {
     const parts =
         depth === undefined ? f.path.split("/") : [f.path.slice(f.path.lastIndexOf("/") + 1)],
       name = parts.pop(),
-      comments = this.comments.filter((comment) => comment.path === f.path).length;
+      open = entryKey(f),
+      comments = this.comments.filter((comment) => entryKey(comment) === open).length;
     return h_flex()
-      .id(`change-${f.path}`)
+      .id(`change-${open}`)
+      .relative()
       .h(24)
       .flex_none()
       .px(8)
@@ -828,8 +853,8 @@ export default class Changes extends View {
       .items_center()
       .rounded(3)
       .cursor_pointer()
-      .text_color(this.open === f.path ? t.foreground : t.muted)
-      .when(this.open === f.path, (e) => e.bg(t.selected))
+      .text_color(this.open === open ? t.foreground : t.muted)
+      .when(this.open === open, (e) => e.bg(t.selected))
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .child(
         div()
@@ -862,7 +887,8 @@ export default class Changes extends View {
       .when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)))
       .when(comments > 0, (e) =>
         e.child(div().text_size(11).text_color(t.accent).child(`✎ ${comments}`)),
-      );
+      )
+      .child(this.indexAction(open, f.section, t));
   }
 
   // Names the file the diff below shows.
@@ -899,9 +925,11 @@ export default class Changes extends View {
       .when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
   }
 
-  folderRow(row: Extract<TreeRow<ChangedFile>, { kind: "folder" }>, t: Theme) {
+  folderRow(row: Extract<ListRow, { kind: "folder" }>, t: Theme) {
+    const { section } = row;
     return h_flex()
-      .id(`change-folder-${row.path}`)
+      .id(`change-folder-${section}:${row.path}`)
+      .relative()
       .h(24)
       .flex_none()
       .pl(8 + row.depth * 14)
@@ -924,23 +952,116 @@ export default class Changes extends View {
       )
       .when(row.del > 0, (e) =>
         e.child(div().text_size(11).text_color(t.ansi1).child(`−${row.del}`)),
+      )
+      .child(this.indexAction(`${section}:${row.path}/`, section, t));
+  }
+
+  sectionRow({ section, count }: Extract<ListRow, { kind: "section" }>, t: Theme) {
+    return h_flex()
+      .id(`change-section-${section}`)
+      .relative()
+      .h(24)
+      .flex_none()
+      .px(8)
+      .gap(8)
+      .items_center()
+      .rounded(3)
+      .text_size(11)
+      .text_color(t.muted)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .child(div().flex_1().min_w(0).truncate().child(SECTION_TITLE[section]))
+      .child(div().text_size(10).child(String(count)))
+      .child(this.indexAction(`${section}:`, section, t));
+  }
+
+  // The stage or unstage button at the row's right end. A list row cannot take handlers, so the
+  // list's click handler finds a press over it; it shows on hover: an overlay over the row, since
+  // a row cannot style its children, whose fill covers the counts.
+  indexAction(id: string, section: Section, t: Theme) {
+    return div()
+      .id(`index-${id}`)
+      .absolute()
+      .inset_0()
+      .opacity(0)
+      .hover((s) => s.opacity(1))
+      .child(
+        div()
+          .absolute()
+          .right(2)
+          .top(2)
+          .size(20)
+          .flex()
+          .items_center()
+          .justify_center()
+          .rounded(3)
+          .bg(t.hover)
+          .text_color(this.acting ? t.dim : t.foreground)
+          .child(svg(section === "staged" ? MINUS : PLUS).size(14)),
       );
   }
 
-  // The list's rows; folder keys end in "/", which no changed file's path does.
+  // A press over a row's button stages or unstages what the row holds; elsewhere a section's row
+  // does nothing, a folder's opens or closes it, and a file's shows its diff.
+  clickListRow(key: string, cx: Context) {
+    const colon = key.indexOf(":"),
+      section = key.slice(0, colon) as Section,
+      path = key.slice(colon + 1);
+    if (this.pressRight <= INDEX_ACTION * zoom()) {
+      const paths = [path.replace(/\/$/, "") || "."];
+      this.runGit(
+        section === "staged" ? ["reset", "-q", "--", ...paths] : ["add", "-A", "--", ...paths],
+        cx,
+      );
+    } else if (path.endsWith("/")) this.toggleFolder(key.slice(0, -1), cx);
+    else if (path) this.pick(key, cx);
+  }
+
+  // Runs one git command on the repository, then shows what it changed.
+  runGit(args: string[], cx: Context) {
+    const { root, on, context } = this;
+    if (this.acting || !root) return;
+    this.acting = true;
+    this.note = null;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("git", args, { cwd: root, on });
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
+      } catch (e) {
+        if (key() === context) this.note = String(e);
+      } finally {
+        this.acting = false;
+        this.refresh(cx);
+        cx.notify();
+      }
+    });
+    cx.notify();
+  }
+
+  // Each section's header row, then its files.
   shownRows() {
     const { files, tree, collapsed } = this,
       shown = this.shownFiles;
-    if (shown?.files !== files || shown.tree !== tree || shown.collapsed !== collapsed)
-      this.shownFiles = {
-        files,
-        tree,
-        collapsed,
-        rows: tree
-          ? treeRows(files, collapsed)
-          : files.map((file) => ({ kind: "file", file, depth: 0 })),
-      };
+    if (shown?.files !== files || shown.tree !== tree || shown.collapsed !== collapsed) {
+      const rows: ListRow[] = [];
+      for (const section of SECTIONS) {
+        const own = files.filter((file) => file.section === section);
+        if (!own.length) continue;
+        rows.push({ kind: "section", section, count: own.length });
+        if (tree)
+          for (const row of treeRows(own, collapsed, `${section}:`)) rows.push({ ...row, section });
+        else for (const file of own) rows.push({ kind: "file", file, depth: 0, section });
+      }
+      this.shownFiles = { files, tree, collapsed, rows };
+    }
     return this.shownFiles!.rows;
+  }
+
+  // A file's key is its entry key; a folder's adds a "/", which no changed file's path ends in;
+  // a section's has no path.
+  rowKey(row: ListRow) {
+    if (row.kind === "section") return `${row.section}:`;
+    if (row.kind === "folder") return `${row.section}:${row.path}/`;
+    return entryKey(row.file);
   }
 
   setTree(tree: boolean, cx: Context) {
@@ -964,7 +1085,9 @@ export default class Changes extends View {
         add += file.add;
         del += file.del;
       }
-      this.totals = { files: this.files, add, del };
+      // A partly staged file is in both sections but counts once.
+      const count = new Set(this.files.map((file) => file.path)).size;
+      this.totals = { files: this.files, count, add, del };
     }
     return this.totals;
   }
@@ -978,9 +1101,9 @@ export default class Changes extends View {
     if (key() !== this.context) this.refresh(cx);
     if (this.loading) this.loadingRendered = true;
     const t = theme() as Theme,
-      { add, del } = this.fileTotals(),
+      { count, add, del } = this.fileTotals(),
       rows = this.shownRows(),
-      openFile = this.files.find((file) => file.path === this.open);
+      openFile = this.openFile();
     return v_flex()
       .id("changes")
       .size_full()
@@ -1016,7 +1139,7 @@ export default class Changes extends View {
           .border_b(1)
           .border_color(t.border)
           .child(div().child("Changes"))
-          .child(div().text_size(10).text_color(t.muted).child(`${this.files.length} files`))
+          .child(div().text_size(10).text_color(t.muted).child(`${count} files`))
           .when(this.comments.length > 0, (e) =>
             e.child(
               div()
@@ -1067,31 +1190,32 @@ export default class Changes extends View {
                             "changes-files",
                             rows.length,
                             26 * zoom(),
-                            (i) => {
-                              const row = rows[i];
-                              return row.kind === "folder" ? `${row.path}/` : row.file.path;
-                            },
+                            (i) => this.rowKey(rows[i]),
                             (range) =>
                               rows.slice(range.start, range.end).map((row) =>
                                 v_flex()
                                   .h(26)
                                   .child(
-                                    row.kind === "folder"
-                                      ? this.folderRow(row, t)
-                                      : this.fileRow(
-                                          row.file,
-                                          t,
-                                          this.tree ? row.depth : undefined,
-                                        ),
+                                    row.kind === "section"
+                                      ? this.sectionRow(row, t)
+                                      : row.kind === "folder"
+                                        ? this.folderRow(row, t)
+                                        : this.fileRow(
+                                            row.file,
+                                            t,
+                                            this.tree ? row.depth : undefined,
+                                          ),
                                   ),
                               ),
                           )
                             .size_full()
-                            .on_item_click((key, cx) =>
-                              key.endsWith("/")
-                                ? this.toggleFolder(key.slice(0, -1), cx)
-                                : this.pick(key, cx),
-                            ),
+                            .on_mouse_down("left", (e) => {
+                              this.pressRight =
+                                e.local_position && e.bounds
+                                  ? e.bounds.width - e.local_position.x
+                                  : Infinity;
+                            })
+                            .on_item_click((key, cx) => this.clickListRow(key, cx)),
                         )
                         .child(
                           Scrollbar.vertical("changes-files")
