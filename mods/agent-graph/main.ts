@@ -1,6 +1,7 @@
 // Agents as a graph: each agent a card, a line from every agent to the sub-agents it started.
 // A tree when it fits the width, else an indented outline of the same cards.
-// Styled as a frantss side panel, beside Files and Changes.
+// Styled as a frantss side panel, beside Files and Changes. A card's hover buttons and right-click
+// menu act on its agent; in an outline, a blocked agent's card shows its question and takes a reply.
 
 import {
   View,
@@ -11,10 +12,26 @@ import {
   type Context,
   type AsyncContext,
   type Color,
+  type FocusHandle,
 } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, run, hc, settings, shared, theme } from "herdr";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import {
+  agents,
+  terminals,
+  panes,
+  focused,
+  run,
+  hc,
+  notify,
+  openOverlay,
+  setAgentOrder,
+  settings,
+  shared,
+  theme,
+} from "herdr";
 import { panelShown } from "./panel.ts";
+import { button } from "./button.ts";
+import { menuItems, questionLines, INTERRUPT_ICON, PEEK_ICON, type MenuItem } from "./actions.ts";
 
 type AgentStatus = "working" | "blocked" | "idle" | "done" | "finished" | "error";
 interface TerminalRecord {
@@ -37,6 +54,8 @@ interface TerminalRecord {
 interface AgentNode {
   k: TerminalRecord;
   status: AgentStatus | null;
+  // A blocked agent, or one being replied to: in an outline, its card shows its screen's last lines.
+  asks: boolean;
   allKids: TerminalRecord[];
   kids: AgentNode[];
   width?: number;
@@ -44,6 +63,7 @@ interface AgentNode {
   x?: number;
   y?: number;
   w?: number;
+  h?: number;
 }
 type Statuses = Map<string, AgentStatus>;
 type Theme = Record<string, Color>;
@@ -62,6 +82,11 @@ const OUTLINE_MIN_W = 160;
 const OUTLINE_BELOW = 720;
 // Where an outline's lines leave a parent, from its left edge.
 const TRUNK = 14;
+// A blocked card's question: its screen's last lines, then the reply row.
+const QUESTION_LINES = 4;
+const QUESTION_LINE_H = 15;
+const QUESTION_H = QUESTION_LINES * QUESTION_LINE_H + 32;
+const MENU_W = 180;
 // How long a finished sub-agent stays on the graph after it ends.
 const FINISHED_FOR_MS = 10 * 60000;
 // Lines share trunks, so they are drawn least urgent first: the most urgent color stays on top.
@@ -140,6 +165,7 @@ function place(node: AgentNode, left: number, depth: number) {
   node.x = left + (node.width - CARD_W) / 2;
   node.y = PAD + depth * (CARD_H + GAP_Y);
   node.w = CARD_W;
+  node.h = CARD_H;
   let x = left + (node.width - node.kidsWidth) / 2;
   for (const kid of node.kids) {
     place(kid, x, depth + 1);
@@ -152,7 +178,8 @@ function placeOutline(node: AgentNode, depth: number, y: number, width: number):
   node.x = PAD + depth * INDENT;
   node.y = y;
   node.w = Math.max(OUTLINE_MIN_W, width - PAD - node.x);
-  let next = y + CARD_H + OUTLINE_GAP;
+  node.h = node.asks ? CARD_H + QUESTION_H : CARD_H;
+  let next = y + node.h + OUTLINE_GAP;
   for (const kid of node.kids) next = placeOutline(kid, depth + 1, next, width);
   return next;
 }
@@ -191,8 +218,27 @@ export default class AgentGraph extends View {
   declare stale: boolean;
   declare outline: boolean;
   declare ages: string;
+  declare handle: FocusHandle;
+  declare hovered: string | null;
+  // The card whose menu is open, where it opens in the canvas, and whether Kill waits for a confirm.
+  declare menu: { k: TerminalRecord; pane: boolean; x: number; y: number; confirm: boolean } | null;
+  declare replyTo: string | null;
+  declare replyInput: InputState;
+  // Blocked agents' question lines, read once per status change.
+  declare questions: Map<string, { since: number; lines: string[] }>;
+  declare reading: Set<string>;
+  declare agentOrder: string;
 
   init(_props: unknown, cx: AsyncContext) {
+    this.handle = cx.focus_handle();
+    this.hovered = null;
+    this.menu = null;
+    this.replyTo = null;
+    this.replyInput = InputState.new({ placeholder: "Reply" });
+    this.replyInput.on("submit", (_e, cx) => this.sendReply(cx));
+    this.questions = new Map();
+    this.reading = new Set();
+    this.agentOrder = "";
     this.folded = new Set();
     this.scope = localStorage.getItem("scope") ?? "space";
     this.size = { width: 0, height: 0 };
@@ -316,10 +362,12 @@ export default class AgentGraph extends View {
     for (const siblings of children.values()) siblings.sort((a, b) => a.created_ms - b.created_ms);
     const kidsOf = (address: string) => children.get(address) ?? [];
     const build = (k: TerminalRecord): AgentNode => {
-      const allKids = kidsOf(k.address);
+      const allKids = kidsOf(k.address),
+        status = statusOf(k, listed);
       return {
         k,
-        status: statusOf(k, listed),
+        status,
+        asks: (status === "blocked" && k.state === "live") || k.address === this.replyTo,
         allKids,
         kids: this.folded.has(k.address) ? [] : allKids.map(build),
       };
@@ -335,6 +383,116 @@ export default class AgentGraph extends View {
     const pane = panes().find((p) => p.terminal === k.address);
     if (pane) run("pane.focus", { pane: pane.pane });
     else run("terminal.peek", { terminal: k.address });
+  }
+
+  // agent.next and agent.prev go through the agents in the order the graph shows them.
+  syncAgentOrder(nodes: AgentNode[], listed: Statuses) {
+    const order = nodes.map((n) => n.k.address).filter((address) => listed.has(address));
+    const key = order.join(" ");
+    if (key === this.agentOrder) return;
+    this.agentOrder = key;
+    setAgentOrder(order);
+  }
+
+  // Runs an hc command on an agent in the background; a failure shows as a toast.
+  hcAction(args: string[], failure: string, cx: Context) {
+    cx.spawn(async () => {
+      const result = await hc(args).catch(() => null);
+      if (result?.code !== 0)
+        notify({ title: failure, body: result?.stderr.trim() || undefined, level: "error" });
+    });
+  }
+
+  // Opens a card's menu in the canvas: under its top row, or above it when the panel ends first.
+  openMenu(node: AgentNode, cx: Context) {
+    const pane = panes().some((p) => p.terminal === node.k.address);
+    const height = menuItems({ live: node.k.state === "live", pane, reply: this.outline }).reduce(
+      (h, item) => h + (item ? 24 : 9),
+      8,
+    );
+    const below = node.y + CARD_H;
+    this.menu = {
+      k: node.k,
+      pane,
+      x: Math.max(0, node.x + node.w - MENU_W),
+      y:
+        below + height > Math.max(this.size.height - 28, height)
+          ? Math.max(0, node.y - height)
+          : below,
+      confirm: false,
+    };
+    this.handle.focus();
+    cx.notify();
+  }
+
+  choose({ action }: MenuItem, cx: Context) {
+    const { k } = this.menu,
+      terminal = k.address;
+    if (action === "kill" && !this.menu.confirm) {
+      this.menu.confirm = true;
+      cx.notify();
+      return;
+    }
+    this.menu = null;
+    if (action === "focus") this.open(k);
+    else if (action === "peek") run("terminal.peek", { terminal });
+    else if (action === "keep") run("terminal.keep", { terminal });
+    else if (action === "park") run("terminal.park", { terminal });
+    else if (action === "kill") run("terminal.kill", { terminal });
+    else if (action === "reply") this.startReply(terminal);
+    else if (action === "interrupt")
+      this.hcAction(["interrupt", terminal], "Could not interrupt", cx);
+    else if (action === "copy-address") cx.write_to_clipboard(terminal);
+    else if (action === "copy-folder") cx.write_to_clipboard(k.cwd ?? "");
+    else if (action === "remove") {
+      this.ended.delete(terminal);
+      this.expired.add(terminal);
+      this.hcAction(["rm", terminal], "Could not remove the terminal", cx);
+    }
+    cx.notify();
+  }
+
+  startReply(address: string) {
+    this.replyTo = address;
+    this.replyInput.set_value("");
+    this.replyInput.focus();
+  }
+
+  // A blocked agent only takes text with --force: the reply may answer its question.
+  sendReply(cx: Context) {
+    const text = this.replyInput.value().trim(),
+      address = this.replyTo;
+    this.replyTo = null;
+    cx.notify();
+    if (!text || !address) return;
+    const blocked = agents().find((a) => a.address === address)?.status === "blocked";
+    this.hcAction(
+      ["send", ...(blocked ? ["--force"] : []), address, text],
+      "Could not send the reply",
+      cx,
+    );
+  }
+
+  // Reads a blocked agent's screen once per status change, while its card shows.
+  readQuestion(k: TerminalRecord, cx: Context) {
+    const since = k.status_ms ?? 0;
+    if (this.questions.get(k.address)?.since === since || this.reading.has(k.address)) return;
+    this.reading.add(k.address);
+    cx.spawn(async (cx) => {
+      try {
+        const result = await hc(["read", k.address, "--json"]);
+        const lines =
+          result.code === 0
+            ? questionLines(JSON.parse(result.stdout).text ?? "", QUESTION_LINES)
+            : ["Could not read the screen"];
+        this.questions.set(k.address, { since, lines });
+      } catch {
+        this.questions.set(k.address, { since, lines: ["Could not read the screen"] });
+      } finally {
+        this.reading.delete(k.address);
+        cx.notify();
+      }
+    });
   }
 
   status(t: Theme, s: AgentStatus | null) {
@@ -384,21 +542,116 @@ export default class AgentGraph extends View {
       .child(`exit ${k.exit_code}`);
   }
 
+  // A hovered card's buttons, in place of its detail: peek, interrupt while working, and its menu.
+  hoverButtons(node: AgentNode) {
+    const { k, status } = node,
+      live = k.state === "live",
+      quiet = (
+        id: string,
+        label: Parameters<typeof button>[1],
+        tooltip: string,
+        action: (cx: Context) => void,
+      ) =>
+        button(`${id}-${k.address}`, label, action, {
+          variant: "quiet",
+          size: "dense",
+          square: true,
+          tooltip,
+        });
+    return h_flex()
+      .gap(2)
+      .when(live, (el) =>
+        el.child(
+          quiet("peek", svg(PEEK_ICON).size(12), "Peek", () =>
+            run("terminal.peek", { terminal: k.address }),
+          ),
+        ),
+      )
+      .when(status === "working", (el) =>
+        el.child(
+          quiet("interrupt", svg(INTERRUPT_ICON).size(12), "Interrupt", (cx) =>
+            this.hcAction(["interrupt", k.address], "Could not interrupt", cx),
+          ),
+        ),
+      )
+      .child(quiet("more", "⋯", "More actions", (cx) => this.openMenu(node, cx)));
+  }
+
+  // A blocked card's question and the keys that answer it, or the reply field while replying.
+  question(t: Theme, k: TerminalRecord) {
+    const lines = this.questions.get(k.address)?.lines ?? ["Reading the screen…"];
+    const dense = (id: string, label: string, tooltip: string, action: (cx: Context) => void) =>
+      button(`${id}-${k.address}`, label, action, { size: "dense", tooltip });
+    return v_flex()
+      .h(QUESTION_H)
+      .pb(8)
+      .gap(4)
+      .child(
+        v_flex()
+          .h(QUESTION_LINES * QUESTION_LINE_H)
+          .justify_end()
+          .text_size(11)
+          .text_color(t.muted)
+          .children(
+            lines.map((line) =>
+              div()
+                .h(QUESTION_LINE_H)
+                .truncate()
+                .child(line || " "),
+            ),
+          ),
+      )
+      .child(
+        this.replyTo === k.address
+          ? div()
+              .id(`reply-field-${k.address}`)
+              .h(20)
+              .px(6)
+              .flex()
+              .items_center()
+              .rounded(3)
+              .border_1()
+              .border_color(t.accent)
+              .bg(t.background)
+              .cursor_text()
+              .on_click((_e, cx) => cx.stop_propagation())
+              .child(Input.new(this.replyInput).h_full().text_size(11).text_color(t.foreground))
+          : h_flex()
+              .gap(4)
+              .child(
+                dense("reply", "Reply…", `Send a message to ${k.address}`, (cx) => {
+                  this.startReply(k.address);
+                  cx.notify();
+                }),
+              )
+              .child(
+                dense("enter", "Enter", "Press Enter: picks the selected choice", (cx) =>
+                  this.hcAction(["keys", k.address, "enter"], "Could not press Enter", cx),
+                ),
+              )
+              .child(
+                dense("esc", "Esc", "Press Esc: cancels the question", (cx) =>
+                  this.hcAction(["keys", k.address, "esc"], "Could not press Esc", cx),
+                ),
+              ),
+      );
+  }
+
   card(t: Theme, node: AgentNode, shown: string | null, now: number) {
     const { k, status } = node;
     const name = k.name || k.template || k.program?.name || k.address;
     const on = k.address === shown;
     const pic = icon(k.program, 14, t.foreground);
+    const hovered = this.hovered === k.address || this.menu?.k.address === k.address;
+    const asking = node.h > CARD_H;
     return v_flex()
       .id(`card-${k.address}`)
       .absolute()
       .left(node.x)
       .top(node.y)
       .w(node.w)
-      .h(CARD_H)
+      .h(node.h)
       .px(10)
-      .gap(2)
-      .justify_center()
       .rounded(3)
       .border_1()
       .border_color(status === "blocked" ? t.blocked : t.border)
@@ -409,35 +662,104 @@ export default class AgentGraph extends View {
       .text_color(on ? t.foreground : t.muted)
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .tooltip(`${k.address} · ${k.cwd ?? ""}`)
+      .on_hover((over, cx) => {
+        if (over) this.hovered = k.address;
+        else if (this.hovered === k.address) this.hovered = null;
+        cx.notify();
+      })
       .on_click(() => this.open(k))
+      .on_mouse_down("right", (_e, cx) => this.openMenu(node, cx))
       .child(
-        h_flex()
-          .gap(8)
-          .items_center()
-          .when(Boolean(pic), (el) => el.child(pic))
-          .child(div().flex_1().min_w(0).truncate().child(name))
-          .child(this.status(t, status) ?? div()),
-      )
-      .child(
-        h_flex()
-          .gap(8)
-          .items_center()
-          .text_size(11)
+        v_flex()
+          .h(CARD_H)
+          .flex_none()
+          .gap(2)
+          .justify_center()
           .child(
-            div()
-              .flex_1()
-              .min_w(0)
-              .truncate()
-              .text_color(t.dim)
-              .child(k.title || k.address),
+            h_flex()
+              .gap(8)
+              .items_center()
+              .when(Boolean(pic), (el) => el.child(pic))
+              .child(div().flex_1().min_w(0).truncate().child(name))
+              .child(this.status(t, status) ?? div()),
           )
-          .child(this.detail(t, k, now)),
-      );
+          .child(
+            h_flex()
+              .h(20)
+              .gap(8)
+              .items_center()
+              .text_size(11)
+              .child(
+                div()
+                  .flex_1()
+                  .min_w(0)
+                  .truncate()
+                  .text_color(t.dim)
+                  .child(k.title || k.address),
+              )
+              .child(hovered ? this.hoverButtons(node) : this.detail(t, k, now)),
+          ),
+      )
+      .when(asking, (el) => el.child(this.question(t, k)));
+  }
+
+  // The open card menu; Kill turns red and asks for a second click.
+  contextMenu(t: Theme) {
+    const { k, pane, x, y, confirm } = this.menu;
+    return (
+      v_flex()
+        .id("agent-menu")
+        .absolute()
+        .left(x)
+        .top(y)
+        .w(MENU_W)
+        .p(4)
+        .rounded(3)
+        .border_1()
+        .border_color(t.border)
+        .bg(t.popover ?? t.raised)
+        .text_size(12)
+        // A right press on a card opens that card's menu through the card's own handler.
+        .on_mouse_down_out((e, cx) => {
+          if (e.button === "right") return;
+          this.menu = null;
+          cx.notify();
+        })
+        .children(
+          menuItems({ live: k.state === "live", pane, reply: this.outline }).map((item) => {
+            if (!item) return div().mx(4).my(4).h(1).bg(t.border);
+            const danger = item.action === "kill" && confirm;
+            return h_flex()
+              .id(`agent-menu-${item.action}`)
+              .h(24)
+              .flex_none()
+              .px(6)
+              .gap(8)
+              .rounded(3)
+              .items_center()
+              .cursor_pointer()
+              .text_color(danger ? t.ansi1 : t.muted)
+              .hover((s) => s.bg(t.hover).text_color(danger ? t.ansi1 : t.foreground))
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                this.choose(item, cx);
+              })
+              .child(svg(item.icon).size(14).flex_none())
+              .child(
+                div()
+                  .flex_1()
+                  .min_w(0)
+                  .truncate()
+                  .child(danger ? `Kill ${k.address}?` : item.label),
+              );
+          }),
+        )
+    );
   }
 
   // Where lines leave a parent and reach a child: centered in a tree, at the left in an outline.
   exit(node: AgentNode) {
-    return { x: node.x + (this.outline ? TRUNK : node.w / 2), y: node.y + CARD_H };
+    return { x: node.x + (this.outline ? TRUNK : node.w / 2), y: node.y + node.h };
   }
 
   entry(node: AgentNode) {
@@ -453,7 +775,7 @@ export default class AgentGraph extends View {
       .id(`fold-${node.k.address}`)
       .absolute()
       .left(this.exit(node).x - 14)
-      .top(node.y + CARD_H - 7)
+      .top(node.y + node.h - 7)
       .w(28)
       .h(14)
       .gap(2)
@@ -522,48 +844,76 @@ export default class AgentGraph extends View {
     const nodes = roots.flatMap(flatten);
     const working = nodes.filter((n) => n.status === "working").length;
     const blocked = nodes.filter((n) => n.status === "blocked").length;
-    return h_flex()
-      .h(28)
-      .flex_none()
-      .px(10)
-      .gap(8)
-      .items_center()
-      .text_size(11)
-      .border_b(1)
-      .border_color(t.border)
-      .child(div().child("Agents"))
-      .when(blocked > 0, (el) =>
-        el.child(div().text_size(10).text_color(t.blocked).child(`${blocked} need you`)),
-      )
-      .when(working > 0, (el) =>
-        el.child(div().text_size(10).text_color(t.working).child(`${working} working`)),
-      )
-      .child(div().flex_1())
-      .children(
-        SCOPES.map((s) =>
-          div()
-            .id(`scope-${s.id}`)
-            .h(20)
-            .px(6)
-            .flex()
-            .gap(4)
-            .items_center()
-            .rounded(3)
-            .text_color(this.scope === s.id ? t.foreground : t.muted)
-            .when(this.scope === s.id, (el) => el.bg(t.selected))
-            .cursor_pointer()
-            .hover((el) => el.text_color(t.foreground))
-            .tooltip(s.tooltip)
-            .on_click((_e, cx) => {
-              this.setScope(s.id);
-              cx.notify();
-            })
-            .child(s.label)
-            .when(counts[s.id] > 0, (el) =>
-              el.child(div().text_size(10).text_color(t.dim).child(String(counts[s.id]))),
+    const finished = nodes.filter((n) => n.status === "finished").map((n) => n.k.address);
+    return (
+      h_flex()
+        .h(28)
+        .flex_none()
+        .px(10)
+        .gap(8)
+        .items_center()
+        .text_size(11)
+        .border_b(1)
+        .border_color(t.border)
+        .child(div().child("Agents"))
+        .when(blocked > 0, (el) =>
+          el.child(div().text_size(10).text_color(t.blocked).child(`${blocked} need you`)),
+        )
+        .when(working > 0, (el) =>
+          el.child(div().text_size(10).text_color(t.working).child(`${working} working`)),
+        )
+        .child(div().flex_1())
+        .children(
+          SCOPES.map((s) =>
+            div()
+              .id(`scope-${s.id}`)
+              .h(20)
+              .px(6)
+              .flex()
+              .gap(4)
+              .items_center()
+              .rounded(3)
+              .text_color(this.scope === s.id ? t.foreground : t.muted)
+              .when(this.scope === s.id, (el) => el.bg(t.selected))
+              .cursor_pointer()
+              .hover((el) => el.text_color(t.foreground))
+              .tooltip(s.tooltip)
+              .on_click((_e, cx) => {
+                this.setScope(s.id);
+                cx.notify();
+              })
+              .child(s.label)
+              .when(counts[s.id] > 0, (el) =>
+                el.child(div().text_size(10).text_color(t.dim).child(String(counts[s.id]))),
+              ),
+          ),
+        )
+        // Clearing hides the finished sub-agents shown; hc keeps their records.
+        .when(finished.length > 0, (el) =>
+          el.child(
+            button(
+              "clear-finished",
+              `Clear ${finished.length}`,
+              (cx) => {
+                for (const address of finished) {
+                  this.ended.delete(address);
+                  this.expired.add(address);
+                }
+                cx.notify();
+              },
+              { variant: "quiet", size: "dense", tooltip: "Hide finished sub-agents" },
             ),
-        ),
-      );
+          ),
+        )
+        .child(
+          button(
+            "new-agent",
+            svg("mods/workspace-chrome/plus.svg").size(12),
+            () => openOverlay({ mod: "frantss-new-menu", kind: "popup", width: 260, height: 491 }),
+            { variant: "quiet", size: "dense", square: true, tooltip: "New agent" },
+          ),
+        )
+    );
   }
 
   render(cx: Context) {
@@ -605,8 +955,16 @@ export default class AgentGraph extends View {
     }
     const nodes = roots.flatMap(flatten);
     const width = nodes.reduce((w, n) => Math.max(w, n.x + n.w + PAD), this.size.width);
-    const height = nodes.reduce((h, n) => Math.max(h, n.y + CARD_H + PAD), 0);
+    const height = nodes.reduce((h, n) => Math.max(h, n.y + n.h + PAD), 0);
     const shownTerminal = focused()?.terminal;
+    this.syncAgentOrder(nodes, listed);
+    const asking = nodes.filter((n) => n.h > CARD_H);
+    for (const node of asking) this.readQuestion(node.k, cx);
+    const askingAddresses = new Set(asking.map((n) => n.k.address));
+    for (const address of this.questions.keys())
+      if (!askingAddresses.has(address)) this.questions.delete(address);
+    if (this.replyTo && !askingAddresses.has(this.replyTo)) this.replyTo = null;
+    if (this.menu && !nodes.some((n) => n.k.address === this.menu.k.address)) this.menu = null;
 
     const canvas = div()
       .relative()
@@ -614,11 +972,20 @@ export default class AgentGraph extends View {
       .h(height)
       .children(this.edgeLayers(t, nodes, width, height))
       .children(nodes.map((n) => this.card(t, n, shownTerminal, now)))
-      .children(nodes.filter((n) => n.allKids.length).map((n) => this.foldButton(t, n)));
+      .children(nodes.filter((n) => n.allKids.length).map((n) => this.foldButton(t, n)))
+      .when(Boolean(this.menu), (el) => el.child(this.contextMenu(t)));
 
     return (
       v_flex()
         .id("agent-graph")
+        .track_focus(this.handle)
+        // Esc closes the menu or leaves the reply field.
+        .on_key_down((e, cx) => {
+          if (e.key !== "escape" || (!this.menu && !this.replyTo)) return;
+          this.menu = null;
+          this.replyTo = null;
+          cx.notify();
+        })
         .size_full()
         .min_h(0)
         .rounded(3)

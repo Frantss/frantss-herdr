@@ -80,8 +80,17 @@ async function harness(width = 3000, childCount = 7, deep = false) {
       svg: element,
       PathBuilder: { stroke: path },
     },
-    "gpui-base": { v_flex: element, h_flex: element },
+    "gpui-base": {
+      v_flex: element,
+      h_flex: element,
+      Button: { new: element },
+      Input: { new: element },
+      InputState: { new: () => ({ on() {}, set_value() {}, focus() {}, value: () => "" }) },
+    },
     herdr: {
+      notify: () => {},
+      openOverlay: () => {},
+      setAgentOrder: () => {},
       agents: () => [],
       terminals: () => records.filter((record) => record.state === "live"),
       panes: () => [],
@@ -121,12 +130,24 @@ async function harness(width = 3000, childCount = 7, deep = false) {
   Object.assign(graph, {
     scope: "all",
     folded: new Set(),
+    handle: { focus() {} },
+    hovered: null,
+    menu: null,
+    replyTo: null,
+    replyInput: { set_value() {}, focus() {}, value: () => "" },
+    questions: new Map(),
+    reading: new Set(),
+    agentOrder: "",
     size: { width, height: 600 },
     ended: new Map(
       records.filter((record) => record.state !== "live").map((record) => [record.address, record]),
     ),
   });
-  const cx = { notify: () => calls.push(["notify"]), stop_propagation: () => calls.push(["stop"]) };
+  const cx = {
+    notify: () => calls.push(["notify"]),
+    stop_propagation: () => calls.push(["stop"]),
+    spawn: () => {},
+  };
   return { graph, paints, palette, records, calls, cx, render: () => graph.render(cx) };
 }
 
@@ -226,9 +247,15 @@ test("deep graph cards retain depth-first order and hide descendants when folded
     cards.map((node) => node.id),
     ["card-parent", ...Array.from({ length: 500 }, (_, index) => `card-child-${index}`)],
   );
+  // A live blocked card (blocked or error) shows its question under its top row.
+  let top = 16;
   for (const [index, card] of cards.entries()) {
-    assert.equal(style(card, "top"), 16 + index * 56);
+    const record = h.records[index];
+    const asks = record.state === "live" && ["blocked", "error"].includes(record.status);
+    assert.equal(style(card, "top"), top);
     assert.equal(style(card, "left"), 16 + index * 28);
+    assert.equal(style(card, "h"), asks ? 52 + 92 : 52);
+    top += style(card, "h") + 4;
   }
   byId(tree, "fold-child-249").handlers.on_click({}, h.cx);
   const foldedCanvas = byId(h.render(), "graph").childNodes[0];
@@ -267,3 +294,26 @@ for (const width of [719, 720]) {
     assert.equal(style(card, "w"), width < 720 ? width - 32 : 196);
   });
 }
+
+test("a card's right-click menu kills its agent only on a second click", async () => {
+  const h = await harness(366, 1);
+  byId(h.render(), "card-parent").handlers.on_mouse_down({}, h.cx);
+  byId(h.render(), "agent-menu-kill").handlers.on_click({}, h.cx);
+  assert.equal(h.graph.menu.confirm, true);
+  assert.ok(!h.calls.some(([name]) => name === "terminal.kill"));
+  byId(h.render(), "agent-menu-kill").handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.calls.find(([name]) => name === "terminal.kill")), [
+    "terminal.kill",
+    { terminal: "parent" },
+  ]);
+  assert.equal(h.graph.menu, null);
+});
+
+test("replying from the menu opens the reply field on a card that is not blocked", async () => {
+  const h = await harness(366, 1);
+  byId(h.render(), "card-parent").handlers.on_mouse_down({}, h.cx);
+  byId(h.render(), "agent-menu-reply").handlers.on_click({}, h.cx);
+  const tree = h.render();
+  assert.equal(style(byId(tree, "card-parent"), "h"), 52 + 92);
+  assert.ok(byId(tree, "reply-field-parent"));
+});

@@ -31,6 +31,7 @@ async function harness(fetch: (args: string[]) => Promise<Result>) {
   };
   let notifications = 0;
   const cx = {
+    focus_handle: () => ({ focus() {} }),
     notify() {
       notifications++;
     },
@@ -52,8 +53,17 @@ async function harness(fetch: (args: string[]) => Promise<Result>) {
   const empty = () => {};
   const natives = {
     "gpui-kit": { View: class {}, div: empty, image: empty, svg: empty, PathBuilder: {} },
-    "gpui-base": { v_flex: empty, h_flex: empty },
+    "gpui-base": {
+      v_flex: empty,
+      h_flex: empty,
+      Button: { new: empty },
+      Input: { new: empty },
+      InputState: { new: () => ({ on() {}, set_value() {}, focus() {}, value: () => "" }) },
+    },
     herdr: {
+      notify: () => {},
+      openOverlay: () => {},
+      setAgentOrder: () => {},
       agents: empty,
       terminals: () => state.live,
       panes: empty,

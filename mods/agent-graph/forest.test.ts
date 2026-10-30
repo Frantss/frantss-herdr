@@ -12,8 +12,17 @@ async function load() {
   const empty = () => {};
   const nativeModules = {
     "gpui-kit": { View: class {}, div: empty, image: empty, svg: empty, PathBuilder: {} },
-    "gpui-base": { v_flex: empty, h_flex: empty },
+    "gpui-base": {
+      v_flex: empty,
+      h_flex: empty,
+      Button: { new: empty },
+      Input: { new: empty },
+      InputState: { new: () => ({ on() {}, set_value() {}, focus() {}, value: () => "" }) },
+    },
     herdr: {
+      notify: () => {},
+      openOverlay: () => {},
+      setAgentOrder: () => {},
       agents: empty,
       terminals: empty,
       panes: empty,

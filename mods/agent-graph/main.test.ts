@@ -29,6 +29,7 @@ test("revealing a hidden agent graph renders and refreshes its stale terminals",
   const reads: string[] = [];
   let notifications = 0;
   const cx = {
+    focus_handle: () => ({ focus() {} }),
     notify() {
       notifications++;
     },
@@ -48,8 +49,17 @@ test("revealing a hidden agent graph renders and refreshes its stale terminals",
   });
   const nativeModules: Record<string, Record<string, unknown>> = {
     "gpui-kit": { View: class {}, div: element, image: element, svg: element, PathBuilder: {} },
-    "gpui-base": { v_flex: element, h_flex: element },
+    "gpui-base": {
+      v_flex: element,
+      h_flex: element,
+      Button: { new: element },
+      Input: { new: element },
+      InputState: { new: () => ({ on() {}, set_value() {}, focus() {}, value: () => "" }) },
+    },
     herdr: {
+      notify: () => {},
+      openOverlay: () => {},
+      setAgentOrder: () => {},
       agents: () => {
         reads.push("agents");
         return [];
