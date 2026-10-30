@@ -498,7 +498,8 @@ export default class AgentGraph extends View {
   }
 
   render(cx: Context) {
-    if (this.stale && shown()) {
+    if (!shown()) return div();
+    if (this.stale) {
       this.stale = false;
       this.liveKey = null;
       this.syncFinished(cx);

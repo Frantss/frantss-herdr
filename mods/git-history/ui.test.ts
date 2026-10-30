@@ -369,6 +369,35 @@ async function loaded(h) {
   h.view.refresh(h.ctx);
   await h.flush();
 }
+
+test("hidden History renders retain its snapshot without constructing lists or forcing refreshes", async () => {
+  const h = await harness();
+  await loaded(h);
+  const commits = h.view.commits,
+    snapshot = h.view.snapshot,
+    callCount = h.state.calls.length;
+  h.state.props = {};
+  h.state.layout = {
+    children: [
+      { id: "panel", hidden: true },
+      { id: "panel-body", active: "git-history" },
+    ],
+  };
+  const tree = h.render();
+  assert.equal(tree.kind, "div");
+  assert.equal(tree.childNodes.length, 0);
+  assert.equal(h.state.lists.length, 0);
+  assert.equal(h.view.commits, commits);
+  assert.equal(h.view.snapshot, snapshot);
+  assert.equal(h.state.calls.length, callCount);
+  h.state.layout.children[0].hidden = false;
+  h.state.focused = { pane: null, terminal: null, cwd: "/repo/a" };
+  h.render();
+  await h.flush();
+  assert.equal(h.state.calls.length, callCount);
+  assert.equal(h.view.commits, commits);
+  assert.ok(h.state.lists.length > 0);
+});
 function toggle(h, id, open) {
   const trigger = byId(h.render(), id);
   assert.equal(trigger?.kind, "accordion_trigger");

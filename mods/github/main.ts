@@ -117,8 +117,10 @@ export default class GitHub extends View {
   declare context: string;
   declare place: Location;
   declare confirming: boolean;
+  declare pendingInitialRefresh: boolean;
 
   init(_props, cx: AsyncContext) {
+    this.pendingInitialRefresh = true;
     this.groups = [];
     this.selected = new Set();
     this.starting = new Set();
@@ -144,7 +146,7 @@ export default class GitHub extends View {
     cx.timer.every(POLL_MS, (cx) => {
       if (this.visible()) this.refreshAll(cx);
     });
-    this.refreshAll(cx);
+    if (this.visible()) this.refreshAll(cx);
   }
 
   visible() {
@@ -243,6 +245,7 @@ export default class GitHub extends View {
   // Every space's repository, so switching to any space shows results at once.
   // The shown one loads first; the others follow one at a time so they don't delay it.
   refreshAll(cx: Context) {
+    this.pendingInitialRefresh = false;
     this.refresh(cx, false, false);
     const places = [
       this.place,
@@ -908,7 +911,9 @@ export default class GitHub extends View {
   }
 
   render(cx: Context) {
-    if (this.visible() && contextKey(location()) !== this.context) this.refresh(cx, false);
+    if (!this.visible()) return div();
+    if (this.pendingInitialRefresh) this.refreshAll(cx);
+    else if (contextKey(location()) !== this.context) this.refresh(cx, false);
     const t = theme() as Theme,
       agent = this.agent();
     return v_flex()

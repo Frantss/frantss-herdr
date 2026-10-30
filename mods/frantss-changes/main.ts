@@ -526,7 +526,8 @@ export default class Changes extends View {
   }
 
   render(cx: Context) {
-    if (this.stale && shown()) {
+    if (!shown()) return div();
+    if (this.stale) {
       this.stale = false;
       this.refresh(cx);
     }

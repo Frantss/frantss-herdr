@@ -1004,7 +1004,8 @@ export default class GitHistory extends View {
   }
 
   render(cx: Context) {
-    if (this.visible() && contextKey(location()) !== this.context) this.refresh(cx, false, false);
+    if (!this.visible()) return div();
+    if (contextKey(location()) !== this.context) this.refresh(cx, false, false);
     const t = theme() as Theme;
     return v_flex()
       .id("git-history")

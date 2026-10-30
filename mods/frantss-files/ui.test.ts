@@ -21,6 +21,8 @@ async function harness(refresh = false) {
     watchEvents: [],
     activeDirectories: 0,
     maxDirectories: 0,
+    layout: null,
+    elements: 0,
   };
   const cx: any = {
     spawn(callback) {
@@ -42,6 +44,7 @@ async function harness(refresh = false) {
     state.tasks = [];
   }
   function element() {
+    state.elements++;
     const node: any = { childNodes: [], styles: [], handlers: {} };
     const proxy = new Proxy(node, {
       get(target, name) {
@@ -102,7 +105,7 @@ async function harness(refresh = false) {
         "focused",
         () => ({ cwd: state.cwd, pane: null, terminal: state.on ? `${state.on}/t1` : null }),
       ],
-      ["layout", () => null],
+      ["layout", () => state.layout],
       ["window", () => ({ platform: "macos" })],
       ["settings", () => ({ zoom: state.zoom })],
       ["theme", () => palette],
@@ -200,6 +203,45 @@ async function harness(refresh = false) {
     },
   };
 }
+
+test("hidden Files renders retain state and skip row work without forcing a reveal refresh", async () => {
+  const h = await harness();
+  const entries = new Map([["", [{ name: "kept.ts", dir: false }]]]);
+  h.files.entries = entries;
+  h.files.stale = false;
+  h.files.loading = true;
+  h.files.loadingRendered = false;
+  h.state.layout = {
+    children: [
+      { id: "panel", hidden: true },
+      { id: "panel-body", active: "files" },
+    ],
+  };
+  const rows = h.files.rows.bind(h.files);
+  h.files.rows = () => assert.fail("Hidden Files built its row model");
+  h.render();
+  assert.equal(h.state.elements, 1);
+  assert.equal(h.state.lists.length, 0);
+  assert.equal(h.files.entries, entries);
+  assert.equal(h.files.stale, false);
+  assert.equal(h.files.loadingRendered, false);
+  h.files.rows = rows;
+  h.files.loading = false;
+  h.state.layout.children[0].hidden = false;
+  h.files.refresh = () => assert.fail("A reveal forced an unnecessary refresh");
+  h.render();
+  assert.equal(h.state.lists.length, 1);
+  h.state.layout.children[0].hidden = true;
+  h.files.stale = true;
+  h.render();
+  assert.equal(h.files.stale, true);
+  let refreshes = 0;
+  h.files.refresh = () => refreshes++;
+  h.state.layout.children[0].hidden = false;
+  h.render();
+  h.render();
+  assert.equal(refreshes, 1);
+});
 
 test("Files constructs only the requested viewport and dispatches clicks by stable path", async () => {
   const h = await harness();

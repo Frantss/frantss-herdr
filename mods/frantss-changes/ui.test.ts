@@ -20,6 +20,8 @@ async function harness(refresh = false) {
     watches: [],
     queryStarts: [],
     queryBlocks: new Map(),
+    layout: null,
+    elements: 0,
   };
   const cx: any = {
     spawn(callback) {
@@ -41,6 +43,7 @@ async function harness(refresh = false) {
     state.tasks = [];
   }
   function element() {
+    state.elements++;
     const node: any = { childNodes: [], styles: [], handlers: {} };
     const proxy = new Proxy(node, {
       get(target, name) {
@@ -108,7 +111,7 @@ async function harness(refresh = false) {
       ["spaces", () => []],
       ["panes", () => []],
       ["focused", () => ({ cwd: state.cwd, pane: null })],
-      ["layout", () => null],
+      ["layout", () => state.layout],
       ["window", () => ({ platform: "macos" })],
       ["settings", () => ({ zoom: state.zoom })],
       ["theme", () => palette],
@@ -209,6 +212,44 @@ async function harness(refresh = false) {
     },
   };
 }
+
+test("hidden Changes renders retain selection and skip list work without forcing a refresh", async () => {
+  const h = await harness();
+  const files = [file("kept.ts")];
+  h.changes.files = files;
+  h.changes.open = "kept.ts";
+  h.changes.stale = false;
+  h.changes.loading = true;
+  h.changes.loadingRendered = false;
+  h.state.layout = {
+    children: [
+      { id: "panel", hidden: true },
+      { id: "panel-body", active: "changes" },
+    ],
+  };
+  h.render();
+  assert.equal(h.state.elements, 1);
+  assert.equal(h.state.lists.length, 0);
+  assert.equal(h.changes.files, files);
+  assert.equal(h.changes.open, "kept.ts");
+  assert.equal(h.changes.stale, false);
+  assert.equal(h.changes.loadingRendered, false);
+  h.changes.loading = false;
+  h.changes.refresh = () => assert.fail("A reveal forced an unnecessary refresh");
+  h.state.layout.children[0].hidden = false;
+  h.render();
+  assert.ok(h.state.lists.some((list) => list.id === "changes-files"));
+  h.state.layout.children[0].hidden = true;
+  h.changes.stale = true;
+  h.render();
+  assert.equal(h.changes.stale, true);
+  let refreshes = 0;
+  h.changes.refresh = () => refreshes++;
+  h.state.layout.children[0].hidden = false;
+  h.render();
+  h.render();
+  assert.equal(refreshes, 1);
+});
 
 const file = (path: string) => ({ path, status: "M", fresh: false, add: 1, del: 2 });
 const text = (node) =>

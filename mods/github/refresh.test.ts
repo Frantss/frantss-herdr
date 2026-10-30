@@ -32,18 +32,24 @@ async function harness() {
     holds: new Map<string, Promise<void>>(),
     calls: [] as { command: string; args: string[]; cwd: string; on: string | null }[],
     tasks: [] as Promise<unknown>[],
+    explicit: true,
+    layout: null as any,
+    timers: [] as unknown[],
+    elements: 0,
   };
   const cx = {
     notify() {},
+    timer: { every: (...args) => state.timers.push(args) },
     spawn(callback: (cx: unknown) => unknown) {
       const task = Promise.resolve().then(() => callback(cx));
       state.tasks.push(task);
       return task;
     },
   };
-  const context = vm.createContext({ localStorage: { setItem() {} } });
+  const context = vm.createContext({ localStorage: { getItem: () => null, setItem() {} } });
   const unused = () => assert.fail("Unexpected UI host call");
   function element() {
+    state.elements++;
     const proxy = new Proxy(
       {},
       {
@@ -59,13 +65,13 @@ async function harness() {
     return proxy;
   }
   const natives = {
-    "gpui-kit": { View: class {}, div: element, svg: unused, image: unused },
-    "gpui-base": { v_flex: element, h_flex: unused, Button: {} },
+    "gpui-kit": { View: class {}, div: element, svg: element, image: element },
+    "gpui-base": { v_flex: element, h_flex: element, Button: {} },
     herdr: {
       spaces: () => state.spaces,
       panes: () => [],
-      focused: () => null,
-      props: () => state.place,
+      focused: () => ({ cwd: state.place.cwd, pane: null }),
+      props: () => (state.explicit ? state.place : {}),
       knownAgents: async () => [],
       exec: async (
         command: string,
@@ -107,8 +113,8 @@ async function harness() {
       },
       hc: unused,
       run: unused,
-      theme: unused,
-      layout: unused,
+      theme: () => ({}),
+      layout: () => state.layout,
       agents: unused,
       terminals: unused,
       home: unused,
@@ -148,18 +154,84 @@ async function harness() {
     inflight: new Set(),
     place: state.place,
     context: JSON.stringify(state.place),
+    groups: [],
+    selected: new Set(),
+    starting: new Set(),
+    expanded: new Set(),
+    collapsed: new Set(),
+    agentOptions: [],
   });
+  async function drain() {
+    for (let i = 0; i < state.tasks.length; i++) await state.tasks[i];
+  }
   return {
     state,
     view,
     cx,
+    element,
+    drain,
     async refresh() {
       view.refreshAll(cx);
-      for (let i = 0; i < state.tasks.length; i++) await state.tasks[i];
+      await drain();
     },
     requests: () => state.calls.filter((call) => call.command === "gh" && call.args[0] === "repo"),
   };
 }
+
+test("GitHub defers hidden initialization until its first reveal", async () => {
+  const h = await harness();
+  delete h.view.context;
+  delete h.view.place;
+  h.state.explicit = false;
+  h.state.layout = {
+    children: [
+      { id: "panel", hidden: true },
+      { id: "panel-body", active: "github" },
+    ],
+  };
+  h.view.init(undefined, h.cx);
+  await h.drain();
+  assert.equal(h.state.calls.length, 0);
+  assert.equal(h.view.pendingInitialRefresh, true);
+  h.view.body = () => assert.fail("A hidden GitHub panel built its inbox");
+  h.view.render(h.cx);
+  assert.equal(h.state.elements, 1);
+  h.view.body = h.element;
+  h.view.footer = h.element;
+  h.view.button = h.element;
+  h.view.iconButton = h.element;
+  h.state.layout.children[0].hidden = false;
+  h.view.render(h.cx);
+  await h.drain();
+  assert.equal(h.requests().length, 3);
+  assert.equal(h.view.pendingInitialRefresh, false);
+  const cache = h.view.cache,
+    calls = h.state.calls.length;
+  h.view.selected.add("kept");
+  h.state.layout.children[0].hidden = true;
+  h.view.render(h.cx);
+  h.state.layout.children[0].hidden = false;
+  h.view.render(h.cx);
+  await h.drain();
+  assert.equal(h.state.calls.length, calls);
+  assert.equal(h.view.cache, cache);
+  assert.equal(h.view.selected.has("kept"), true);
+});
+
+test("an explicit-cwd GitHub copy initializes even when the layout panel is hidden", async () => {
+  const h = await harness();
+  h.state.layout = {
+    children: [
+      { id: "panel", hidden: true },
+      { id: "panel-body", active: "files" },
+    ],
+  };
+  h.view.init(undefined, h.cx);
+  await h.drain();
+  assert.equal(h.view.visible(), true);
+  assert.equal(h.view.pendingInitialRefresh, false);
+  assert.equal(h.requests().length, 3);
+});
 
 test("GitHub refreshes the current repository first and loads each machine/repository once", async () => {
   const h = await harness();
