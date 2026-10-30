@@ -45,6 +45,7 @@ async function harness(refresh = false) {
       state.notifications++;
     },
     async sleep() {},
+    stop_propagation() {},
   };
   async function drain() {
     for (let start = 0; start < state.tasks.length;) {
@@ -95,7 +96,7 @@ async function harness(refresh = false) {
       v_flex: element,
       h_flex: element,
       v_resizable: element,
-      Button: { new: element },
+      Button: { new: (id) => element().id(id) },
       resizable_panel: element,
       Scrollbar: { vertical: element },
       InputState: {},

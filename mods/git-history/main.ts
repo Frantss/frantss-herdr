@@ -13,7 +13,6 @@ import { View, div, PathBuilder } from "gpui-kit";
 import {
   v_flex,
   h_flex,
-  Button,
   Scrollbar,
   v_virtual_list,
   VirtualListScrollHandle,
@@ -26,6 +25,7 @@ import {
 import { spaces, panes, focused, props, exec, theme, settings, layout } from "herdr";
 import { loadHistory, loadDetails, loadDiff, PAGE_SIZE } from "./git.ts";
 import { layoutGraph } from "./graph.ts";
+import { button } from "./button.ts";
 
 interface LayoutNode {
   id?: string;
@@ -420,28 +420,12 @@ export default class GitHistory extends View {
     cx.notify();
   }
 
-  button(id, label, action, { active = false, disabled = false, tooltip = label } = {}) {
-    const t = theme() as Theme;
-    return Button.new(id)
-      .tab_stop(true)
-      .h(26)
-      .px(8)
-      .flex_none()
-      .rounded(3)
-      .border_1()
-      .border_color("#00000000")
-      .text_size(11)
-      .text_color(t.foreground)
-      .bg(active ? t.selected : "#00000000")
-      .disabled(disabled)
-      .when(disabled, (el) => el.text_color(t.muted))
-      .when(!disabled, (el) => el.cursor_pointer())
-      .hover((el) => el.bg(t.hover))
-      .focus((el) => el.border_color(t.accent))
-      .tooltip(tooltip)
-      .accessibility_label(tooltip)
-      .on_click((_e, cx) => action(cx))
-      .child(label);
+  button(id, label, action, { active = false, disabled = false, tooltip = undefined } = {}) {
+    return button(id, label, action, {
+      variant: active ? "secondary" : "quiet",
+      disabled,
+      tooltip,
+    });
   }
 
   graphCell(index, t) {

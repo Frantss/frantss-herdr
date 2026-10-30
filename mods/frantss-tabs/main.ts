@@ -1,6 +1,7 @@
 import type { Context, AsyncContext, Element, ClickEvent, MouseButtonEvent } from "gpui-kit";
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
+import { button as sharedButton } from "./button.ts";
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, nextCommand } from "herdr";
 
 import type { SpaceInfo, TabInfo, Program } from "herdr";
@@ -135,24 +136,12 @@ export default class Tabs extends View {
       id: string,
       label: Element | string,
       tooltip: string,
-      action: (e: ClickEvent, cx: Context) => unknown,
+      action: (cx: Context) => unknown,
     ) =>
-      div()
-        .id(id)
-        .tooltip(tooltip)
-        .size(24)
-        .flex_none()
-        .cursor_pointer()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(3)
-        .text_size(12)
-        .text_color(t.dim)
-        .hover((s) => s.bg(t.hover).text_color(t.foreground))
-        .on_mouse_down("left", stop)
-        .on_click(action)
-        .child(label);
+      sharedButton(id, label, action, { variant: "quiet", square: true, tooltip }).on_mouse_down(
+        "left",
+        stop,
+      );
     const item = (c: TabInfo, i: number) => {
       const program = (
         ps.find((p) => p.tab === c.id && p.program?.agent) ?? ps.find((p) => p.tab === c.id)

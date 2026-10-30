@@ -3,7 +3,7 @@ import type { ExecResult, SpaceInfo } from "herdr";
 import type { InboxGroup, InboxItem, PullRequest, PullRequests } from "./github.ts";
 
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Button } from "gpui-base";
+import { v_flex, h_flex } from "gpui-base";
 import {
   spaces,
   panes,
@@ -20,6 +20,7 @@ import {
   home,
   notify,
 } from "herdr";
+import { button } from "./button.ts";
 import { ACTIONS, buildInbox, findCheckout, loadPullRequests, squash, taskFor } from "./github.ts";
 
 interface LayoutNode {
@@ -439,31 +440,12 @@ export default class GitHub extends View {
     );
   }
 
-  button(id, label, action, { disabled = false, tooltip = label, active = false } = {}) {
-    const t = theme() as Theme;
-    return Button.new(id)
-      .tab_stop(true)
-      .h(24)
-      .px(8)
-      .flex_none()
-      .rounded(3)
-      .border_1()
-      .border_color("#00000000")
-      .text_size(11)
-      .text_color(t.foreground)
-      .bg(active ? t.selected : "#00000000")
-      .disabled(disabled)
-      .when(disabled, (el) => el.text_color(t.muted))
-      .when(!disabled, (el) => el.cursor_pointer())
-      .hover((el) => el.bg(t.hover))
-      .focus((el) => el.border_color(t.accent))
-      .tooltip(tooltip)
-      .accessibility_label(tooltip)
-      .on_click((_e, cx) => {
-        cx.stop_propagation();
-        action(cx);
-      })
-      .child(label);
+  button(id, label, action, { disabled = false, tooltip = undefined, primary = false } = {}) {
+    return button(id, label, action, {
+      variant: primary ? "primary" : "quiet",
+      disabled,
+      tooltip,
+    });
   }
 
   iconButton(
@@ -476,34 +458,16 @@ export default class GitHub extends View {
       tooltip,
     }: { disabled?: boolean; spinning?: boolean; tooltip?: string } = {},
   ) {
-    const t = theme() as Theme;
-    return Button.new(id)
-      .tab_stop(true)
-      .size(24)
-      .flex_none()
-      .items_center()
-      .justify_center()
-      .rounded(3)
-      .border_1()
-      .border_color("#00000000")
-      .text_color(disabled ? t.muted : t.foreground)
-      .disabled(disabled)
-      .when(!disabled, (el) => el.cursor_pointer())
-      .hover((el) => el.bg(t.hover))
-      .focus((el) => el.border_color(t.accent))
-      .tooltip(tooltip)
-      .accessibility_label(tooltip)
-      .on_click((_e, cx) => {
-        cx.stop_propagation();
-        action(cx);
-      })
-      .child(
-        spinning
-          ? svg(SPINNER).size(14).spin(900)
-          : typeof icon === "string"
-            ? svg(icon).size(14)
-            : icon,
-      );
+    return button(
+      id,
+      spinning
+        ? svg(SPINNER).size(14).spin(900)
+        : typeof icon === "string"
+          ? svg(icon).size(14)
+          : icon,
+      action,
+      { variant: "quiet", square: true, disabled, tooltip },
+    );
   }
 
   groupHeader(title, count, color, t) {
@@ -947,7 +911,7 @@ export default class GitHub extends View {
                 }
                 this.start(items, cx);
               },
-              { active: true, disabled: !this.agent() },
+              { primary: true, disabled: !this.agent() },
             ),
           ),
       );

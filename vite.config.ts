@@ -15,7 +15,11 @@ export default defineConfig({
     dts: false,
     outExtensions: () => ({ js: ".js" }),
     deps: { neverBundle: true },
-    inputOptions: { external: ["gpui-kit", "gpui-base", "gpui-shell", "herdr"] },
+    inputOptions: {
+      external: ["gpui-kit", "gpui-base", "gpui-shell", "herdr"],
+      // Keeps a mod's linked shared/ file inside that mod's output folder.
+      resolve: { symlinks: false },
+    },
     copy: [
       "layouts",
       "themes",
@@ -38,7 +42,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["scripts/**/*.test.ts", "mods/**/*.test.ts"],
+    include: ["scripts/**/*.test.ts", "mods/**/*.test.ts", "shared/**/*.test.ts"],
     environment: "node",
     execArgv: ["--experimental-vm-modules"],
   },

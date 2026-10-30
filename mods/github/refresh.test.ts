@@ -129,6 +129,7 @@ async function harness() {
       hc: unused,
       run: unused,
       theme: () => ({}),
+      settings: () => ({ dark: true }),
       layout: () => state.layout,
       agents: unused,
       terminals: unused,

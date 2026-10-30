@@ -17,7 +17,6 @@ import {
   v_virtual_list,
   v_resizable,
   resizable_panel,
-  Button,
 } from "gpui-base";
 import {
   spaces,
@@ -35,6 +34,7 @@ import {
 } from "herdr";
 import { LINE_LIMIT, trackedPreview, untrackedPreview } from "./preview.ts";
 import { expandGaps, fileLines } from "./gaps.ts";
+import { button } from "./button.ts";
 import {
   DEFAULT_NOTE,
   lineSide,
@@ -1068,21 +1068,14 @@ export default class Changes extends View {
       .child(Input.new(input).h_full().text_size(12).text_color(t.foreground));
   }
 
-  iconButton(id: string, label: string, enabled: boolean, action: (cx: Context) => void, t: Theme) {
-    return Button.new(id)
-      .size(34)
-      .flex()
-      .flex_none()
-      .items_center()
-      .justify_center()
-      .rounded(3)
-      .text_color(enabled ? t.muted : t.dim)
-      .disabled(!enabled)
-      .when(enabled, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)))
-      .tooltip(label)
-      .accessibility_label(label)
-      .on_click((_e, cx) => action(cx))
-      .child(svg(TRASH).size(14));
+  iconButton(id: string, label: string, enabled: boolean, action: (cx: Context) => void) {
+    return button(id, svg(TRASH).size(14), action, {
+      variant: "quiet",
+      size: "regular",
+      square: true,
+      disabled: !enabled,
+      tooltip: label,
+    });
   }
 
   chooseAgent(address: string, cx: Context) {
@@ -1110,59 +1103,41 @@ export default class Changes extends View {
         ),
       )
       .child(
-        this.iconButton(
-          "review-discard",
-          "Discard review",
-          !this.sending,
-          (cx) => this.discardReview(cx),
-          t,
+        this.iconButton("review-discard", "Discard review", !this.sending, (cx) =>
+          this.discardReview(cx),
         ),
       )
       .child(
-        div()
-          .id("review-agent")
-          .h(34)
-          .max_w(200)
-          .px(10)
-          .flex()
-          .flex_none()
-          .items_center()
-          .gap(6)
-          .rounded(3)
-          .border_1()
-          .border_color(this.choosingAgent ? t.accent : t.input)
-          .text_size(12)
-          .text_color(live.length ? t.foreground : t.muted)
-          .when(live.length > 0, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)))
-          .on_click((_e, cx) => {
-            if (!live.length) return;
+        button(
+          "review-agent",
+          h_flex()
+            .min_w(0)
+            .gap(6)
+            .items_center()
+            .when(Boolean(agent), (e) => e.child(this.agentIcon(agent, t)))
+            .child(
+              div()
+                .min_w(0)
+                .truncate()
+                .child(agent ? this.agentName(agent) : "No agent here"),
+            )
+            .child(svg(CHEVRON).size(12).flex_none().text_color(t.dim)),
+          (cx) => {
             this.choosingAgent = true;
             cx.notify();
-          })
-          .when(Boolean(agent), (e) => e.child(this.agentIcon(agent, t)))
-          .child(
-            div()
-              .min_w(0)
-              .truncate()
-              .child(agent ? this.agentName(agent) : "No agent here"),
-          )
-          .child(svg(CHEVRON).size(12).flex_none().text_color(t.dim)),
+          },
+          { size: "regular", disabled: !live.length, tooltip: "Agent to send the review to" },
+        )
+          .max_w(200)
+          .when(this.choosingAgent, (e) => e.border_color(t.accent)),
       )
       .child(
-        div()
-          .id("review-send")
-          .h(34)
-          .px(12)
-          .flex()
-          .flex_none()
-          .items_center()
-          .rounded(3)
-          .bg(enabled ? t.accent : t.border)
-          .text_color(enabled ? t.accent_foreground : t.muted)
-          .text_size(12)
-          .when(enabled, (e) => e.font_bold().cursor_pointer())
-          .on_click((_e, cx) => this.sendReview(cx))
-          .child(this.sending ? "Sending…" : `Send ${count}`),
+        button(
+          "review-send",
+          this.sending ? "Sending…" : `Send ${count}`,
+          (cx) => this.sendReview(cx),
+          { variant: "primary", size: "regular", disabled: !enabled },
+        ),
       )
       .when(this.choosingAgent, (e) => e.child(this.agentMenu(live, space, agent, t)));
   }
