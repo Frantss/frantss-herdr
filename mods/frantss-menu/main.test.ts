@@ -92,3 +92,26 @@ test("a kept sub-agent goes back to its parent, and a plain terminal gets no age
     "pane.close",
   ]);
 });
+
+const terminalMenu = async (target: Record<string, string>) =>
+  JSON.parse(JSON.stringify((await load()).items({ tab: "terminal", target }, null))) as [
+    string,
+    string,
+    Record<string, string>,
+  ][];
+
+test("a live terminal without a pane gets the agent actions and can be kept as a tab", async () => {
+  const menu = await terminalMenu({ terminal: "t2" });
+  assert.deepEqual(
+    menu.map(([, command]) => command),
+    ["terminal.peek", "reply", "interrupt", "copy", "copy", "kill", "terminal.keep"],
+  );
+});
+
+test("a finished terminal can only be copied or removed", async () => {
+  assert.deepEqual(await terminalMenu({ terminal: "t9", cwd: "/old" }), [
+    ["Copy address", "copy", { text: "t9" }],
+    ["Copy folder", "copy", { text: "/old" }],
+    ["Remove", "remove", { terminal: "t9" }],
+  ]);
+});

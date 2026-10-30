@@ -1,11 +1,13 @@
 import type { Context, AsyncContext, FocusHandle } from "gpui-kit";
 // Context menus (Herdr's items). Opened as a popup with
-// props { tab: "pane" | "tab" | "space" | "global", target }.
+// props { tab: "pane" | "terminal" | "tab" | "space" | "global", target }.
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
 // a command "worktree" opens the worktree dialog instead, and "rename" Herdr's rename prompt starting
 // from the tab's or space's shown name (target.name, from the frantss mods that open this menu).
 // An agent's pane menu starts with its actions: "reply" opens frantss-reply, "interrupt" runs
-// hc interrupt, "copy" copies args.text, and "kill" asks first.
+// hc interrupt, "copy" copies args.text, and "kill" asks first. "terminal" is for a terminal without
+// a pane (target { terminal, cwd }), e.g. a sub-agent in the agent graph: a live one can be kept as a
+// tab, a finished one removed ("remove" runs hc rm).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -48,19 +50,24 @@ type MenuTarget = {
   name?: string;
   pane?: string;
   terminal?: string;
+  cwd?: string;
   space?: string;
   checkout?: "main" | "linked" | null;
 };
 type MenuProps = { tab?: string; target?: MenuTarget; overlay?: string };
 type MenuItem = [label: string, command: string, args: Record<string, string>];
 
+const copyItems = (terminal: string, cwd: string): MenuItem[] => [
+  ["Copy address", "copy", { text: terminal }],
+  ["Copy folder", "copy", { text: cwd }],
+];
+
 // What the menu does to an agent, before the pane items.
 const agentItems = (terminal: string, cwd: string): MenuItem[] => [
   ["Peek", "terminal.peek", { terminal }],
   ["Reply…", "reply", { terminal }],
   ["Interrupt", "interrupt", { terminal }],
-  ["Copy address", "copy", { text: terminal }],
-  ["Copy folder", "copy", { text: cwd }],
+  ...copyItems(terminal, cwd),
   ["Kill…", "kill", { terminal }],
 ];
 
@@ -116,6 +123,18 @@ export function items(p: MenuProps, git: "main" | "linked" | null): MenuItem[] {
         ["Close pane", "pane.close", { pane: tg.pane }],
       ] as MenuItem[];
     }
+    case "terminal": {
+      const term = terminals().find((t) => t.address === tg.terminal);
+      return term
+        ? [
+            ...agentItems(term.address, term.cwd ?? ""),
+            ["Keep as tab", "terminal.keep", { terminal: term.address }],
+          ]
+        : [
+            ...copyItems(tg.terminal, tg.cwd ?? ""),
+            ["Remove", "remove", { terminal: tg.terminal }],
+          ];
+    }
     case "tab":
       return [
         renameItem("tab", tg),
@@ -155,6 +174,8 @@ const AGENT_ICONS: Record<string, string> = {
   copy: "mods/workspace-chrome/files.svg",
   kill: "mods/workspace-chrome/x.svg",
   "terminal.park": "mods/workspace-chrome/pin-off.svg",
+  "terminal.keep": "mods/workspace-chrome/pin.svg",
+  remove: "mods/frantss-files/trash.svg",
 };
 
 function menuIcon(command: string) {
@@ -222,6 +243,8 @@ export default class Menu extends View {
       openOverlay({ mod: "frantss-reply", kind: "dialog", width: 480, height: 300, props: it[2] });
     else if (it[1] === "interrupt")
       cx.spawn(() => hcOrToast(["interrupt", it[2].terminal], "Could not interrupt"));
+    else if (it[1] === "remove")
+      cx.spawn(() => hcOrToast(["rm", it[2].terminal], "Could not remove the terminal"));
     else if (it[1] === "kill")
       openOverlay({
         mod: "confirm",
@@ -284,6 +307,8 @@ export default class Menu extends View {
                 (it[1].endsWith(".close") ||
                   (it[1] === "pane.split" && list[i - 1][1] !== "pane.split") ||
                   it[1] === "kill" ||
+                  it[1] === "remove" ||
+                  it[1] === "terminal.keep" ||
                   (it[1] === "copy" && list[i - 1][1] !== "copy") ||
                   it[1] === "app.help" ||
                   (it[1] === "app.theme" && list[i - 1][1] !== "app.theme")),
