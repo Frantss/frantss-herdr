@@ -13,7 +13,7 @@ test("build emits native JavaScript entries and copies every required asset", ()
       );
 
   const mods = readdirSync(join(packageRoot, "mods"));
-  assert.equal(mods.length, 12);
+  assert.equal(mods.length, 13);
   for (const mod of mods) {
     const source = join(packageRoot, "mods", mod),
       output = join(outputRoot, "mods", mod);
