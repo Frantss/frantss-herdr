@@ -876,6 +876,7 @@ export default class Files extends View {
     t: Theme,
     light: boolean,
   ): Element {
+    // The pointer hovers rows under the open menu too.
     return h_flex()
       .id(`file-${path}`)
       .h(24)
@@ -888,7 +889,7 @@ export default class Files extends View {
       .cursor_pointer()
       .text_color(t.muted)
       .when(path === this.file, (e) => e.bg(t.selected).text_color(t.foreground))
-      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .when(!this.menu, (e) => e.hover((s) => s.bg(t.hover).text_color(t.foreground)))
       .child(
         dir
           ? svg(`mods/frantss-files/chevron-${open ? "down" : "right"}.svg`)
@@ -1118,9 +1119,14 @@ export default class Files extends View {
       .hover((s) => s.bg(t.hover).text_color(t.foreground));
   }
 
+  // The menu sits over the file list: stop presses before the list takes them as a row click.
   menuFrame(id: string, t: Theme) {
+    const stop = (_e: unknown, cx: Context) => cx.stop_propagation();
     return v_flex()
       .id(id)
+      .on_mouse_down("left", stop)
+      .on_mouse_up("left", stop)
+      .on_mouse_down("right", stop)
       .absolute()
       .w(MENU_WIDTH)
       .p(4)

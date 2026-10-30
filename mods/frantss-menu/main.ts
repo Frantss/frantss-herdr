@@ -283,6 +283,7 @@ export default class Menu extends View {
   render(_cx: Context) {
     const t = theme() as Record<string, `#${string}`>;
     const list = items(props(), this.git);
+    // A popup doesn't block presses: stop them before a click lands on what is behind the menu.
     return v_flex()
       .id("menu")
       .track_focus(this.handle)
@@ -291,6 +292,8 @@ export default class Menu extends View {
       .p(4)
       .bg(t.popover)
       .text_size(12)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_mouse_down("right", (_e, cx) => cx.stop_propagation())
       .on_key_down((e, cx) => {
         if (e.key === "down") this.at = (this.at + 1) % list.length;
         else if (e.key === "up") this.at = (this.at + list.length - 1) % list.length;
