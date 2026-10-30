@@ -847,6 +847,40 @@ export default class Changes extends View {
       );
   }
 
+  // Names the file the diff below shows.
+  diffHeader(f: ChangedFile, t: Theme) {
+    const slash = f.path.lastIndexOf("/");
+    return h_flex()
+      .h(28)
+      .flex_none()
+      .px(10)
+      .gap(8)
+      .items_center()
+      .text_size(12)
+      .border_b(1)
+      .border_color(t.border)
+      .child(
+        h_flex()
+          .flex_1()
+          .min_w(0)
+          .child(
+            div()
+              .text_color(t.dim)
+              .truncate()
+              .child(f.path.slice(0, slash + 1)),
+          )
+          .child(
+            div()
+              .min_w(0)
+              .truncate()
+              .text_color(t.foreground)
+              .child(f.path.slice(slash + 1)),
+          ),
+      )
+      .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
+      .when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
+  }
+
   folderRow(row: Extract<TreeRow<ChangedFile>, { kind: "folder" }>, t: Theme) {
     return h_flex()
       .id(`change-folder-${row.path}`)
@@ -927,7 +961,8 @@ export default class Changes extends View {
     if (this.loading) this.loadingRendered = true;
     const t = theme() as Theme,
       { add, del } = this.fileTotals(),
-      rows = this.shownRows();
+      rows = this.shownRows(),
+      openFile = this.files.find((file) => file.path === this.open);
     return v_flex()
       .id("changes")
       .size_full()
@@ -1077,58 +1112,70 @@ export default class Changes extends View {
           )
           .child(
             resizable_panel().child(
-              div()
+              // The border color is the inputs' one; the theme's border is too faint to divide the list from the diff.
+              v_flex()
                 .size_full()
-                .relative()
-                .font_family((settings().font_family as string | undefined) ?? "JetBrains Mono")
-                .text_size(11)
+                .border_t(1)
+                .border_color(t.input)
+                .when(Boolean(openFile), (e) => e.child(this.diffHeader(openFile!, t)))
                 .child(
                   div()
-                    .id("changes-diff-x")
-                    .size_full()
-                    .overflow_x_scrollbar()
+                    .flex_1()
+                    .min_h(0)
+                    .relative()
+                    .font_family((settings().font_family as string | undefined) ?? "JetBrains Mono")
+                    .text_size(11)
                     .child(
                       div()
-                        .w_full()
-                        .min_w(this.diffWidth)
-                        .h_full()
-                        .when(this.rows.length > 0, (el) =>
-                          el.child(
-                            v_virtual_list(
-                              "changes-diff",
-                              this.rows.length,
-                              this.target
-                                ? this.rows.map(
-                                    (row) => (row.kind === "compose" ? COMPOSER : 20) * zoom(),
-                                  )
-                                : 20 * zoom(),
-                              (i) => String(i),
-                              (range) =>
-                                this.rows
-                                  .slice(range.start, range.end)
-                                  .map((row, i) => this.diffRow(row, range.start + i, t)),
-                            )
-                              .size_full()
-                              .on_mouse_down("left", (e) => {
-                                this.pressX = e.local_position?.x ?? Infinity;
-                              })
-                              .on_item_click((index, cx) => this.clickRow(Number(index), cx)),
-                          ),
+                        .id("changes-diff-x")
+                        .size_full()
+                        .overflow_x_scrollbar()
+                        .child(
+                          div()
+                            .w_full()
+                            .min_w(this.diffWidth)
+                            .h_full()
+                            .when(this.rows.length > 0, (el) =>
+                              el.child(
+                                v_virtual_list(
+                                  "changes-diff",
+                                  this.rows.length,
+                                  this.target
+                                    ? this.rows.map(
+                                        (row) => (row.kind === "compose" ? COMPOSER : 20) * zoom(),
+                                      )
+                                    : 20 * zoom(),
+                                  (i) => String(i),
+                                  (range) =>
+                                    this.rows
+                                      .slice(range.start, range.end)
+                                      .map((row, i) => this.diffRow(row, range.start + i, t)),
+                                )
+                                  .size_full()
+                                  .on_mouse_down("left", (e) => {
+                                    this.pressX = e.local_position?.x ?? Infinity;
+                                  })
+                                  .on_item_click((index, cx) => this.clickRow(Number(index), cx)),
+                              ),
+                            ),
                         ),
+                    )
+                    .child(
+                      Scrollbar.vertical("changes-diff")
+                        .viewport_from_layout()
+                        .absolute()
+                        .inset_0(),
+                    )
+                    .when(!this.open && this.files.length > 0, (e) =>
+                      e.child(
+                        div()
+                          .absolute()
+                          .top(6)
+                          .px(12)
+                          .text_color(t.dim)
+                          .child("Select a file to view its changes"),
+                      ),
                     ),
-                )
-                .child(
-                  Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0(),
-                )
-                .when(!this.open && this.files.length > 0, (e) =>
-                  e.child(
-                    div()
-                      .absolute()
-                      .top(6)
-                      .px(12)
-                      .text_color(t.dim)
-                      .child("Select a file to view its changes"),
-                  ),
                 ),
             ),
           ),
