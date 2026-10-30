@@ -13,6 +13,9 @@
     "lint": "vp lint --deny-warnings",
     "build": "vp pack"
   },
+  "dependencies": {
+    "electron": "38.8.6"
+  },
   "devDependencies": {
     "@types/node": "^24.19.2",
     "material-icon-theme": "5.40.0",
@@ -21,8 +24,5 @@
   "engines": {
     "node": "^22.18.0 || ^24.11.0 || >=26.0.0"
   },
-  "packageManager": "pnpm@12.16.1",
-  "dependencies": {
-    "electron": "38.8.6"
-  }
+  "packageManager": "pnpm@12.16.1"
 }
