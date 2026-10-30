@@ -39,10 +39,8 @@ export function panelShown(id: PanelId) {
       ?.tabs.find((each) => each.active)?.id;
     return panes().some((pane) => pane.tab === tab && pane.mod === PANEL_MODS[id]);
   }
-  const tree = layout() as LayoutNode | null,
-    panel = findNode(tree, "panel"),
-    body = findNode(tree, "panel-body");
-  return !panel || (!panel.hidden && body?.active === id);
+  const panel = findNode(layout() as LayoutNode | null, "panel");
+  return !panel || (!panel.hidden && panel.active === id);
 }
 
 let followed: string | null = null;

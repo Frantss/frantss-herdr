@@ -68,10 +68,7 @@ async function harness(fetch: (args: string[]) => Promise<Result>) {
       props: () => null,
       spaces: () => [],
       layout: () => ({
-        children: [
-          { id: "panel", hidden: state.hidden },
-          { id: "panel-body", active: "agent-graph" },
-        ],
+        children: [{ id: "panel", hidden: state.hidden, active: "agent-graph" }],
       }),
       shared: () => null,
     },

@@ -285,10 +285,7 @@ test("hidden Changes renders retain selection and skip list work without forcing
   h.changes.loading = true;
   h.changes.loadingRendered = false;
   h.state.layout = {
-    children: [
-      { id: "panel", hidden: true },
-      { id: "panel-body", active: "changes" },
-    ],
+    children: [{ id: "panel", hidden: true, active: "changes" }],
   };
   h.render();
   assert.equal(h.state.elements, 1);

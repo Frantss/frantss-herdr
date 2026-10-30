@@ -31,7 +31,7 @@ async function load(host: Record<string, unknown>) {
 }
 
 const panelLayout = (hidden: boolean, active: string) => ({
-  children: [{ id: "panel", hidden, children: [{ id: "panel-body", active }] }],
+  children: [{ id: "panel", hidden, active }],
 });
 
 test("a panel copy shows only while the panel shows its child", async () => {

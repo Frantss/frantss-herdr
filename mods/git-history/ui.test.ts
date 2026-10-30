@@ -378,10 +378,7 @@ test("hidden History renders retain its snapshot without constructing lists or f
     callCount = h.state.calls.length;
   h.state.props = {};
   h.state.layout = {
-    children: [
-      { id: "panel", hidden: true },
-      { id: "panel-body", active: "git-history" },
-    ],
+    children: [{ id: "panel", hidden: true, active: "git-history" }],
   };
   const tree = h.render();
   assert.equal(tree.kind, "div");

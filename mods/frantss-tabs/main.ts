@@ -81,9 +81,9 @@ export default class Tabs extends View {
 
   // The side panel is remembered per space: switching shows that space's choice
   // (closed if it never had one), and opening or closing it records it.
-  syncPanel(space: SpaceInfo, panel: LayoutNode, body: LayoutNode, enabled: string[]) {
+  syncPanel(space: SpaceInfo, panel: LayoutNode, enabled: string[]) {
     if (!space || !panel) return;
-    const now = panel.hidden ? null : (body?.active ?? null);
+    const now = panel.hidden ? null : (panel.active ?? null);
     if (space.id !== this.space) {
       const first = this.space === undefined;
       this.space = space.id;
@@ -94,7 +94,7 @@ export default class Tabs extends View {
         if (want !== now) {
           this.pending = { want, until: Date.now() + 1000 };
           if (want) {
-            run("layout.select", { stack: "panel-body", child: want });
+            run("layout.select", { stack: "panel", child: want });
             run("layout.show", { id: "panel" });
           } else run("layout.hide", { id: "panel" });
           return;
@@ -211,9 +211,7 @@ export default class Tabs extends View {
           )
       );
     };
-    const tree = layout() as LayoutNode,
-      panel = findNode(tree, "panel"),
-      body = findNode(tree, "panel-body");
+    const panel = findNode(layout() as LayoutNode, "panel");
     // The welcome screen picks Files and Changes; custom panels stay available.
     const enabled = [
       ...((shared("workspace.panels") as string[] | null) ?? ["files", "changes"]),
@@ -221,9 +219,9 @@ export default class Tabs extends View {
       "git-history",
       "github",
     ];
-    this.syncPanel(space, panel, body, enabled);
+    this.syncPanel(space, panel, enabled);
     const panelButton = (id: PanelId, label: string, icon: string) => {
-      const on = panel && !panel.hidden && body?.active === id;
+      const on = panel && !panel.hidden && panel.active === id;
       return h_flex()
         .id(`panel-${id}`)
         .h(24)
@@ -244,7 +242,7 @@ export default class Tabs extends View {
             run("pane.split", { direction: "right", mod: PANEL_MODS[id], props: { pane: true } });
           else if (on) run("layout.hide", { id: "panel" });
           else {
-            run("layout.select", { stack: "panel-body", child: id });
+            run("layout.select", { stack: "panel", child: id });
             run("layout.show", { id: "panel" });
           }
         })

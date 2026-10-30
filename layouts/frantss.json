@@ -91,51 +91,45 @@
                         },
                         {
                           "id": "panel",
-                          "type": "column",
+                          "type": "stack",
                           "children": [
                             {
-                              "id": "panel-body",
-                              "type": "stack",
-                              "children": [
-                                {
-                                  "id": "files",
-                                  "type": "block",
-                                  "content": {
-                                    "mod": "frantss-files"
-                                  }
-                                },
-                                {
-                                  "id": "changes",
-                                  "type": "block",
-                                  "content": {
-                                    "mod": "frantss-changes"
-                                  }
-                                },
-                                {
-                                  "id": "agent-graph",
-                                  "type": "block",
-                                  "content": {
-                                    "mod": "agent-graph"
-                                  }
-                                },
-                                {
-                                  "id": "git-history",
-                                  "type": "block",
-                                  "content": {
-                                    "mod": "git-history"
-                                  }
-                                },
-                                {
-                                  "id": "github",
-                                  "type": "block",
-                                  "content": {
-                                    "mod": "github"
-                                  }
-                                }
-                              ],
-                              "active": "files"
+                              "id": "files",
+                              "type": "block",
+                              "content": {
+                                "mod": "frantss-files"
+                              }
+                            },
+                            {
+                              "id": "changes",
+                              "type": "block",
+                              "content": {
+                                "mod": "frantss-changes"
+                              }
+                            },
+                            {
+                              "id": "agent-graph",
+                              "type": "block",
+                              "content": {
+                                "mod": "agent-graph"
+                              }
+                            },
+                            {
+                              "id": "git-history",
+                              "type": "block",
+                              "content": {
+                                "mod": "git-history"
+                              }
+                            },
+                            {
+                              "id": "github",
+                              "type": "block",
+                              "content": {
+                                "mod": "github"
+                              }
                             }
                           ],
+                          "active": "files",
                           "size": {
                             "px": 368
                           },

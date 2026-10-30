@@ -297,10 +297,7 @@ test("hidden Files renders retain state and skip row work without forcing a reve
   h.files.loading = true;
   h.files.loadingRendered = false;
   h.state.layout = {
-    children: [
-      { id: "panel", hidden: true },
-      { id: "panel-body", active: "files" },
-    ],
+    children: [{ id: "panel", hidden: true, active: "files" }],
   };
   const rows = h.files.rows.bind(h.files);
   h.files.rows = () => assert.fail("Hidden Files built its row model");

@@ -200,10 +200,7 @@ test("GitHub defers hidden initialization until its first reveal", async () => {
   delete h.view.place;
   h.state.explicit = false;
   h.state.layout = {
-    children: [
-      { id: "panel", hidden: true },
-      { id: "panel-body", active: "github" },
-    ],
+    children: [{ id: "panel", hidden: true, active: "github" }],
   };
   h.view.init(undefined, h.cx);
   await h.drain();
@@ -237,10 +234,7 @@ test("GitHub defers hidden initialization until its first reveal", async () => {
 test("an explicit-cwd GitHub copy initializes even when the layout panel is hidden", async () => {
   const h = await harness();
   h.state.layout = {
-    children: [
-      { id: "panel", hidden: true },
-      { id: "panel-body", active: "files" },
-    ],
+    children: [{ id: "panel", hidden: true, active: "files" }],
   };
   h.view.init(undefined, h.cx);
   await h.drain();

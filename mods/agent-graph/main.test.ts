@@ -22,8 +22,7 @@ function element() {
 }
 
 test("revealing a hidden agent graph renders and refreshes its stale terminals", async () => {
-  const panel = { id: "panel", hidden: true };
-  const body = { id: "panel-body", active: "files" };
+  const panel = { id: "panel", hidden: true, active: "files" };
   const calls: string[][] = [];
   const tasks: Promise<unknown>[] = [];
   const timers: number[] = [];
@@ -74,7 +73,7 @@ test("revealing a hidden agent graph renders and refreshes its stale terminals",
       },
       props: () => null,
       spaces: () => [],
-      layout: () => ({ children: [panel, body] }),
+      layout: () => ({ children: [panel] }),
     },
   };
   const module = new vm.SourceTextModule(
@@ -111,7 +110,7 @@ test("revealing a hidden agent graph renders and refreshes its stale terminals",
   assert.equal(graph.stale, true);
 
   panel.hidden = false;
-  body.active = "agent-graph";
+  panel.active = "agent-graph";
   assert.doesNotThrow(() => graph.render(nativeContext));
   assert.equal(graph.stale, false);
   assert.equal(tasks.length, 1);
