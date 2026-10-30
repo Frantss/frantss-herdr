@@ -222,7 +222,9 @@ function workspaceSnapshot(): WorkspaceSnapshot {
   for (const pane of panes()) {
     const lead = leadByTab.get(pane.tab);
     if (!lead || (!lead.program?.agent && pane.program?.agent)) leadByTab.set(pane.tab, pane);
-    panesByTab.set(pane.tab, [...(panesByTab.get(pane.tab) ?? []), pane]);
+    const tabPanes = panesByTab.get(pane.tab);
+    if (tabPanes) tabPanes.push(pane);
+    else panesByTab.set(pane.tab, [pane]);
     const space = spaceByTab.get(pane.tab);
     if (space !== undefined && pane.cwd && !cwdBySpace.has(space)) cwdBySpace.set(space, pane.cwd);
   }
