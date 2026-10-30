@@ -1,14 +1,5 @@
-import { View, div, type Context, type AsyncContext, type Color, type FocusHandle } from "gpui-kit";
-import {
-  v_flex,
-  h_flex,
-  InputState,
-  Input,
-  Scrollbar,
-  v_virtual_list,
-  v_resizable,
-  resizable_panel,
-} from "gpui-base";
+import { View, div, type Context, type AsyncContext, type Color } from "gpui-kit";
+import { v_flex, h_flex, Scrollbar, v_virtual_list, v_resizable, resizable_panel } from "gpui-base";
 import {
   spaces,
   panes,
@@ -176,11 +167,7 @@ export default class Changes extends View {
   declare newSpans: Span[][];
   declare expanded: ReadonlySet<number>;
   declare diffWidth: number;
-  declare message: string;
-  declare handle: FocusHandle;
   declare kept: Map<string, Snapshot>;
-  declare input: InputState;
-  declare typing: boolean;
   declare on: string | null;
   declare watched: string | null;
   declare root: string | null;
@@ -189,7 +176,6 @@ export default class Changes extends View {
   declare loading: boolean;
   declare loadingRendered: boolean;
   declare watchToken: object;
-  declare busy: boolean;
   declare stale: boolean;
   declare error: string | null;
   declare note: string | null;
@@ -200,23 +186,7 @@ export default class Changes extends View {
   init(_props: unknown, cx: AsyncContext) {
     this.files = [];
     this.setLines([]);
-    this.message = "";
-    this.handle = cx.focus_handle();
     this.kept = new Map();
-    this.input = InputState.new({ placeholder: "Commit message" });
-    this.input.on("change", (_e, cx) => {
-      this.message = this.input.value();
-      cx.notify();
-    });
-    this.input.on("submit", (_e, cx) => this.commit(cx));
-    this.input.on("focus", (_e, cx) => {
-      this.typing = true;
-      cx.notify();
-    });
-    this.input.on("blur", (_e, cx) => {
-      this.typing = false;
-      cx.notify();
-    });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
   }
@@ -245,7 +215,7 @@ export default class Changes extends View {
       context = key();
     // Switch places before waiting on any git still running for the last one: its results check the place.
     if (context !== this.context) this.switchTo(context);
-    if (this.loading || this.busy || !cwd) return;
+    if (this.loading || !cwd) return;
     if (!shown()) {
       this.stale = true;
       return;
@@ -374,8 +344,6 @@ export default class Changes extends View {
     }
     const kept = this.kept.get(context);
     this.context = context;
-    this.message = "";
-    this.input.set_value("");
     this.note = null;
     this.watched = null;
     if (kept) Object.assign(this, kept);
@@ -520,39 +488,6 @@ export default class Changes extends View {
     cx.notify();
   }
 
-  commit(cx: Context) {
-    if (!this.message.trim() || !this.root || this.busy || this.loading || this.context !== key())
-      return;
-    const root = this.root,
-      on = this.on,
-      context = this.context,
-      message = this.message.trim();
-    this.busy = true;
-    this.note = null;
-    cx.spawn(async (cx) => {
-      try {
-        for (const args of [
-          ["add", "-A"],
-          ["commit", "-m", message],
-        ]) {
-          const r = await exec("git", args, { cwd: root, on });
-          if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
-        }
-        if (key() === context) {
-          this.message = "";
-          this.input.set_value("");
-        }
-      } catch (e) {
-        if (key() === context) this.note = `Commit failed: ${e}`;
-      } finally {
-        this.busy = false;
-        this.refresh(cx);
-        cx.notify();
-      }
-    });
-    cx.notify();
-  }
-
   diffRow({ kind, number, text, spans, gap }: DiffRow, t: Theme) {
     if (kind === "@")
       return div()
@@ -664,7 +599,6 @@ export default class Changes extends View {
     const t = theme() as Theme,
       add = this.files.reduce((n, f) => n + f.add, 0),
       del = this.files.reduce((n, f) => n + f.del, 0);
-    const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
     return v_flex()
       .id("changes")
       .size_full()
@@ -675,15 +609,6 @@ export default class Changes extends View {
       .border_color(t.border)
       .text_color(t.foreground)
       .text_size(12)
-      .track_focus(this.handle)
-      .on_key_down((e, cx) => {
-        if (e.key === "escape" && this.typing) {
-          this.typing = false;
-          this.handle.focus();
-          cx.stop_propagation();
-          cx.notify();
-        }
-      })
       .child(
         h_flex()
           .h(28)
@@ -821,46 +746,6 @@ export default class Changes extends View {
       )
       .when(Boolean(this.note), (e) =>
         e.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)),
-      )
-      .child(
-        h_flex()
-          .flex_none()
-          .p(10)
-          .gap(8)
-          .border_t(1)
-          .border_color(t.border)
-          .child(
-            div()
-              .id("commit-message")
-              .flex_1()
-              .min_w(0)
-              .h(34)
-              .px(10)
-              .flex()
-              .items_center()
-              .rounded(3)
-              .border_1()
-              .border_color(this.typing ? t.accent : t.input)
-              .cursor_text()
-              .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-              .child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)),
-          )
-          .child(
-            div()
-              .id("commit")
-              .h(34)
-              .px(12)
-              .flex()
-              .items_center()
-              .rounded(3)
-              .bg(enabled ? t.accent : t.border)
-              .text_color(enabled ? t.accent_foreground : t.muted)
-              .text_size(12)
-              .when(enabled, (e) => e.font_bold())
-              .when(enabled, (e) => e.cursor_pointer())
-              .on_click((_e, cx) => this.commit(cx))
-              .child(this.busy ? "Committing…" : "Commit"),
-          ),
       );
   }
 }

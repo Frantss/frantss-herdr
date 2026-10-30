@@ -203,7 +203,6 @@ async function harness(refresh = false) {
     limited: false,
     open: null,
     kept: new Map(),
-    input: { set_value() {} },
     context: JSON.stringify({ cwd: "/repo", on: null }),
   });
   const watch = changes.watch.bind(changes);
@@ -351,14 +350,13 @@ test("Changes notifies on diff changes, errors, and recovery", async () => {
   assert.equal(h.state.notifications, 3);
 });
 
-test("Changes notifies to re-enable commit controls after a render during loading", async () => {
+test("Changes notifies after a render during loading", async () => {
   const h = await harness(true);
   h.changes.refresh(h.cx);
   await h.drain();
   h.state.notifications = 0;
   const held = deferred();
   h.state.block = held.promise;
-  h.changes.message = "Commit these changes";
   h.changes.refresh(h.cx);
   h.render();
   assert.equal(h.changes.loadingRendered, true);
