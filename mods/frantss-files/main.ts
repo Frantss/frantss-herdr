@@ -24,6 +24,7 @@ import {
   TextView,
   InputState,
   Input,
+  Popup,
 } from "gpui-base";
 import {
   exec,
@@ -1162,85 +1163,99 @@ export default class Files extends View {
       // The side with more room, and no lower than the panel.
       subLeft = width - (x + MENU_WIDTH) >= x ? MENU_WIDTH - 4 : 4 - MENU_WIDTH;
     subTop = Math.min(subTop, bottom - y - subHeight);
-    return (
-      this.menuFrame("files-menu", t)
-        .left(x)
-        .top(y)
-        // A right press reopens or closes the menu through the panel's own handler.
-        .on_mouse_down_out((e, cx) => {
-          if (e.button === "right") return;
-          // Outside capture also sees presses in the submenu, which extends beyond this frame.
-          if (row && sub && e.local_position) {
-            const scale = zoom(),
-              localX = e.local_position.x / scale,
-              localY = e.local_position.y / scale;
-            if (
-              localX >= subLeft &&
-              localX < subLeft + MENU_WIDTH &&
-              localY >= subTop &&
-              localY < subTop + subHeight
+    const hasSubmenu = Boolean(row) && sub,
+      menuHeight = row ? offset + 6 : (Math.max(1, this.apps.length) + 1) * 24 + 10,
+      surfaceLeft = hasSubmenu ? Math.min(0, subLeft) : 0,
+      surfaceTop = hasSubmenu ? Math.min(0, subTop) : 0,
+      surfaceWidth =
+        (hasSubmenu ? Math.max(MENU_WIDTH, subLeft + MENU_WIDTH) : MENU_WIDTH) - surfaceLeft,
+      surfaceHeight =
+        (hasSubmenu ? Math.max(menuHeight, subTop + subHeight) : menuHeight) - surfaceTop;
+    const menu = this.menuFrame("files-menu", t)
+      .left(-surfaceLeft)
+      .top(-surfaceTop)
+      // A right press reopens or closes the menu through the panel's own handler.
+      .on_mouse_down_out((e, cx) => {
+        if (e.button === "right") return;
+        // Outside capture also sees presses in the submenu, which extends beyond this frame.
+        if (row && sub && e.local_position) {
+          const scale = zoom(),
+            localX = e.local_position.x / scale,
+            localY = e.local_position.y / scale;
+          if (
+            localX >= subLeft &&
+            localX < subLeft + MENU_WIDTH &&
+            localY >= subTop &&
+            localY < subTop + subHeight
+          )
+            return;
+        }
+        this.menu = null;
+        cx.notify();
+      })
+      .when(!row, (e) =>
+        e
+          .child(
+            div()
+              .h(24)
+              .px(6)
+              .flex()
+              .items_center()
+              .text_size(11)
+              .text_color(t.dim)
+              .child("Open in"),
+          )
+          .children(this.appRows(t, at)),
+      )
+      .children(
+        items.map((item) => {
+          if (!item) return div().mx(4).my(4).h(1).bg(t.border);
+          const i = ++index,
+            danger = item.action === "trash",
+            opens = item.action === "open-in";
+          return this.menuRow(`files-menu-${item.action}`, t, i === at || (opens && sub))
+            .when(danger && confirm, (e) =>
+              e.text_color(t.ansi1).hover((s) => s.text_color(t.ansi1)),
             )
-              return;
-          }
-          this.menu = null;
-          cx.notify();
-        })
-        .when(!row, (e) =>
-          e
+            .on_hover((hovered, cx) => {
+              if (!hovered || !this.menu || this.menu.sub === opens) return;
+              this.menu.sub = opens;
+              this.menu.subAt = -1;
+              cx.notify();
+            })
+            .on_click((_e, cx) => this.choose(item, cx))
+            .child(
+              svg(item.icon)
+                .size(13)
+                .flex_none()
+                .text_color(danger ? t.ansi1 : t.dim),
+            )
             .child(
               div()
-                .h(24)
-                .px(6)
-                .flex()
-                .items_center()
-                .text_size(11)
-                .text_color(t.dim)
-                .child("Open in"),
+                .flex_1()
+                .min_w(0)
+                .truncate()
+                .child(danger && confirm ? "Click again to move to Trash" : item.label),
             )
-            .children(this.appRows(t, at)),
-        )
-        .children(
-          items.map((item) => {
-            if (!item) return div().mx(4).my(4).h(1).bg(t.border);
-            const i = ++index,
-              danger = item.action === "trash",
-              opens = item.action === "open-in";
-            return this.menuRow(`files-menu-${item.action}`, t, i === at || (opens && sub))
-              .when(danger && confirm, (e) =>
-                e.text_color(t.ansi1).hover((s) => s.text_color(t.ansi1)),
-              )
-              .on_hover((hovered, cx) => {
-                if (!hovered || !this.menu || this.menu.sub === opens) return;
-                this.menu.sub = opens;
-                this.menu.subAt = -1;
-                cx.notify();
-              })
-              .on_click((_e, cx) => this.choose(item, cx))
-              .child(
-                svg(item.icon)
-                  .size(13)
-                  .flex_none()
-                  .text_color(danger ? t.ansi1 : t.dim),
-              )
-              .child(
-                div()
-                  .flex_1()
-                  .min_w(0)
-                  .truncate()
-                  .child(danger && confirm ? "Click again to move to Trash" : item.label),
-              )
-              .when(opens, (e) => e.child(svg(CHEVRON).size(12).flex_none().text_color(t.dim)));
-          }),
-        )
-        .when(Boolean(row) && sub, (e) =>
-          e.child(
-            this.menuFrame("files-menu-apps", t)
-              .left(subLeft)
-              .top(subTop)
-              .children(this.appRows(t, subAt)),
-          ),
-        )
-    );
+            .when(opens, (e) => e.child(svg(CHEVRON).size(12).flex_none().text_color(t.dim)));
+        }),
+      )
+      .when(hasSubmenu, (e) =>
+        e.child(
+          this.menuFrame("files-menu-apps", t)
+            .left(subLeft)
+            .top(subTop)
+            .children(this.appRows(t, subAt)),
+        ),
+      );
+    // Measure both menus so native window-edge clamping keeps the submenu visible too.
+    return Popup.new("files-menu-popup", div().size(0))
+      .absolute()
+      .left(x + surfaceLeft)
+      .top(y + surfaceTop)
+      .size(0)
+      .anchor("top_left")
+      .content(div().relative().w(surfaceWidth).h(surfaceHeight).child(menu));
   }
 
   iconButton(id: string, label: string, icon: string, action: (cx: Context) => void) {

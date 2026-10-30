@@ -67,6 +67,9 @@ async function harness(refresh = false) {
             if (name === "on_mouse_down") node.handlers[`${name}:${args[0]}`] = args.at(-1);
           } else if (name === "when") {
             if (args[0]) args[1](proxy);
+          } else if (name === "content") {
+            node.content = args[0];
+            node.childNodes.push(args[0]);
           } else if (name === "child") node.childNodes.push(args[0]);
           else if (name === "children") node.childNodes.push(...args[0]);
           else {
@@ -99,6 +102,13 @@ async function harness(refresh = false) {
       v_resizable: element,
       resizable_panel: element,
       Button: { new: (id) => element().id(id) },
+      Popup: {
+        new(id, trigger) {
+          const node = element().id(id).child(trigger);
+          node.popup = true;
+          return node;
+        },
+      },
       Editor: { new: element },
       Input: { new: element },
       InputState: {},
@@ -1131,10 +1141,12 @@ async function menuHarness() {
 test("a right-clicked row opens its menu where the press landed, kept inside the panel", async () => {
   const { h, press } = await menuHarness();
   const menu = press("a.ts", 40, 30);
-  assert.ok(menu.styles.some(([key, value]) => key === "left" && value === 40 / 0.8));
+  const popup = findNode(h.render(), byId("files-menu-popup"));
+  assert.ok(popup.styles.some(([key, value]) => key === "left" && value === 40 / 0.8));
   assert.ok(textOf(menu).includes("Open in Fresh"));
   assert.ok(textOf(press("src")).startsWith("Collapse"));
-  const low = press("a.ts", 280, 590);
+  press("a.ts", 280, 590);
+  const low = findNode(h.render(), byId("files-menu-popup"));
   const left = low.styles.find(([key]) => key === "left")[1],
     top = low.styles.find(([key]) => key === "top")[1];
   assert.ok(left + 210 <= 300 / 0.8 && top < 590 / 0.8);
@@ -1208,6 +1220,34 @@ test("rename and new entries take their name in the tree and refuse clashes", as
   pick("new-folder");
   h.files.key("escape", h.cx);
   assert.equal(h.files.editing, null);
+});
+
+test("the file menu and its submenu escape panel clipping through a measured native popup", async () => {
+  const { h, press } = await menuHarness();
+  press("a.ts", 280, 100, 300, 600);
+  await h.drain();
+  findNode(h.render(), byId("files-menu-open-in")).handlers.on_hover(true, h.cx);
+  const tree = h.render(),
+    popup = findNode(tree, byId("files-menu-popup")),
+    menu = findNode(tree, byId("files-menu")),
+    apps = findNode(menu, byId("files-menu-apps"));
+  assert.equal(
+    popup?.popup,
+    true,
+    "Menus must paint in the native popup layer outside the clipped panel",
+  );
+  assert.equal(findNode(popup.content, byId("files-menu")), menu);
+  const style = (node, key) => node.styles.find(([name]) => name === key)?.[1],
+    menuLeft = style(menu, "left"),
+    menuTop = style(menu, "top"),
+    appLeft = menuLeft + style(apps, "left"),
+    appTop = menuTop + style(apps, "top");
+  assert.ok(style(popup, "left") < 0, "The popup must extend beyond the file panel's left edge");
+  assert.ok(menuLeft >= 0 && menuTop >= 0 && appLeft >= 0 && appTop >= 0);
+  assert.ok(style(popup.content, "w") >= menuLeft + style(menu, "w"));
+  assert.ok(style(popup.content, "w") >= appLeft + style(apps, "w"));
+  assert.ok(style(popup.content, "h") >= appTop + h.files.apps.length * 24 + 10);
+  assert.ok(!popup.content.styles.some(([name]) => name === "absolute"));
 });
 
 for (const zoom of [0.8, 1, 1.5]) {
