@@ -890,15 +890,6 @@ export default class Frantss extends View {
             onMenu: () => menu("pane", { pane: a.pane, terminal: a.address }),
           })),
         })),
-      ...(closed.length
-        ? [
-            {
-              id: "closed",
-              title: "RECENTLY CLOSED",
-              rows: closed.map((record) => this.closedRow(t, record, snapshot, now)),
-            },
-          ]
-        : []),
     ];
 
     const items = [];
@@ -948,7 +939,39 @@ export default class Frantss extends View {
               ),
           ),
       )
+      .when(closed.length > 0, (e) =>
+        e.child(
+          this.recentlyClosed(
+            t,
+            closed.map((record) => this.closedRow(t, record, snapshot, now)),
+            collapsed.includes("closed"),
+          ),
+        ),
+      )
       .child(this.footer(t));
+  }
+
+  // Recently closed agents, pinned above the footer; past a few rows it scrolls on its own.
+  recentlyClosed(t: Theme, rows: RailRow[], collapsed: boolean) {
+    return v_flex()
+      .flex_none()
+      .py(8)
+      .gap(RAIL.rowGap)
+      .border_t(1)
+      .border_color(t.border)
+      .child(
+        this.header(t, { id: "closed", title: "RECENTLY CLOSED", count: rows.length, collapsed }),
+      )
+      .when(!collapsed, (e) =>
+        e.child(
+          v_flex()
+            .id("frantss-closed")
+            .max_h(5 * RAIL.row + 4 * RAIL.rowGap)
+            .overflow_y_scrollbar()
+            .gap(RAIL.rowGap)
+            .children(rows.map((r) => this.row(t, r))),
+        ),
+      );
   }
 
   // Herdr's own sidebar footer, in the rail's row style: it stays below the scrolling sections.
