@@ -11,6 +11,7 @@ import {
   settings,
   layout,
 } from "herdr";
+import { trackedPreview, untrackedPreview } from "./preview.ts";
 
 interface LayoutNode {
   id?: string;
@@ -97,9 +98,6 @@ const SNAPSHOT = [
   "diffWidth",
 ] as const;
 const KEPT_PLACES = 20;
-const countLines = (text: string) =>
-  text ? text.split("\n").length - Number(text.endsWith("\n")) : 0;
-
 // Numbers each diff line once, so a frame only draws the rows on screen.
 function diffRows(lines: string[]): DiffRow[] {
   let old = 0,
@@ -325,18 +323,10 @@ export default class Changes extends View {
     if (file.fresh || (!this.hasHead && file.status === "A")) {
       const text = await readTextFile(`${root}/${path}`, { on }).catch((): null => null);
       if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
-      else if (text.includes("\0")) lines = ["Binary file · no text diff"];
       else {
-        file.add = countLines(text);
-        lines = [
-          `@@ -0,0 +1,${file.add} @@`,
-          ...text
-            .slice(0, 400000)
-            .replace(/\n$/, "")
-            .split("\n")
-            .slice(0, 1500)
-            .map((l) => `+${l}`),
-        ];
+        const preview = untrackedPreview(text);
+        if (preview.add !== null) file.add = preview.add;
+        lines = preview.lines;
       }
     } else {
       const r = await exec(
@@ -353,19 +343,9 @@ export default class Changes extends View {
         { cwd: root, on },
       );
       if (r.code !== 0) throw new Error(r.stderr);
-      const all = r.stdout.replace(/\n$/, "").split("\n"),
-        first = all.findIndex((l) => l.startsWith("@@"));
-      lines =
-        first < 0
-          ? [file.binary ? "Binary file changed" : "No text diff available"]
-          : all.slice(first);
+      lines = trackedPreview(r.stdout, Boolean(file.binary));
     }
-    if (key() === context && this.open === path)
-      this.setLines(
-        lines
-          .slice(0, 1500)
-          .map((line) => (line.length > 4000 ? line.slice(0, 4000) + "… (line truncated)" : line)),
-      );
+    if (key() === context && this.open === path) this.setLines(lines);
   }
 
   setLines(lines: string[]) {
