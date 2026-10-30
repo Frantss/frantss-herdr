@@ -176,6 +176,7 @@ export default class Files extends View {
   declare entryCount: number;
   declare folders: Set<string>;
   declare folderChildren: Map<string, Set<string>>;
+  declare rowCache: FileRow[] | null;
   declare pending: Set<string>;
   declare marks: Record<string, Mark>;
   declare on: string | null;
@@ -204,6 +205,7 @@ export default class Files extends View {
     this.entryCount = 0;
     this.folders = new Set();
     this.folderChildren = new Map();
+    this.rowCache = null;
     this.pending = new Set();
     this.marks = {};
     this.generation = 0;
@@ -311,6 +313,7 @@ export default class Files extends View {
     if (changed) {
       this.entries.set(path, next);
       this.entryCount = used + next.length;
+      this.rowCache = null;
     }
     if (entries.length > PER_FOLDER || used + entries.length > TOTAL) this.limited = true;
     const directories = new Set(
@@ -362,6 +365,7 @@ export default class Files extends View {
       );
       this.folders = new Set(cached?.folders);
       this.indexFolders();
+      this.rowCache = null;
       this.pending = new Set();
       this.marks = { ...cached?.marks };
       this.watched = null;
@@ -442,6 +446,7 @@ export default class Files extends View {
           names.some((name) => this.marks[name] !== marks[name])
         ) {
           this.marks = marks;
+          this.rowCache = null;
           changed = true;
         }
         this.error = null;
@@ -480,6 +485,7 @@ export default class Files extends View {
     for (const folder of this.folders)
       if (folder === path || folder.startsWith(path + "/")) {
         this.folders.delete(folder);
+        this.rowCache = null;
         const slash = folder.lastIndexOf("/"),
           parent = slash < 0 ? "" : folder.slice(0, slash),
           siblings = children.get(parent);
@@ -500,6 +506,7 @@ export default class Files extends View {
       if (!children.has(parent)) children.set(parent, new Set());
       children.get(parent).add(path);
       this.folders.add(path);
+      this.rowCache = null;
       if (!this.entries.has(path) && !this.pending.has(path)) {
         const context = this.context,
           generation = this.generation,
@@ -615,7 +622,11 @@ export default class Files extends View {
   }
 
   // Ignored directories dim their descendants too, including rows outside the viewport.
-  rows(prefix = "", depth = 0, out: FileRow[] = [], inIgnored = false): FileRow[] {
+  rows(): FileRow[] {
+    return (this.rowCache ??= this.appendRows("", 0, [], false));
+  }
+
+  appendRows(prefix: string, depth: number, out: FileRow[], inIgnored: boolean): FileRow[] {
     if (out.length >= TOTAL || depth > 40) return out;
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
@@ -624,7 +635,7 @@ export default class Files extends View {
         mark = this.marks[`${this.root}/${path}`],
         ignored = inIgnored || mark === "I";
       out.push({ ...entry, path, depth, open, mark, ignored });
-      if (entry.dir && open) this.rows(path, depth + 1, out, ignored);
+      if (entry.dir && open) this.appendRows(path, depth + 1, out, ignored);
     }
     return out;
   }

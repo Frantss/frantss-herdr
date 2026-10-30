@@ -172,7 +172,7 @@ async function harness(refresh = false) {
       if (command === "git" && args.includes("--show-toplevel"))
         return { code: 0, stdout: options.cwd, stderr: "" };
       if (command === "git" && args.includes("status"))
-        return { code: 0, stdout: " M changed.ts\0", stderr: "" };
+        return { code: 0, stdout: state.gitStatus ?? " M changed.ts\0", stderr: "" };
       throw new Error(`Unexpected command ${command}`);
     };
   if (refresh)
@@ -396,6 +396,51 @@ test("an expansion during a pending listing is pruned by its unchanged parent", 
   assert.equal(h.files.folders.has("src/removed"), false);
   assert.equal(h.files.entries.has("src/removed"), false);
   assert.equal(h.files.folders.has("tests"), true);
+});
+
+test("Files reuses row metadata until directory contents or expansion changes", async () => {
+  const h = await expandedFiles();
+  const rows = h.files.rows();
+  assert.equal(h.files.rows(), rows);
+  h.files.applyFolder("src", h.files.entries.get("src"), h.files.context, h.files.generation);
+  assert.equal(h.files.rows(), rows);
+  h.files.applyFolder(
+    "src",
+    [{ name: "saved.ts", dir: false }],
+    h.files.context,
+    h.files.generation,
+  );
+  const changed = h.files.rows();
+  assert.notEqual(changed, rows);
+  assert.ok(changed.some((row) => row.path === "src/saved.ts"));
+  h.files.toggle("src", h.cx);
+  assert.ok(!h.files.rows().some((row) => row.path.startsWith("src/")));
+  h.files.toggle("src", h.cx);
+  await h.drain();
+  assert.ok(h.files.rows().some((row) => row.path === "src/next.ts"));
+});
+
+test("cached Files metadata follows Git marks and restored places", async () => {
+  const h = await expandedFiles();
+  const rows = h.files.rows();
+  h.state.gitStatus = "!! src/\0";
+  h.files.refresh(h.cx);
+  await h.drain();
+  assert.notEqual(h.files.rows(), rows);
+  assert.ok(h.files.rows().find((row) => row.path === "src/next.ts").ignored);
+  h.state.cwd = "/other";
+  h.state.directories.set("/other", [{ name: "other.ts", dir: false }]);
+  h.files.refresh(h.cx);
+  await h.drain();
+  assert.deepEqual(
+    Array.from(h.files.rows() as { path: string }[], (row) => row.path),
+    ["other.ts"],
+  );
+  h.state.cwd = "/repo";
+  h.files.refresh(h.cx);
+  await h.drain();
+  assert.ok(h.files.rows().some((row) => row.path === "src/next.ts" && row.ignored));
+  assert.ok(!h.files.rows().some((row) => row.path === "other.ts"));
 });
 
 async function expandedFiles() {
