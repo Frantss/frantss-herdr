@@ -32,6 +32,7 @@ async function harness() {
     "gpui-base": { h_flex: unused, v_flex: unused, Button: { new: unused } },
     herdr: {
       notify: () => {},
+      nextCommand: unused,
       agents: unused,
       spaces: unused,
       panes: unused,

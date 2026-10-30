@@ -1,6 +1,6 @@
 import type { Context, AsyncContext, FocusHandle } from "gpui-kit";
 // Context menus (Herdr's items). Opened as a popup with
-// props { tab: "pane" | "terminal" | "tab" | "space" | "global", target }.
+// props { tab: "pane" | "terminal" | "closed" | "tab" | "space" | "global", target }.
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
 // a command "worktree" opens the worktree dialog instead, and "rename" Herdr's rename prompt starting
 // from the tab's or space's shown name (target.name, from the frantss mods that open this menu).
@@ -26,6 +26,8 @@ import {
 } from "herdr";
 import { closeTab } from "./close-tab.ts";
 import { hcOrToast } from "./agent-hc.ts";
+import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
+import { historyArgv, resumeArgv } from "./closed.ts";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s: import("herdr").SpaceInfo) {
@@ -53,6 +55,7 @@ type MenuTarget = {
   cwd?: string;
   space?: string;
   checkout?: "main" | "linked" | null;
+  app?: string | null;
 };
 type MenuProps = { tab?: string; target?: MenuTarget; overlay?: string };
 type MenuItem = [label: string, command: string, args: Record<string, string>];
@@ -80,6 +83,12 @@ export function items(p: MenuProps, git: "main" | "linked" | null): MenuItem[] {
   p = p ?? {};
   const tg = p.target ?? {};
   switch (p.tab) {
+    case "closed":
+      return [
+        ["View history", "history", { terminal: tg.terminal, cwd: tg.cwd, name: tg.name }],
+        ...(resumeArgv(tg.app) ? [["Resume…", "resume", { cwd: tg.cwd, app: tg.app }]] : []),
+        ["Forget history…", "forget-history", { terminal: tg.terminal, name: tg.name }],
+      ] as MenuItem[];
     case "pane": {
       // An agent, and a kept sub-agent, can go back to running without a pane: a sub-agent under
       // its parent.
@@ -176,6 +185,9 @@ const AGENT_ICONS: Record<string, string> = {
   "terminal.park": "mods/workspace-chrome/pin-off.svg",
   "terminal.keep": "mods/workspace-chrome/pin.svg",
   remove: "mods/frantss-files/trash.svg",
+  history: "mods/github/eye.svg",
+  resume: "mods/frantss/resume.svg",
+  "forget-history": "mods/frantss-files/trash.svg",
 };
 
 function menuIcon(command: string) {
@@ -239,6 +251,10 @@ export default class Menu extends View {
     if (!it) return;
     closeOverlay(props()?.overlay);
     if (it[1] === "copy") cx.write_to_clipboard(it[2].text);
+    else if (it[1] === "history")
+      openAgentTab(it[2].cwd, historyArgv(it[2].terminal), `${it[2].name} history`);
+    else if (it[1] === "resume") openAgentTab(it[2].cwd, resumeArgv(it[2].app));
+    else if (it[1] === "forget-history") confirmForgetHistory(it[2].terminal, it[2].name);
     else if (it[1] === "reply")
       openOverlay({ mod: "frantss-reply", kind: "dialog", width: 480, height: 300, props: it[2] });
     else if (it[1] === "interrupt")
@@ -311,6 +327,7 @@ export default class Menu extends View {
                   (it[1] === "pane.split" && list[i - 1][1] !== "pane.split") ||
                   it[1] === "kill" ||
                   it[1] === "remove" ||
+                  it[1] === "forget-history" ||
                   it[1] === "terminal.keep" ||
                   (it[1] === "copy" && list[i - 1][1] !== "copy") ||
                   it[1] === "app.help" ||

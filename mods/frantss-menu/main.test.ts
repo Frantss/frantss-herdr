@@ -10,7 +10,7 @@ const records = [
   { address: "t3", cwd: "/repo" },
 ];
 
-async function load() {
+async function load(overrides = {}) {
   const context = vm.createContext({});
   const empty = () => {};
   const natives: Record<string, Record<string, unknown>> = {
@@ -30,6 +30,7 @@ async function load() {
       spaces: () => [],
       panes: () => [],
       exec: empty,
+      ...overrides,
     },
   };
   const module = new vm.SourceTextModule(
@@ -114,4 +115,63 @@ test("a finished terminal can only be copied or removed", async () => {
     ["Copy folder", "copy", { text: "/old" }],
     ["Remove", "remove", { terminal: "t9" }],
   ]);
+});
+
+test("a recently closed agent offers history, a supported session picker, and confirmed forgetting", async () => {
+  const module = await load();
+  const target = { terminal: "t9", cwd: "/old", name: "fix tabs", app: "codex" };
+  const menu = JSON.parse(JSON.stringify(module.items({ tab: "closed", target }, null)));
+  assert.deepEqual(menu, [
+    ["View history", "history", { terminal: "t9", cwd: "/old", name: "fix tabs" }],
+    ["Resume…", "resume", { cwd: "/old", app: "codex" }],
+    ["Forget history…", "forget-history", { terminal: "t9", name: "fix tabs" }],
+  ]);
+  for (const app of [null, "pi"]) {
+    const items = module.items({ tab: "closed", target: { ...target, app } }, null);
+    assert.deepEqual(
+      Array.from(items, ([label]) => label),
+      ["View history", "Forget history…"],
+    );
+  }
+});
+
+test("closed menu actions open history and resume in the local folder, and only ask to forget", async () => {
+  const commands = [],
+    overlays = [],
+    closed = [];
+  const module = await load({
+    props: () => ({
+      tab: "closed",
+      overlay: "menu-1",
+      target: { terminal: "t9", cwd: "/old", name: "fix tabs", app: "claude-code" },
+    }),
+    run: (...args) => commands.push(JSON.parse(JSON.stringify(args))),
+    openOverlay: (spec) => overlays.push(JSON.parse(JSON.stringify(spec))),
+    closeOverlay: (id) => closed.push(id),
+    hc: () => assert.fail("Forgetting must wait for confirmation"),
+    spaces: () => [{ id: "s1", folder: "/old", tabs: [] }],
+  });
+  const view = new module.default();
+  const cx = {} as Parameters<typeof view.choose>[1];
+  view.choose(0, cx);
+  view.choose(1, cx);
+  assert.deepEqual(commands, [
+    ["space.select", { id: "s1" }],
+    [
+      "tab.new",
+      {
+        space: "s1",
+        folder: "/old",
+        argv: ["hc", "read", "t9", "--lines", "100000"],
+        name: "fix tabs history",
+      },
+    ],
+    ["space.select", { id: "s1" }],
+    ["tab.new", { space: "s1", folder: "/old", argv: ["claude", "--resume"] }],
+  ]);
+  view.choose(2, cx);
+  assert.deepEqual(closed, ["menu-1", "menu-1", "menu-1"]);
+  assert.equal(commands.length, 4);
+  assert.equal(overlays[0].mod, "confirm");
+  assert.equal(overlays[0].props.command.name, "frantss.forget-history:t9");
 });

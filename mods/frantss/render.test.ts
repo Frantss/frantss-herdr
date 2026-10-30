@@ -84,6 +84,10 @@ async function harness(role = "rail") {
     cancelled: [] as unknown[],
     propsCalls: 0,
     agentOrder: [] as string[],
+    commandQueue: [] as string[],
+    hcCalls: [] as string[][],
+    errors: [] as unknown[],
+    removalResult: Promise.resolve({ code: 0, stdout: "", stderr: "" }),
   };
   function element(kind = "div", source?) {
     const node: any = {
@@ -127,7 +131,8 @@ async function harness(role = "rail") {
       Button: { new: (id) => element().id(id) },
     },
     herdr: {
-      notify: () => {},
+      notify: (error) => state.errors.push(error),
+      nextCommand: async () => state.commandQueue.shift() ?? new Promise<string>(() => {}),
       spaces: () => {
         state.calls.spaces++;
         return state.spaces;
@@ -163,8 +168,13 @@ async function harness(role = "rail") {
       openOverlay: (options) => state.overlays.push(options),
       exec: unused,
       pickFolder: unused,
-      knownAgents: unused,
-      hc: async () => ({ code: 0, stdout: JSON.stringify({ terminals: state.terminals }) }),
+      knownAgents: async () => [],
+      hc: async (args) => {
+        state.hcCalls.push(Array.from(args));
+        return args[0] === "rm"
+          ? state.removalResult
+          : { code: 0, stdout: JSON.stringify({ terminals: state.terminals }), stderr: "" };
+      },
     },
   };
   const module = new vm.SourceTextModule(
@@ -595,4 +605,56 @@ test("the rail records local agents and lists closed ones with history, resume, 
     { folder: "/elsewhere", argv: ["codex", "resume"] },
   ]);
   assert.ok(byId(tree, "forget-t8"));
+  byId(tree, "closed-t8").handlers.on_mouse_down({}, h.cx);
+  assert.deepEqual(plain(h.state.overlays.at(-1).props), {
+    tab: "closed",
+    target: { terminal: "t8", cwd: "/project/live", name: "fix tabs", app: "claude-code" },
+  });
+  const calls = h.state.hcCalls.length;
+  byId(tree, "forget-t8").handlers.on_click({}, h.cx);
+  assert.equal(h.state.hcCalls.length, calls);
+  assert.equal(h.state.overlays.at(-1).mod, "confirm");
+  assert.equal(h.state.overlays.at(-1).props.command.name, "frantss.forget-history:t8");
+  assert.ok(records().some((r) => r.address === "t8"));
+});
+
+test("confirmed forgetting removes only the target and keeps records added during removal", async () => {
+  const h = await harness();
+  const target = { address: "t/8", closed: 1 };
+  h.state.shared.set("frantss.closedAgents", [target]);
+  let finish;
+  h.state.removalResult = new Promise((resolve) => {
+    finish = resolve;
+  });
+  h.state.commandQueue.push("unrelated", "forget-history:t%2F8");
+  h.view.init({}, h.cx);
+  void h.state.tasks[0]({});
+  await new Promise(setImmediate);
+  assert.deepEqual(h.state.hcCalls, [["rm", "t/8"]]);
+  const newer = { address: "t9", closed: 2 };
+  h.state.shared.set("frantss.closedAgents", [target, newer]);
+  finish({ code: 0, stdout: "", stderr: "" });
+  await new Promise(setImmediate);
+  assert.deepEqual(plain(h.state.shared.get("frantss.closedAgents")), [newer]);
+  assert.equal(h.state.errors.length, 0);
+});
+
+test("forgetting retains history on command failure and ignores live or missing records", async () => {
+  const h = await harness();
+  const records = [{ address: "t8", closed: 1 }, { address: "t9" }];
+  h.state.shared.set("frantss.closedAgents", records);
+  for (const result of [
+    Promise.resolve({ code: 1, stdout: "", stderr: "Still in use" }),
+    Promise.reject(new Error("Disconnected")),
+  ]) {
+    h.state.removalResult = result;
+    await h.view.forgetHistory("t8");
+    assert.equal(h.state.shared.get("frantss.closedAgents"), records);
+  }
+  assert.equal(h.state.errors.length, 2);
+  assert.equal((h.state.errors[0] as any).body, "Still in use");
+  const count = h.state.hcCalls.length;
+  await h.view.forgetHistory("t9");
+  await h.view.forgetHistory("missing");
+  assert.equal(h.state.hcCalls.length, count);
 });

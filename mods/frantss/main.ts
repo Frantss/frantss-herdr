@@ -16,6 +16,8 @@ import {
   pickFolder,
   knownAgents,
   hc,
+  nextCommand,
+  notify,
 } from "herdr";
 
 import type { AgentInfo, SpaceInfo, TabInfo, PaneInfo, Program } from "herdr";
@@ -31,6 +33,7 @@ import {
 } from "./closed.ts";
 import { button } from "./button.ts";
 import { hcOrToast } from "./agent-hc.ts";
+import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
 
 type Theme = Record<string, `#${string}`>;
 type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
@@ -259,16 +262,24 @@ export default class Frantss extends View {
   declare seenAgents: Map<string, AgentInfo>;
   declare settling: Task;
   declare hovered: string | null;
-  init(_p: unknown, _cx: AsyncContext) {
+  init(_p: unknown, cx: AsyncContext) {
     // The rail and the breadcrumb both name workspaces by repo.
     if (props()?.role !== "rail" && props()?.role !== "top") return;
     this.repos = {}; // place key -> its repo's git folder, null outside a repo; a folder's repo doesn't change
     // place key -> "main" (a repo's own checkout), "linked" (a worktree) or null, once looked up: the space
     // menu's worktree items, handed to it so it opens without asking git itself.
     this.checkouts = {};
-    if (props()?.role === "rail")
+    if (props()?.role === "rail") {
       for (const machine of new Set(["", ...spaces().map((s) => s.machine ?? "")]))
         refreshAgents(machine).catch(() => {});
+      cx.spawn(async () => {
+        for (;;) {
+          const command = await nextCommand();
+          if (command.startsWith("forget-history:"))
+            await this.forgetHistory(decodeURIComponent(command.slice("forget-history:".length)));
+        }
+      });
+    }
   }
 
   // Looks up the places and saved workspaces it hasn't seen. Render runs whenever spaces, panes or
@@ -331,27 +342,25 @@ export default class Frantss extends View {
     });
   }
 
-  // Opens a tab running `argv` in `folder`'s space, else in a new space there.
-  openIn(snapshot: WorkspaceSnapshot, folder: string, argv: string[], name?: string) {
-    const space = snapshot.spaces.find(
-      (s) => !s.machine && snapshot.cwdBySpace.get(s.id) === folder,
-    );
-    if (!space) return run("space.new", { folder, argv, ...(name ? { tab: name } : {}) });
-    run("space.select", { id: space.id });
-    run("tab.new", { space: space.id, folder, argv, ...(name ? { name } : {}) });
+  async forgetHistory(address: string) {
+    if (!agentRecords().some((record) => record.address === address && record.closed !== undefined))
+      return;
+    const result = await hc(["rm", address]).catch((): null => null);
+    if (result?.code === 0)
+      saveRecords(agentRecords().filter((record) => record.address !== address));
+    else
+      notify({
+        title: "Could not forget history",
+        body: result?.stderr.trim() || undefined,
+        level: "error",
+      });
   }
 
   // A closed agent: clicking shows its history in a new tab; its controls resume its agent's session
-  // picker in its folder, or forget it (the core removes its terminal).
-  closedRow(t: Theme, record: AgentRecord, snapshot: WorkspaceSnapshot, now: number): RailRow {
+  // picker in its folder, or ask to forget its retained terminal history.
+  closedRow(t: Theme, record: AgentRecord, now: number): RailRow {
     const text = (record.title ?? record.program?.name ?? "agent").toLowerCase();
     const resume = resumeArgv(record.app);
-    const forget = (cx: Context) =>
-      cx.spawn(async () => {
-        const result = await hc(["rm", record.address]).catch((): null => null);
-        if (result?.code === 0)
-          saveRecords(agentRecords().filter((other) => other.address !== record.address));
-      });
     return {
       id: `closed-${record.address}`,
       dim: true,
@@ -366,9 +375,9 @@ export default class Frantss extends View {
             this.control(
               t,
               `resume-${record.address}`,
-              "Resume",
+              "Resume…",
               svg("mods/frantss/resume.svg").size(10),
-              () => this.openIn(snapshot, record.cwd, resume),
+              () => openAgentTab(record.cwd, resume),
             ),
           ),
         )
@@ -376,13 +385,19 @@ export default class Frantss extends View {
           this.control(
             t,
             `forget-${record.address}`,
-            "Forget",
+            "Forget history…",
             svg("mods/pane/close.svg").size(10),
-            (cx) => forget(cx),
+            () => confirmForgetHistory(record.address, text),
           ),
         ),
-      onClick: () =>
-        this.openIn(snapshot, record.cwd, historyArgv(record.address), `${text} history`),
+      onClick: () => openAgentTab(record.cwd, historyArgv(record.address), `${text} history`),
+      onMenu: () =>
+        menu("closed", {
+          terminal: record.address,
+          cwd: record.cwd,
+          name: text,
+          app: record.app,
+        }),
     };
   }
 
@@ -974,7 +989,7 @@ export default class Frantss extends View {
         e.child(
           this.recentlyClosed(
             t,
-            closed.map((record) => this.closedRow(t, record, snapshot, now)),
+            closed.map((record) => this.closedRow(t, record, now)),
             collapsed.includes("closed"),
           ),
         ),
