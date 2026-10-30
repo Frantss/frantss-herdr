@@ -13,9 +13,6 @@
     "lint": "vp lint --deny-warnings",
     "build": "vp pack"
   },
-  "dependencies": {
-    "electron": "38.8.6"
-  },
   "devDependencies": {
     "@types/node": "^24.19.2",
     "material-icon-theme": "5.40.0",
