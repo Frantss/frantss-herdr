@@ -604,8 +604,8 @@ export default class AgentGraph extends View {
       }
     }
     const nodes = roots.flatMap(flatten);
-    const width = Math.max(this.size.width, ...nodes.map((n) => n.x + n.w + PAD));
-    const height = Math.max(0, ...nodes.map((n) => n.y + CARD_H + PAD));
+    const width = nodes.reduce((w, n) => Math.max(w, n.x + n.w + PAD), this.size.width);
+    const height = nodes.reduce((h, n) => Math.max(h, n.y + CARD_H + PAD), 0);
     const shownTerminal = focused()?.terminal;
 
     const canvas = div()

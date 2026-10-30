@@ -70,6 +70,8 @@ export function layoutGraph(nodes: GraphNode[]): GraphLayout {
     add(edge.lane, edge.row + 1, edge.lane, parentRow - 1);
     add(edge.lane, parentRow - 1, parentCol, parentRow);
   }
-  const used = [...cols, ...segments.flatMap((segment) => [segment.x1, segment.x2])];
-  return { cols, colors, segments, lanes: used.length ? Math.max(...used) + 1 : 0 };
+  let width = 0;
+  for (const col of cols) width = Math.max(width, col + 1);
+  for (const segment of segments) width = Math.max(width, segment.x1 + 1, segment.x2 + 1);
+  return { cols, colors, segments, lanes: width };
 }

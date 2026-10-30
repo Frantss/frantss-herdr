@@ -389,7 +389,7 @@ export default class GitHistory extends View {
         this.diffLines = diff.text.split("\n");
         this.diffWidth = Math.min(
           12000,
-          Math.max(300, ...this.diffLines.map((line) => line.length * 7 + 24)),
+          this.diffLines.reduce((width, line) => Math.max(width, line.length * 7 + 24), 300),
         );
       } catch (error) {
         if (generation === this.diffGeneration) this.diffError = errorText(error);
