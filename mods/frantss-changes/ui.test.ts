@@ -81,7 +81,13 @@ async function harness(refresh = false) {
     });
     return proxy;
   }
-  const context = vm.createContext({});
+  const stored = new Map<string, string>();
+  const context = vm.createContext({
+    localStorage: {
+      getItem: (key) => stored.get(key) ?? null,
+      setItem: (key, value) => stored.set(key, value),
+    },
+  });
   const palette = {
     muted: "#aaaaaa",
     foreground: "#ffffff",
@@ -252,6 +258,8 @@ async function harness(refresh = false) {
     target: null,
     agentAddress: null,
     choosingAgent: false,
+    tree: false,
+    collapsed: new Set(),
     handle: { focus() {} },
     context: JSON.stringify({ cwd: "/repo", on: null }),
   });
@@ -333,6 +341,27 @@ test("Changes constructs only requested file rows and selects by stable path aft
   h.render();
   h.state.lists.at(-1).node.handlers.on_item_click("src/file-300.ts", {});
   assert.deepEqual(h.state.calls, [["pick", "src/file-300.ts"]]);
+});
+
+test("Changes shows files as a tree whose folders collapse on click", async () => {
+  const h = await harness();
+  h.changes.files = [file("src/lib/a.ts"), file("src/b.ts"), file("README.md")];
+  const notify = () => {};
+  h.changes.setTree(true, { notify });
+  h.render();
+  let list = h.state.lists.findLast((list) => list.id === "changes-files");
+  assert.deepEqual(
+    Array.from({ length: list.count }, (_, i) => list.key(i)),
+    ["src/", "src/lib/", "src/lib/a.ts", "src/b.ts", "README.md"],
+  );
+  assert.ok(text(h.range(list, 2, 3)[0]).includes("a.ts +1 −2"));
+  assert.ok(!text(h.range(list, 2, 3)[0]).includes("src/"));
+  assert.ok(text(h.range(list, 0, 1)[0]).includes("src +2 −4"));
+  list.node.handlers.on_item_click("src/lib/", { notify });
+  h.render();
+  list = h.state.lists.findLast((list) => list.id === "changes-files");
+  assert.equal(list.count, 4);
+  assert.deepEqual(h.state.calls, []);
 });
 
 test("Changes reuses header totals across renders of the same file list", async () => {

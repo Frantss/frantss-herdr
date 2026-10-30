@@ -34,6 +34,7 @@ import { LINE_LIMIT, trackedPreview, untrackedPreview } from "./preview.ts";
 import { expandGaps, fileLines } from "./gaps.ts";
 import { button } from "./button.ts";
 import { followedPlace, panelShown } from "./panel.ts";
+import { treeRows, type TreeRow } from "./tree.ts";
 import {
   DEFAULT_NOTE,
   lineSide,
@@ -91,7 +92,11 @@ type Snapshot = Pick<
 
 const key = () => JSON.stringify(followedPlace());
 const TRASH = "mods/frantss-changes/trash.svg",
-  CHEVRON = "mods/workspace-chrome/chevron-down.svg";
+  CHEVRON = "mods/workspace-chrome/chevron-down.svg",
+  FOLDED = "mods/workspace-chrome/chevron-right.svg",
+  LIST = "mods/frantss-changes/list.svg",
+  TREE = "mods/frantss-changes/tree.svg";
+const TREE_SETTING = "changes-tree";
 // Diff rows indent their text past the line number and the hover "+".
 const GUTTER = 62,
   COMPOSER = 48;
@@ -169,6 +174,15 @@ const sameRows = (left: DiffRow[], right: DiffRow[]) =>
 export default class Changes extends View {
   declare files: ChangedFile[];
   declare totals: { files: ChangedFile[]; add: number; del: number } | null;
+  // Show the files as a folder tree instead of a flat list; folder rows hold the collapsed paths.
+  declare tree: boolean;
+  declare collapsed: ReadonlySet<string>;
+  declare shownFiles: {
+    files: ChangedFile[];
+    tree: boolean;
+    collapsed: ReadonlySet<string>;
+    rows: TreeRow<ChangedFile>[];
+  } | null;
   // Shown rows: the diff's plain rows with expanded gaps and colors.
   declare rows: DiffRow[];
   declare plainRows: DiffRow[];
@@ -212,6 +226,8 @@ export default class Changes extends View {
 
   init(_props: unknown, cx: AsyncContext) {
     this.files = [];
+    this.tree = localStorage.getItem(TREE_SETTING) === "true";
+    this.collapsed = new Set();
     this.comments = [];
     this.reviewNote = DEFAULT_NOTE;
     this.target = null;
@@ -778,8 +794,10 @@ export default class Changes extends View {
       .child(text);
   }
 
-  fileRow(f: ChangedFile, t: Theme) {
-    const parts = f.path.split("/"),
+  // Depth is the file's level in the tree; without it the row names the file's folder.
+  fileRow(f: ChangedFile, t: Theme, depth?: number) {
+    const parts =
+        depth === undefined ? f.path.split("/") : [f.path.slice(f.path.lastIndexOf("/") + 1)],
       name = parts.pop(),
       comments = this.comments.filter((comment) => comment.path === f.path).length;
     return h_flex()
@@ -787,6 +805,7 @@ export default class Changes extends View {
       .h(24)
       .flex_none()
       .px(8)
+      .when(depth !== undefined, (e) => e.pl(8 + depth! * 14))
       .gap(8)
       .items_center()
       .rounded(3)
@@ -828,6 +847,63 @@ export default class Changes extends View {
       );
   }
 
+  folderRow(row: Extract<TreeRow<ChangedFile>, { kind: "folder" }>, t: Theme) {
+    return h_flex()
+      .id(`change-folder-${row.path}`)
+      .h(24)
+      .flex_none()
+      .pl(8 + row.depth * 14)
+      .pr(8)
+      .gap(8)
+      .items_center()
+      .rounded(3)
+      .cursor_pointer()
+      .text_color(t.muted)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .child(
+        svg(row.open ? CHEVRON : FOLDED)
+          .size(14)
+          .flex_none()
+          .text_color(t.dim),
+      )
+      .child(div().flex_1().min_w(0).truncate().child(row.name))
+      .when(row.add > 0, (e) =>
+        e.child(div().text_size(11).text_color(t.ansi2).child(`+${row.add}`)),
+      )
+      .when(row.del > 0, (e) =>
+        e.child(div().text_size(11).text_color(t.ansi1).child(`−${row.del}`)),
+      );
+  }
+
+  // The list's rows; folder keys end in "/", which no changed file's path does.
+  shownRows() {
+    const { files, tree, collapsed } = this,
+      shown = this.shownFiles;
+    if (shown?.files !== files || shown.tree !== tree || shown.collapsed !== collapsed)
+      this.shownFiles = {
+        files,
+        tree,
+        collapsed,
+        rows: tree
+          ? treeRows(files, collapsed)
+          : files.map((file) => ({ kind: "file", file, depth: 0 })),
+      };
+    return this.shownFiles!.rows;
+  }
+
+  setTree(tree: boolean, cx: Context) {
+    this.tree = tree;
+    localStorage.setItem(TREE_SETTING, String(tree));
+    cx.notify();
+  }
+
+  toggleFolder(path: string, cx: Context) {
+    const collapsed = new Set(this.collapsed);
+    if (!collapsed.delete(path)) collapsed.add(path);
+    this.collapsed = collapsed;
+    cx.notify();
+  }
+
   fileTotals() {
     if (this.totals?.files !== this.files) {
       let add = 0,
@@ -850,7 +926,8 @@ export default class Changes extends View {
     if (key() !== this.context) this.refresh(cx);
     if (this.loading) this.loadingRendered = true;
     const t = theme() as Theme,
-      { add, del } = this.fileTotals();
+      { add, del } = this.fileTotals(),
+      rows = this.shownRows();
     return v_flex()
       .id("changes")
       .size_full()
@@ -898,6 +975,18 @@ export default class Changes extends View {
             ),
           )
           .child(div().flex_1())
+          .child(
+            button(
+              "changes-tree",
+              svg(this.tree ? LIST : TREE).size(14),
+              (cx) => this.setTree(!this.tree, cx),
+              {
+                variant: "quiet",
+                square: true,
+                tooltip: this.tree ? "Show as a list" : "Show as a tree",
+              },
+            ),
+          )
           .child(div().text_size(11).text_color(t.ansi2).child(`+${add}`))
           .child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)),
       )
@@ -923,16 +1012,33 @@ export default class Changes extends View {
                         .child(
                           v_virtual_list(
                             "changes-files",
-                            this.files.length,
+                            rows.length,
                             26 * zoom(),
-                            (i) => this.files[i].path,
+                            (i) => {
+                              const row = rows[i];
+                              return row.kind === "folder" ? `${row.path}/` : row.file.path;
+                            },
                             (range) =>
-                              this.files
-                                .slice(range.start, range.end)
-                                .map((file) => v_flex().h(26).child(this.fileRow(file, t))),
+                              rows.slice(range.start, range.end).map((row) =>
+                                v_flex()
+                                  .h(26)
+                                  .child(
+                                    row.kind === "folder"
+                                      ? this.folderRow(row, t)
+                                      : this.fileRow(
+                                          row.file,
+                                          t,
+                                          this.tree ? row.depth : undefined,
+                                        ),
+                                  ),
+                              ),
                           )
                             .size_full()
-                            .on_item_click((path, cx) => this.pick(path, cx)),
+                            .on_item_click((key, cx) =>
+                              key.endsWith("/")
+                                ? this.toggleFolder(key.slice(0, -1), cx)
+                                : this.pick(key, cx),
+                            ),
                         )
                         .child(
                           Scrollbar.vertical("changes-files")
