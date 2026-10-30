@@ -279,19 +279,27 @@ export default class Files extends View {
       prefix = root + "/",
       folders = new Set<string>();
     for (const absolute of paths) {
-      if (!absolute.startsWith(prefix)) return null;
-      const path = absolute.slice(prefix.length),
-        parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      if (!absolute.startsWith(prefix) || !this.entries.has("")) return null;
+      const path = absolute.slice(prefix.length);
       if (
         !path ||
         path.endsWith("/") ||
-        path === ".git" ||
-        path.startsWith(".git/") ||
         path.includes("\\") ||
         path.split("/").some((part) => part === ".." || part === ".")
       )
         return null;
-      if (!this.entries.has(parent)) return null;
+      // Git's own files change only the marks, which every refresh reads.
+      if (path === ".git" || path.startsWith(".git/")) continue;
+      // Inside a collapsed folder, only a folder new to the shown tree changes a row.
+      let parent = parentOf(path),
+        child = path;
+      while (!this.entries.has(parent)) {
+        child = parent;
+        parent = parentOf(parent);
+      }
+      const name = child.slice(child.lastIndexOf("/") + 1);
+      if (child !== path && this.entries.get(parent).some((e) => e.dir && e.name === name))
+        continue;
       folders.add(parent);
       if (this.folders.has(path)) folders.add(path);
     }
@@ -932,9 +940,10 @@ export default class Files extends View {
 
   render(cx: Context) {
     if (!panelShown("files")) return div();
+    // Changes seen while hidden are waiting as invalidated folders.
     if (this.stale) {
       this.stale = false;
-      this.refresh(cx);
+      this.refresh(cx, []);
     }
     if (key() !== this.context) this.refresh(cx);
     if (this.loading) this.loadingRendered = true;

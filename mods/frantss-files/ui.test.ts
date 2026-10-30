@@ -541,12 +541,40 @@ test("the timer reloads only what the watcher cannot see", async () => {
   assert.deepEqual(commands(), ["sh", "sh", "sh", "git"]);
 });
 
-test("unknown, root, outside, and Git changes use full reconciliation", async () => {
+test("Git changes and changes inside collapsed folders refresh only the marks", async () => {
+  for (const changed of [["/repo/.git/index"], ["/repo/src/build/out.js"]]) {
+    const h = await expandedFiles();
+    h.files.entries.get("src").push({ name: "build", dir: true });
+    h.files.refresh(h.cx, changed);
+    await h.drain();
+    assert.deepEqual(listedFolders(h.state), []);
+    assert.equal(h.files.marks["/repo/changed.ts"], "M");
+  }
+});
+
+test("a change inside a folder new to the shown tree lists its shown ancestor", async () => {
+  const h = await expandedFiles();
+  h.files.refresh(h.cx, ["/repo/src/fresh/deep/file.ts"]);
+  await h.drain();
+  assert.deepEqual(listedFolders(h.state), ["/repo/src"]);
+});
+
+test("changes seen while hidden list only their folders when the panel shows", async () => {
+  const h = await expandedFiles();
+  h.state.layout = { children: [{ id: "panel", hidden: true, active: "files" }] };
+  h.files.refresh(h.cx, ["/repo/src/next.ts"]);
+  await h.drain();
+  assert.deepEqual(listedFolders(h.state), []);
+  h.state.layout.children[0].hidden = false;
+  h.render();
+  await h.drain();
+  assert.deepEqual(listedFolders(h.state), ["/repo/src"]);
+});
+
+test("unknown, root, and outside changes use full reconciliation", async () => {
   for (const changed of [
     ["/repo"],
     ["/elsewhere/file"],
-    ["/repo/.git/index"],
-    ["/repo/unknown/file"],
     ["relative/file"],
     ["C:\\repo\\src\\file.ts"],
     undefined,
