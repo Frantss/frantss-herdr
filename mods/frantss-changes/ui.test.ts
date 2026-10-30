@@ -447,3 +447,12 @@ test("Changes overlaps unborn repository statistics and sums staged and unstaged
   assert.equal(h.changes.files[0].add, 7);
   assert.equal(h.changes.files[0].del, 10);
 });
+
+test("Changes lays diff rows out at their zoomed height", async () => {
+  const h = await harness(true);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.render();
+  const list = h.state.lists.find((list) => list.id === "changes-diff");
+  assert.equal(list.extent, 20 * h.state.zoom);
+});

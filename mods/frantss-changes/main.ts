@@ -64,6 +64,7 @@ type Snapshot = Pick<
 >;
 
 const key = () => JSON.stringify(location());
+const zoom = () => (settings().zoom as number | undefined) ?? 1;
 
 function find(node: LayoutNode | null, id: string): LayoutNode | null {
   if (node?.id === id) return node;
@@ -590,7 +591,7 @@ export default class Changes extends View {
                   v_virtual_list(
                     "changes-files",
                     this.files.length,
-                    26 * ((settings().zoom as number | undefined) ?? 1),
+                    26 * zoom(),
                     (i) => this.files[i].path,
                     (range) =>
                       this.files
@@ -653,7 +654,7 @@ export default class Changes extends View {
                       v_virtual_list(
                         "changes-diff",
                         this.rows.length,
-                        20,
+                        20 * zoom(),
                         (i) => String(i),
                         (range) =>
                           this.rows
