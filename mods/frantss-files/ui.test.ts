@@ -42,6 +42,7 @@ async function harness(refresh = false) {
     write_to_clipboard(text) {
       state.clipboard = text;
     },
+    stop_propagation() {},
   };
   async function drain() {
     for (let start = 0; start < state.tasks.length;) {

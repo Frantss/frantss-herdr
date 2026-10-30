@@ -48,6 +48,7 @@ import { editorLanguage, previewKind, previewText } from "./preview.ts";
 import { checkName, menuItems, parentOf, type MenuItem } from "./menu.ts";
 import { appIcon, findApps, INSTALLED, knownApps, openArgs, type App } from "./apps.ts";
 import { followedPlace, panelShown } from "./panel.ts";
+import { button } from "./button.ts";
 
 interface FileEntry {
   name: string;
@@ -1196,21 +1197,12 @@ export default class Files extends View {
     );
   }
 
-  iconButton(id: string, label: string, icon: string, action: (cx: Context) => void, t: Theme) {
-    return Button.new(id)
-      .size(22)
-      .flex()
-      .flex_none()
-      .items_center()
-      .justify_center()
-      .rounded(3)
-      .cursor_pointer()
-      .text_color(t.muted)
-      .hover((s) => s.bg(t.hover).text_color(t.foreground))
-      .tooltip(label)
-      .accessibility_label(label)
-      .on_click((_e, cx) => action(cx))
-      .child(svg(icon).size(14));
+  iconButton(id: string, label: string, icon: string, action: (cx: Context) => void) {
+    return button(id, svg(icon).size(14), action, {
+      variant: "quiet",
+      square: true,
+      tooltip: label,
+    });
   }
 
   preview(t: Theme) {
@@ -1267,25 +1259,15 @@ export default class Files extends View {
             ),
           )
           .child(
-            this.iconButton(
-              "files-fresh",
-              "Open in Fresh",
-              PEN,
-              (cx) => this.openInFresh(path, cx),
-              t,
+            this.iconButton("files-fresh", "Open in Fresh", PEN, (cx) =>
+              this.openInFresh(path, cx),
             ),
           )
           .child(
-            this.iconButton(
-              "files-close",
-              "Close preview",
-              CLOSE,
-              (cx) => {
-                this.closePreview();
-                cx.notify();
-              },
-              t,
-            ),
+            this.iconButton("files-close", "Close preview", CLOSE, (cx) => {
+              this.closePreview();
+              cx.notify();
+            }),
           ),
       )
       .child(this.previewBody(path, kind, t));
