@@ -1,0 +1,1 @@
+../../shared/trash.ts

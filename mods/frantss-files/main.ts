@@ -49,6 +49,7 @@ import { checkName, menuItems, parentOf, type MenuItem } from "./menu.ts";
 import { appIcon, installedApps, INSTALLED, knownApps, openArgs, type App } from "./apps.ts";
 import { followedPlace, panelShown } from "./panel.ts";
 import { button } from "./button.ts";
+import { TRASH_SCRIPT } from "./trash.ts";
 
 interface FileEntry {
   name: string;
@@ -100,9 +101,6 @@ const PEN = "mods/workspace-chrome/square-pen.svg",
   MENU_WIDTH = 210,
   // An edit row's key: no file path holds a NUL.
   NEW_ROW = "\0new";
-// macOS has trash; Linux desktops have gio. 127: neither.
-const TRASH_SCRIPT =
-  'if command -v trash >/dev/null; then trash "$1"; elif command -v gio >/dev/null; then gio trash -- "$1"; else exit 127; fi';
 const zoom = () => (settings().zoom as number | undefined) ?? 1;
 
 function codeView(text: string, path: string) {
