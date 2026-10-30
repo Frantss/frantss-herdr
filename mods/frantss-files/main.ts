@@ -9,6 +9,7 @@ import {
   type AsyncContext,
   type Color,
   type Element,
+  type FocusHandle,
 } from "gpui-kit";
 import {
   v_flex,
@@ -21,6 +22,8 @@ import {
   Editor,
   EditorState,
   TextView,
+  InputState,
+  Input,
 } from "gpui-base";
 import {
   spaces,
@@ -44,6 +47,7 @@ import { iconFile, type IconManifest } from "./icons.ts";
 import { statusMarks, type Mark } from "./status.ts";
 import { daemonName, daemonRunning, freshConfig, freshTheme, FRESH_THEME } from "./fresh.ts";
 import { editorLanguage, previewKind, previewText } from "./preview.ts";
+import { checkName, menuItems, parentOf, type MenuItem } from "./menu.ts";
 
 interface LayoutNode {
   id?: string;
@@ -74,6 +78,8 @@ interface FileRow extends FileEntry {
   open: boolean;
   mark?: Mark;
   ignored: boolean;
+  // The row is the name input for a rename or a new entry.
+  editing?: boolean;
 }
 type Theme = Record<string, Color>;
 type FileSnapshot = Pick<Files, "entries" | "folders" | "marks" | "error" | "limited">;
@@ -122,7 +128,14 @@ const openEditorTab = (folder: string, argv: string[]) =>
   run("tab.new", { name: "editor", folder, argv });
 
 const PEN = "mods/workspace-chrome/square-pen.svg",
-  CLOSE = "mods/workspace-chrome/x.svg";
+  CLOSE = "mods/workspace-chrome/x.svg",
+  MENU_WIDTH = 210,
+  // An edit row's key: no file path holds a NUL.
+  NEW_ROW = "\0new";
+// macOS has trash; Linux desktops have gio. 127: neither.
+const TRASH_SCRIPT =
+  'if command -v trash >/dev/null; then trash "$1"; elif command -v gio >/dev/null; then gio trash -- "$1"; else exit 127; fi';
+const zoom = () => (settings().zoom as number | undefined) ?? 1;
 
 function codeView(text: string, path: string) {
   const t = theme() as Theme;
@@ -199,6 +212,15 @@ export default class Files extends View {
   declare fileError: string | null;
   declare code: EditorState | null;
   declare source: boolean;
+  declare handle: FocusHandle;
+  // The right-clicked row's menu, where it opens in the panel, and the keyboard's item.
+  declare menu: { row: FileRow; x: number; y: number; at: number; confirm: boolean } | null;
+  // The row a right press landed on, until the panel learns where it landed.
+  declare pressed: FileRow | null;
+  // A rename (path: the entry) or a new entry (path: its folder) waiting for a name.
+  declare editing: { kind: "rename" | "new-file" | "new-folder"; path: string } | null;
+  declare editError: string | null;
+  declare nameInput: InputState;
 
   init(_props: unknown, cx: AsyncContext) {
     this.entries = new Map();
@@ -217,6 +239,13 @@ export default class Files extends View {
     this.fileError = null;
     this.code = null;
     this.source = false;
+    this.menu = null;
+    this.pressed = null;
+    this.editing = null;
+    this.editError = null;
+    this.handle = cx.focus_handle();
+    this.nameInput = InputState.new({ placeholder: "Name" });
+    this.nameInput.on("submit", (_e, cx) => this.applyEdit(cx));
     cx.spawn(async (cx) => {
       const text = await readTextFile(`${appHome()}/mods/frantss-files/material-icons.json`).catch(
         (): null => null,
@@ -352,6 +381,8 @@ export default class Files extends View {
       }
       this.generation = (this.generation ?? 0) + 1;
       this.closePreview();
+      this.menu = null;
+      this.editing = null;
       this.loading = false;
       this.invalidated = new Set();
       this.fullRefresh = true;
@@ -579,6 +610,156 @@ export default class Files extends View {
     cx.notify();
   }
 
+  // The row handler names the row, then the panel's handler places the menu where the press landed.
+  openMenu(event: import("gpui-kit").MouseButtonEvent, cx: Context) {
+    const row = this.pressed;
+    this.pressed = null;
+    if (!row || !event.local_position || !event.bounds) {
+      this.menu = null;
+      cx.notify();
+      return;
+    }
+    const scale = zoom(),
+      height = menuItems(row, this.finder()).reduce((h, item) => h + (item ? 24 : 9), 8),
+      x = event.local_position.x / scale,
+      y = event.local_position.y / scale,
+      width = event.bounds.width / scale,
+      bottom = event.bounds.height / scale;
+    this.menu = {
+      row,
+      x: Math.max(0, x + MENU_WIDTH > width ? x - MENU_WIDTH : x),
+      y: Math.max(0, y + height > bottom ? y - height : y),
+      at: -1,
+      confirm: false,
+    };
+    this.handle.focus();
+    cx.notify();
+  }
+
+  finder() {
+    return !this.on && window()?.platform === "macos";
+  }
+
+  choose({ action }: MenuItem, cx: Context) {
+    const { row } = this.menu,
+      path = row.path,
+      absolute = `${this.root}/${path}`;
+    if (action === "trash" && !this.menu.confirm) {
+      this.menu.confirm = true;
+      cx.notify();
+      return;
+    }
+    this.menu = null;
+    if (action === "preview") this.show(path, cx);
+    else if (action === "fresh") this.openInFresh(path, cx);
+    else if (action === "toggle") this.toggle(path, cx);
+    else if (action === "copy") cx.write_to_clipboard(absolute);
+    else if (action === "copy-relative") cx.write_to_clipboard(path);
+    else if (action === "reveal") void exec("open", ["-R", absolute]);
+    else if (action === "trash") this.trash(path, cx);
+    else if (action === "rename") this.startEdit("rename", path, row.name, cx);
+    else this.startEdit(action, row.dir ? path : parentOf(path), "", cx);
+    cx.notify();
+  }
+
+  startEdit(kind: Files["editing"]["kind"], path: string, name: string, cx: Context) {
+    if (kind !== "rename" && path && !this.folders.has(path)) this.toggle(path, cx);
+    this.editing = { kind, path };
+    this.editError = null;
+    this.nameInput.set_value(name);
+    this.nameInput.focus();
+    cx.notify();
+  }
+
+  cancelEdit(cx: Context) {
+    this.editing = null;
+    this.editError = null;
+    this.handle.focus();
+    cx.notify();
+  }
+
+  // Names are checked against the folder's entries first; the shell still refuses to overwrite.
+  applyEdit(cx: Context) {
+    if (!this.editing) return;
+    const { kind, path } = this.editing,
+      name = this.nameInput.value().trim(),
+      folder = kind === "rename" ? parentOf(path) : path,
+      old = kind === "rename" ? path.slice(path.lastIndexOf("/") + 1) : null;
+    if (name === old) return this.cancelEdit(cx);
+    const siblings = (this.entries.get(folder) ?? []).map((entry) => entry.name);
+    this.editError = checkName(name, siblings);
+    if (this.editError) return cx.notify();
+    const relative = folder ? `${folder}/${name}` : name,
+      target = `${this.root}/${relative}`,
+      source = `${this.root}/${path}`,
+      on = this.on;
+    cx.spawn(async (cx) => {
+      const r = await (
+        kind === "new-folder"
+          ? exec("mkdir", [target], { on })
+          : kind === "new-file"
+            ? exec("sh", ["-c", '[ -e "$1" ] && exit 17; : > "$1"', "new", target], { on })
+            : exec("mv", ["-n", source, target], { on })
+      ).catch((e): { code: number; stderr: string } => ({ code: 1, stderr: String(e) }));
+      if (r.code !== 0) {
+        this.editError = r.stderr.trim() || `Cannot create ${name}`;
+        cx.notify();
+        return;
+      }
+      if (kind === "rename") {
+        this.closeFolder(path);
+        if (this.file === path) this.show(relative, cx);
+        else if (this.file?.startsWith(path + "/")) this.closePreview();
+      } else if (kind === "new-file") this.show(relative, cx);
+      this.editing = null;
+      this.handle.focus();
+      this.refresh(cx, kind === "rename" ? [source, target] : [target]);
+      cx.notify();
+    });
+  }
+
+  trash(path: string, cx: Context) {
+    const absolute = `${this.root}/${path}`;
+    cx.spawn(async (cx) => {
+      const r = await exec("sh", ["-c", TRASH_SCRIPT, "trash", absolute], { on: this.on }).catch(
+        (): null => null,
+      );
+      if (!r || r.code !== 0) {
+        notify({
+          title: `Cannot move ${path} to the Trash`,
+          body: r?.code === 127 ? "This machine has no trash command." : r?.stderr.trim() || "",
+          level: "error",
+        });
+        return;
+      }
+      if (this.file === path || this.file?.startsWith(path + "/")) this.closePreview();
+      this.closeFolder(path);
+      this.refresh(cx, [absolute]);
+      cx.notify();
+    });
+  }
+
+  // A rename shows its row as the name input; a new entry's input opens its folder's list.
+  withEdit(rows: FileRow[]): FileRow[] {
+    const editing = this.editing;
+    if (!editing) return rows;
+    if (editing.kind === "rename")
+      return rows.map((row) => (row.path === editing.path ? { ...row, editing: true } : row));
+    const at = editing.path ? rows.findIndex((row) => row.path === editing.path) : -1;
+    if (editing.path && at < 0) return rows;
+    const shown = [...rows];
+    shown.splice(at + 1, 0, {
+      name: "",
+      dir: editing.kind === "new-folder",
+      path: NEW_ROW,
+      depth: at < 0 ? 0 : rows[at].depth + 1,
+      open: false,
+      ignored: false,
+      editing: true,
+    });
+    return shown;
+  }
+
   // A running daemon takes the file without a terminal; then its tab is shown, or a new tab attaches.
   // Without a daemon, open-file in a new tab starts one and stays attached.
   openInFresh(path: string, cx: Context) {
@@ -640,7 +821,11 @@ export default class Files extends View {
     return out;
   }
 
-  row({ name, dir, path, depth, open, mark, ignored }: FileRow, t: Theme, light: boolean): Element {
+  row(
+    { name, dir, path, depth, open, mark, ignored, editing }: FileRow,
+    t: Theme,
+    light: boolean,
+  ): Element {
     return h_flex()
       .id(`file-${path}`)
       .h(24)
@@ -670,12 +855,26 @@ export default class Files extends View {
         ),
       )
       .child(
-        div()
-          .flex_1()
-          .min_w(0)
-          .truncate()
-          .when(ignored, (el) => el.text_color(t.dim))
-          .child(name),
+        editing
+          ? div()
+              .flex_1()
+              .min_w(0)
+              .h(20)
+              .px(4)
+              .flex()
+              .items_center()
+              .rounded(3)
+              .border_1()
+              .border_color(this.editError ? t.ansi1 : t.accent)
+              .bg(t.background)
+              .cursor_text()
+              .child(Input.new(this.nameInput).h_full().text_size(12).text_color(t.foreground))
+          : div()
+              .flex_1()
+              .min_w(0)
+              .truncate()
+              .when(ignored, (el) => el.text_color(t.dim))
+              .child(name),
       )
       .when(Boolean(mark) && mark !== "I", (el) =>
         el.child(
@@ -696,7 +895,7 @@ export default class Files extends View {
     if (key() !== this.context) this.refresh(cx);
     if (this.loading) this.loadingRendered = true;
     const t = theme() as Theme,
-      rows = this.rows(),
+      rows = this.withEdit(this.rows()),
       light = isLight(t.background);
     const tree = v_flex()
       .id("files-tree")
@@ -713,15 +912,20 @@ export default class Files extends View {
               v_virtual_list(
                 "files-rows",
                 rows.length,
-                24 * ((settings().zoom as number | undefined) ?? 1),
+                24 * zoom(),
                 (i) => rows[i].path,
                 (range) => rows.slice(range.start, range.end).map((row) => this.row(row, t, light)),
               )
                 .size_full()
                 .on_item_click((path, cx) => {
                   const row = rows.find((row) => row.path === path);
-                  if (row?.dir) this.toggle(path, cx);
-                  else if (row) this.show(path, cx);
+                  if (!row || row.editing) return;
+                  if (row.dir) this.toggle(path, cx);
+                  else this.show(path, cx);
+                })
+                .on_item_secondary_click((path) => {
+                  const row = rows.find((row) => row.path === path);
+                  this.pressed = row && !row.editing ? row : null;
                 }),
             )
             .child(Scrollbar.vertical("files-rows").viewport_from_layout().absolute().inset_0()),
@@ -747,9 +951,16 @@ export default class Files extends View {
             .text_color(t.dim)
             .child("File list limited to 500 entries per folder and 5,000 total"),
         ),
+      )
+      .when(Boolean(this.editing && this.editError), (el) =>
+        el.child(div().px(8).py(4).text_size(11).text_color(t.ansi1).child(this.editError)),
       );
     return v_flex()
       .id("files")
+      .relative()
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => this.key(e.key, cx))
+      .on_mouse_down("right", (e, cx) => this.openMenu(e, cx))
       .size_full()
       .min_h(0)
       .rounded(3)
@@ -789,7 +1000,79 @@ export default class Files extends View {
               )
               .child(resizable_panel().child(this.preview(t)))
           : tree,
-      );
+      )
+      .when(Boolean(this.menu), (e) => e.child(this.contextMenu(t)));
+  }
+
+  // The menu takes ↑/↓, Enter and Esc; Esc also leaves a name input.
+  key(key: string, cx: Context) {
+    const menu = this.menu;
+    if (menu) {
+      const items = menuItems(menu.row, this.finder()).filter(Boolean);
+      if (key === "down") menu.at = (menu.at + 1) % items.length;
+      else if (key === "up") menu.at = (menu.at + items.length - 1) % items.length;
+      else if (key === "enter" && menu.at >= 0) return this.choose(items[menu.at], cx);
+      else if (key === "escape") this.menu = null;
+      else return;
+      cx.notify();
+    } else if (key === "escape" && this.editing) this.cancelEdit(cx);
+  }
+
+  contextMenu(t: Theme) {
+    const { row, x, y, at, confirm } = this.menu;
+    let index = -1;
+    return (
+      v_flex()
+        .id("files-menu")
+        .absolute()
+        .left(x)
+        .top(y)
+        .w(MENU_WIDTH)
+        .p(4)
+        .rounded(3)
+        .border_1()
+        .border_color(t.border)
+        .bg(t.popover ?? t.raised)
+        .text_size(12)
+        // A right press reopens or closes the menu through the panel's own handler.
+        .on_mouse_down_out((e, cx) => {
+          if (e.button === "right") return;
+          this.menu = null;
+          cx.notify();
+        })
+        .children(
+          menuItems(row, this.finder()).map((item) => {
+            if (!item) return div().mx(4).my(4).h(1).bg(t.border);
+            const i = ++index,
+              danger = item.action === "trash";
+            return h_flex()
+              .id(`files-menu-${item.action}`)
+              .h(24)
+              .px(6)
+              .gap(8)
+              .rounded(3)
+              .items_center()
+              .cursor_pointer()
+              .text_color(danger && confirm ? t.ansi1 : i === at ? t.foreground : t.muted)
+              .when(i === at, (e) => e.bg(t.selected))
+              .hover((s) => s.bg(t.hover).text_color(danger && confirm ? t.ansi1 : t.foreground))
+              .on_click((_e, cx) => this.choose(item, cx))
+              .child(
+                svg(item.icon)
+                  .size(13)
+                  .flex_none()
+                  .text_color(danger ? t.ansi1 : t.dim),
+              )
+              .child(
+                div()
+                  .flex_1()
+                  .min_w(0)
+                  .truncate()
+                  .child(danger && confirm ? "Click again to move to Trash" : item.label),
+              );
+          }),
+        )
+    );
   }
 
   iconButton(id: string, label: string, icon: string, action: (cx: Context) => void, t: Theme) {

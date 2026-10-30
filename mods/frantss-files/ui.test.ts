@@ -12,6 +12,8 @@ async function harness(refresh = false) {
     calls: [],
     editors: [],
     texts: {},
+    commands: [],
+    notices: [],
     zoom: 0.8,
     cwd: "/repo",
     on: null,
@@ -36,6 +38,9 @@ async function harness(refresh = false) {
       state.notifications++;
     },
     async sleep() {},
+    write_to_clipboard(text) {
+      state.clipboard = text;
+    },
   };
   async function drain() {
     for (let start = 0; start < state.tasks.length;) {
@@ -91,6 +96,8 @@ async function harness(refresh = false) {
       resizable_panel: element,
       Button: { new: (id) => element().id(id) },
       Editor: { new: element },
+      Input: { new: element },
+      InputState: {},
       EditorState: {
         new(options) {
           const code = {
@@ -150,6 +157,12 @@ async function harness(refresh = false) {
     if (!(path in state.texts)) throw new Error(`Unexpected read ${path}`);
     return state.texts[path];
   };
+  natives.herdr.notify = (notice) => state.notices.push(notice);
+  if (!refresh)
+    natives.herdr.exec = async (command, args, options) => {
+      state.commands.push([command, ...args, options?.on ?? null]);
+      return state.run?.(command, args) ?? { code: 0, stdout: "", stderr: "" };
+    };
   if (refresh)
     natives.herdr.exec = async (command, args, options) => {
       state.executions.push({ command, args, options });
@@ -222,6 +235,21 @@ async function harness(refresh = false) {
     fileError: null,
     code: null,
     source: false,
+    menu: null,
+    pressed: null,
+    editing: null,
+    editError: null,
+    handle: { focus() {} },
+    nameInput: (() => {
+      let value = "";
+      return {
+        value: () => value,
+        set_value(next) {
+          value = next;
+        },
+        focus() {},
+      };
+    })(),
     root: "/repo",
     context: JSON.stringify({ cwd: "/repo", on: null }),
   });
@@ -1003,4 +1031,109 @@ test("binary files explain themselves, and images show without reading text", as
   assert.equal(source(h.render()), "/repo/logo.png");
   h.files.on = "server";
   assert.ok(textOf(h.render()).includes("Images on another machine cannot be previewed"));
+});
+
+async function menuHarness() {
+  const h = await harness();
+  h.files.entries.set("", [
+    { name: "src", dir: true },
+    { name: "a.ts", dir: false },
+  ]);
+  h.files.entries.set("src", [{ name: "main.ts", dir: false }]);
+  h.files.folders.add("src");
+  h.files.refresh = (_cx, paths) => h.state.calls.push(["refresh", paths]);
+  const press = (path, x = 40, y = 30, width = 300, height = 600) => {
+    const tree = h.render();
+    h.state.lists.at(-1).node.handlers.on_item_secondary_click(path, {}, h.cx);
+    findNode(tree, byId("files")).handlers.on_mouse_down(
+      { button: "right", local_position: { x, y }, bounds: { x: 0, y: 0, width, height } },
+      h.cx,
+    );
+    return findNode(h.render(), byId("files-menu"));
+  };
+  const pick = (action) =>
+    findNode(h.render(), byId(`files-menu-${action}`)).handlers.on_click({}, h.cx);
+  return { h, press, pick };
+}
+
+test("a right-clicked row opens its menu where the press landed, kept inside the panel", async () => {
+  const { h, press } = await menuHarness();
+  const menu = press("a.ts", 40, 30);
+  assert.ok(menu.styles.some(([key, value]) => key === "left" && value === 40 / 0.8));
+  assert.ok(textOf(menu).includes("Open in Fresh"));
+  assert.ok(textOf(press("src")).startsWith("Collapse"));
+  const low = press("a.ts", 280, 590);
+  const left = low.styles.find(([key]) => key === "left")[1],
+    top = low.styles.find(([key]) => key === "top")[1];
+  assert.ok(left + 210 <= 300 / 0.8 && top < 590 / 0.8);
+  findNode(h.render(), byId("files-menu")).handlers.on_mouse_down_out({ button: "left" }, h.cx);
+  assert.equal(h.files.menu, null);
+});
+
+test("the menu copies paths, previews, and opens Fresh", async () => {
+  const { h, press, pick } = await menuHarness();
+  press("src/main.ts");
+  pick("copy");
+  assert.equal(h.state.clipboard, "/repo/src/main.ts");
+  press("src/main.ts");
+  pick("copy-relative");
+  assert.equal(h.state.clipboard, "src/main.ts");
+  press("src/main.ts");
+  pick("fresh");
+  assert.deepEqual(h.state.calls, [["fresh", "src/main.ts"]]);
+  h.state.texts["/repo/src/main.ts"] = "x";
+  press("src/main.ts");
+  pick("preview");
+  assert.equal(h.files.file, "src/main.ts");
+});
+
+test("Move to Trash asks for a second click, then trashes and refreshes", async () => {
+  const { h, press, pick } = await menuHarness();
+  press("a.ts");
+  pick("trash");
+  assert.equal(h.state.commands.length, 0);
+  assert.ok(textOf(h.render()).includes("Click again to move to Trash"));
+  pick("trash");
+  await h.drain();
+  assert.deepEqual(h.state.commands.at(-1).slice(-2), ["/repo/a.ts", null]);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.state.calls.at(-1))), ["refresh", ["/repo/a.ts"]]);
+  h.state.run = () => ({ code: 127, stdout: "", stderr: "" });
+  press("src");
+  pick("trash");
+  pick("trash");
+  await h.drain();
+  assert.equal(h.state.notices[0].body, "This machine has no trash command.");
+});
+
+test("rename and new entries take their name in the tree and refuse clashes", async () => {
+  const { h, press, pick } = await menuHarness();
+  press("a.ts");
+  pick("rename");
+  assert.equal(h.files.nameInput.value(), "a.ts");
+  assert.ok(h.files.withEdit(h.files.rows()).find((row) => row.path === "a.ts").editing);
+  h.files.nameInput.set_value("src");
+  h.files.applyEdit(h.cx);
+  assert.equal(h.files.editError, "src already exists");
+  h.files.nameInput.set_value("b.ts");
+  h.files.applyEdit(h.cx);
+  await h.drain();
+  assert.deepEqual(h.state.commands.at(-1), ["mv", "-n", "/repo/a.ts", "/repo/b.ts", null]);
+  assert.equal(h.files.editing, null);
+  press("src");
+  pick("new-file");
+  const rows = h.files.withEdit(h.files.rows());
+  const at = rows.findIndex((row) => row.editing);
+  assert.equal(rows[at - 1].path, "src");
+  assert.equal(rows[at].depth, 1);
+  h.state.texts["/repo/src/new.ts"] = "";
+  h.files.nameInput.set_value("new.ts");
+  h.files.applyEdit(h.cx);
+  await h.drain();
+  assert.equal(h.state.commands.at(-1)[0], "sh");
+  assert.equal(h.state.commands.at(-1).at(-2), "/repo/src/new.ts");
+  assert.equal(h.files.file, "src/new.ts");
+  press("a.ts");
+  pick("new-folder");
+  h.files.key("escape", h.cx);
+  assert.equal(h.files.editing, null);
 });
