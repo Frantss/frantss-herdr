@@ -119,10 +119,14 @@ export default class GitHub extends View {
   declare confirming: boolean;
   declare pendingInitialRefresh: boolean;
   declare refreshingAll: boolean;
+  declare inboxSource: PullRequests | null;
+  declare inboxBusy: Set<string>;
 
   init(_props, cx: AsyncContext) {
     this.pendingInitialRefresh = true;
     this.refreshingAll = false;
+    this.inboxSource = null;
+    this.inboxBusy = new Set();
     this.groups = [];
     this.selected = new Set();
     this.starting = new Set();
@@ -835,7 +839,8 @@ export default class GitHub extends View {
   }
 
   body(t) {
-    if (!this.data) {
+    const data = this.data;
+    if (!data) {
       const message =
         this.error ??
         (this.loading()
@@ -850,7 +855,15 @@ export default class GitHub extends View {
     }
     const linked = this.linkedAgents();
     const busy = new Set(linked.flatMap((a) => a.kinds.map((kind) => `${a.number}:${kind}`)));
-    this.groups = buildInbox(this.data, busy);
+    if (
+      this.inboxSource !== data ||
+      this.inboxBusy.size !== busy.size ||
+      [...busy].some((id) => !this.inboxBusy.has(id))
+    ) {
+      this.groups = buildInbox(data, busy);
+      this.inboxSource = data;
+      this.inboxBusy = busy;
+    }
     const colors = { ci: t.blocked, comments: t.accent, review: t.accent, ready: t.idle };
     const [ci, comments, review, ready] = this.groups;
     const section = (title, color, count, renderRows) =>

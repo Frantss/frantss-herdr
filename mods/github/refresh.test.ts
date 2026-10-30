@@ -445,3 +445,49 @@ test("direct GitHub loads still suppress an overlapping repository request", asy
   assert.equal(h.view.cache.size, 1);
   assert.equal(h.state.calls.filter((call) => call.command === "gh").length, 2);
 });
+
+test("GitHub reuses inbox models until repository data or agent assignments change", async () => {
+  const h = await harness();
+  await h.refresh();
+  let reads = 0;
+  const pr = {
+    number: 1,
+    author: "me",
+    requested: ["ana"],
+    draft: true,
+    decision: null,
+    threads: [],
+    get checks() {
+      reads++;
+      return { state: "FAILURE", failed: [{ name: "lint" }] };
+    },
+  };
+  const data = { repo: "owner/repo", viewer: "me", prs: [pr] };
+  h.view.cache.set(h.view.repo, data);
+  h.view.collapsed = new Set(["Failing CI"]);
+  h.view.groupHeader = h.element;
+  h.view.itemRow = h.element;
+  h.view.agentRow = h.element;
+  let linked: { number: number; kinds: string[] }[] = [];
+  h.view.linkedAgents = () => linked;
+  h.view.body({});
+  const groups = h.view.groups,
+    firstReads = reads;
+  h.view.body({});
+  assert.equal(reads, firstReads);
+  assert.equal(h.view.groups, groups);
+  linked = [{ number: 1, kinds: ["fix-ci"] }];
+  h.view.body({});
+  assert.equal(h.view.groups[0].items.length, 0);
+  assert.ok(reads > firstReads);
+  const assignedGroups = h.view.groups,
+    assignedReads = reads;
+  linked = [...linked, ...linked];
+  h.view.body({});
+  assert.equal(reads, assignedReads);
+  assert.equal(h.view.groups, assignedGroups);
+  h.view.cache.set(h.view.repo, { ...data, viewer: "ana" });
+  h.view.body({});
+  assert.equal(h.view.groups[2].items.length, 1);
+  assert.ok(reads > assignedReads);
+});
