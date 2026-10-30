@@ -137,6 +137,7 @@ async function directory(path: string, on: string | null): Promise<FileEntry[]> 
 
 export default class Files extends View {
   declare entries: Map<string, FileEntry[]>;
+  declare entryCount: number;
   declare folders: Set<string>;
   declare pending: Set<string>;
   declare marks: Record<string, Mark>;
@@ -157,6 +158,7 @@ export default class Files extends View {
 
   init(_props: unknown, cx: AsyncContext) {
     this.entries = new Map();
+    this.entryCount = 0;
     this.folders = new Set();
     this.pending = new Set();
     this.marks = {};
@@ -245,10 +247,8 @@ export default class Files extends View {
 
   applyFolder(path: string, entries: FileEntry[], context: string, generation: number) {
     if (!this.current(context, generation) || (path && !this.folders.has(path))) return;
-    const used = [...this.entries.entries()]
-      .filter(([p]) => p !== path)
-      .reduce((n, [, e]) => n + e.length, 0);
     const previous = this.entries.get(path),
+      used = this.entryCount - (previous?.length ?? 0),
       next = entries
         .slice(0, Math.max(0, Math.min(PER_FOLDER, TOTAL - used)))
         .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name)),
@@ -256,7 +256,10 @@ export default class Files extends View {
         !previous ||
         previous.length !== next.length ||
         previous.some((entry, i) => entry.name !== next[i].name || entry.dir !== next[i].dir);
-    if (changed) this.entries.set(path, next);
+    if (changed) {
+      this.entries.set(path, next);
+      this.entryCount = used + next.length;
+    }
     if (entries.length > PER_FOLDER || used + entries.length > TOTAL) this.limited = true;
     const directories = new Set(
       this.entries
@@ -298,6 +301,10 @@ export default class Files extends View {
       this.root = cwd;
       this.on = on;
       this.entries = new Map(cached?.entries);
+      this.entryCount = [...this.entries.values()].reduce(
+        (total, entries) => total + entries.length,
+        0,
+      );
       this.folders = new Set(cached?.folders);
       this.pending = new Set();
       this.marks = { ...cached?.marks };
@@ -405,6 +412,7 @@ export default class Files extends View {
     for (const folder of this.folders)
       if (folder === path || folder.startsWith(path + "/")) {
         this.folders.delete(folder);
+        this.entryCount -= this.entries.get(folder)?.length ?? 0;
         this.entries.delete(folder);
       }
   }

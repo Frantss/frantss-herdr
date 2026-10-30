@@ -170,6 +170,7 @@ async function harness(refresh = false) {
   const files = new Files();
   Object.assign(files, {
     entries: new Map(),
+    entryCount: 0,
     folders: new Set(),
     marks: {},
     generation: 0,
@@ -208,6 +209,7 @@ test("hidden Files renders retain state and skip row work without forcing a reve
   const h = await harness();
   const entries = new Map([["", [{ name: "kept.ts", dir: false }]]]);
   h.files.entries = entries;
+  h.files.entryCount = 1;
   h.files.stale = false;
   h.files.loading = true;
   h.files.loadingRendered = false;
@@ -256,6 +258,7 @@ test("Files constructs only the requested viewport and dispatches clicks by stab
       Array.from({ length: 499 }, (_, j) => ({ name: `file-${j}.ts`, dir: false })),
     );
   }
+  seedEntryCount(h.files);
   h.render();
   assert.equal(h.state.rows.length, 0);
   assert.equal(h.state.lists.length, 1);
@@ -280,6 +283,7 @@ test("Files keeps expanded directory order, depth, ignored inheritance, and dire
   h.files.entries.set("dist", [{ name: "output.js", dir: false }]);
   h.files.folders.add("dist");
   h.files.marks["/repo/dist"] = "I";
+  seedEntryCount(h.files);
   h.render();
   const list = h.state.lists[0];
   assert.deepEqual(
@@ -308,6 +312,13 @@ const deferred = () => {
 };
 const listedFolders = (state) =>
   state.executions.filter((call) => call.command === "sh").map((call) => call.args.at(-1));
+const seedEntryCount = (files) => {
+  files.entryCount = [...files.entries.values()].reduce(
+    (total, entries) => total + entries.length,
+    0,
+  );
+};
+
 async function expandedFiles() {
   const h = await harness(true);
   for (const path of ["src", "tests"]) {
@@ -320,6 +331,7 @@ async function expandedFiles() {
     { name: "tests", dir: true },
   ]);
   h.state.directories.set("/repo", h.files.entries.get(""));
+  seedEntryCount(h.files);
   return h;
 }
 
@@ -541,6 +553,7 @@ test("reverse directory completion preserves deterministic global entry limits",
       Array.from({ length: 500 }, (_, j) => ({ name: `file-${j}`, dir: false })),
     );
   }
+  seedEntryCount(h.files);
   const src = deferred(),
     tests = deferred();
   h.state.held.set("/repo/src", src.promise);
@@ -564,6 +577,7 @@ test("directory batch errors retain earlier progress and stop subsequent batches
   const h = await expandedFiles();
   h.files.folders.add("other");
   h.files.entries.set("other", [{ name: "old.ts", dir: false }]);
+  seedEntryCount(h.files);
   h.state.directoryError = "/repo/tests";
   h.files.refresh(h.cx, ["/repo/src/file", "/repo/tests/file", "/repo/other/file"]);
   await h.drain();
@@ -600,6 +614,7 @@ test("parent listings prune deleted nested folders before later batches fetch th
   h.files.entries.set("src", [{ name: "deep", dir: true }]);
   h.files.folders.add("src/deep");
   h.files.entries.set("src/deep", [{ name: "old.ts", dir: false }]);
+  seedEntryCount(h.files);
   h.files.refresh(h.cx);
   await h.drain();
   assert.deepEqual(listedFolders(h.state), ["/repo", "/repo/src", "/repo/tests"]);
@@ -612,6 +627,7 @@ test("child-first watcher events apply the parent before fetching a deleted chil
   h.files.entries.set("src", [{ name: "deep", dir: true }]);
   h.files.folders.add("src/deep");
   h.files.entries.set("src/deep", [{ name: "old.ts", dir: false }]);
+  seedEntryCount(h.files);
   h.state.directoryError = "/repo/src/deep";
   h.files.refresh(h.cx, ["/repo/src/deep/old.ts", "/repo/src/deep"]);
   await h.drain();
@@ -636,6 +652,7 @@ test("Files restores cloned context rows immediately and then reconciles the ful
   h.files.refresh(h.cx);
   assert.equal(h.files.entries.get("src")[0].name, "next.ts");
   assert.equal(h.files.folders.has("src"), true);
+  assert.equal(h.files.entryCount, 4);
   assert.notEqual(h.files.entries, entries);
   assert.notEqual(h.files.folders, folders);
   assert.equal(h.files.pending.size, 0);
@@ -644,6 +661,7 @@ test("Files restores cloned context rows immediately and then reconciles the ful
   await h.drain();
   assert.equal(h.files.entries.get("")[0].name, "fresh.ts");
   assert.equal(h.files.folders.size, 0);
+  assert.equal(h.files.entryCount, 1);
   assert.equal(
     h.state.executions
       .slice(start)
@@ -704,4 +722,75 @@ test("Files revisits the oldest snapshot when saving the outgoing place fills th
   assert.equal(h.files.entries.get("")[0].name, "original.ts");
   assert.equal(h.files.kept.size, 20);
   await h.drain();
+});
+
+const fileEntries = (count: number) =>
+  Array.from({ length: count }, (_, i) => ({ name: `file-${i}`, dir: false }));
+const countedEntries = (files) =>
+  [...files.entries.values()].reduce((total, entries) => total + entries.length, 0);
+
+test("Files entry budget stays exact across apply, replace, shrink, and global truncation", async () => {
+  const h = await harness(true);
+  const apply = (path, entries) => {
+    h.files.applyFolder(path, entries, h.files.context, h.files.generation);
+    assert.equal(h.files.entryCount, countedEntries(h.files));
+  };
+  apply(
+    "",
+    ["src", "tests", ...Array.from({ length: 9 }, (_, i) => `filler-${i}`)].map((name) => ({
+      name,
+      dir: true,
+    })),
+  );
+  for (let i = 0; i < 9; i++) {
+    const folder = `filler-${i}`;
+    h.files.folders.add(folder);
+    apply(folder, fileEntries(500));
+  }
+  h.files.folders.add("src");
+  h.files.folders.add("tests");
+  apply("src", fileEntries(300));
+  apply("tests", fileEntries(300));
+  assert.equal(h.files.entries.get("tests").length, 189);
+  assert.equal(h.files.entryCount, 5000);
+  apply("src", fileEntries(100));
+  assert.equal(h.files.entryCount, 4800);
+  apply("tests", fileEntries(700));
+  assert.equal(h.files.entries.get("tests").length, 389);
+  assert.equal(h.files.entryCount, 5000);
+  const previous = h.files.entries.get("src");
+  apply("src", fileEntries(100));
+  assert.equal(h.files.entries.get("src"), previous);
+});
+
+test("Files nested closure subtracts each cached folder once and retains the per-folder cap", async () => {
+  const h = await harness(true);
+  h.files.applyFolder("", [{ name: "src", dir: true }], h.files.context, h.files.generation);
+  h.files.folders.add("src");
+  h.files.applyFolder("src", [{ name: "deep", dir: true }], h.files.context, h.files.generation);
+  h.files.folders.add("src/deep");
+  h.files.applyFolder("src/deep", fileEntries(700), h.files.context, h.files.generation);
+  assert.equal(h.files.entries.get("src/deep").length, 500);
+  assert.equal(h.files.entryCount, 502);
+  h.files.closeFolder("src");
+  assert.equal(h.files.entryCount, 1);
+  assert.equal(h.files.entryCount, countedEntries(h.files));
+  h.files.closeFolder("src");
+  assert.equal(h.files.entryCount, 1);
+});
+
+test("applying Files directory results does not rescan Map entries for its budget", async () => {
+  const h = await harness(true);
+  const entries = h.files.entries;
+  let scans = 0;
+  entries.entries = () => {
+    scans++;
+    return Map.prototype.entries.call(entries);
+  };
+  h.files.applyFolder("", [{ name: "src", dir: true }], h.files.context, h.files.generation);
+  h.files.folders.add("src");
+  h.files.applyFolder("src", fileEntries(100), h.files.context, h.files.generation);
+  h.files.applyFolder("src", fileEntries(200), h.files.context, h.files.generation);
+  assert.equal(scans, 0);
+  assert.equal(h.files.entryCount, 201);
 });
