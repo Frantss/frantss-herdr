@@ -237,8 +237,9 @@ export default class Tabs extends View {
           )
       );
     };
-    const panel = find(layout() as LayoutNode, "panel"),
-      body = find(layout() as LayoutNode, "panel-body");
+    const tree = layout() as LayoutNode,
+      panel = find(tree, "panel"),
+      body = find(tree, "panel-body");
     // The welcome screen picks Files and Changes; custom panels stay available.
     const enabled = [
       ...((shared("workspace.panels") as string[] | null) ?? ["files", "changes"]),
