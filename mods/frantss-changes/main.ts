@@ -297,7 +297,7 @@ export default class Changes extends View {
 
   refresh(cx: Context) {
     const { cwd, on } = location(),
-      context = key();
+      context = JSON.stringify({ cwd, on });
     // Switch places before waiting on any git still running for the last one: its results check the place.
     if (context !== this.context) this.switchTo(context);
     if (this.loading || !cwd) return;
@@ -394,7 +394,8 @@ export default class Changes extends View {
       } catch (e) {
         if (key() === context) this.error = String(e);
       } finally {
-        const current = this.context === context && key() === context;
+        const currentKey = key(),
+          current = this.context === context && currentKey === context;
         let changed = !current;
         if (current) {
           const filesEqual = sameFiles(previous.files, this.files),
@@ -411,7 +412,7 @@ export default class Changes extends View {
         const notify = changed || this.loadingRendered;
         this.loading = false;
         // The place changed while git ran: refresh the one now shown.
-        if (key() !== context) this.refresh(cx);
+        if (currentKey !== context) this.refresh(cx);
         if (notify) cx.notify();
       }
     });

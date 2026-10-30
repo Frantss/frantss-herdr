@@ -24,6 +24,7 @@ async function harness(refresh = false) {
     elements: 0,
     highlights: [],
     sent: [],
+    hostReads: { spaces: 0, panes: 0, focused: 0, paneRecords: 0 },
   };
   const input = () => {
     let value = "";
@@ -124,7 +125,13 @@ async function harness(refresh = false) {
           throw new Error(`Unexpected host call ${name}`);
         },
       ]),
-      ["spaces", () => state.spaces ?? []],
+      [
+        "spaces",
+        () => {
+          state.hostReads.spaces++;
+          return state.spaces ?? [];
+        },
+      ],
       ["agents", () => state.agents ?? []],
       [
         "hc",
@@ -133,8 +140,21 @@ async function harness(refresh = false) {
           return state.hcResult ?? { code: 0, stdout: "", stderr: "" };
         },
       ],
-      ["panes", () => []],
-      ["focused", () => ({ cwd: state.cwd, pane: null, space: "s1" })],
+      [
+        "panes",
+        () => {
+          state.hostReads.panes++;
+          state.hostReads.paneRecords += state.panes?.length ?? 0;
+          return state.panes ?? [];
+        },
+      ],
+      [
+        "focused",
+        () => {
+          state.hostReads.focused++;
+          return state.focus ?? { cwd: state.cwd, pane: null, space: "s1" };
+        },
+      ],
       ["layout", () => state.layout],
       ["window", () => ({ platform: "macos" })],
       ["settings", () => ({ zoom: state.zoom })],
@@ -355,6 +375,38 @@ test("unchanged Changes refreshes preserve file and diff arrays without notifyin
   assert.equal(h.state.notifications, 0);
   assert.equal(h.changes.files, files);
   assert.equal(h.changes.rows, rows);
+});
+
+test("Changes reuses synchronous context snapshots while keeping async context guards", async () => {
+  const h = await harness(true);
+  h.state.panes = Array.from({ length: 1000 }, (_, i) => ({ pane: `p${i}`, cwd: "/repo" }));
+  h.state.focus = { cwd: "/repo", pane: "p999", space: "s1" };
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.root, "/repo");
+  assert.equal(h.changes.files[0].path, "file.ts");
+  assert.deepEqual(h.state.hostReads, { spaces: 8, panes: 8, focused: 8, paneRecords: 8000 });
+
+  const previousFiles = h.changes.files,
+    heldStatus = deferred(),
+    heldRoot = deferred();
+  h.state.queryBlocks.set("status", heldStatus.promise);
+  h.changes.refresh(h.cx);
+  await ticks();
+  h.state.status = " M other.ts\0";
+  h.state.stats = "3\t4\tother.ts\0";
+  h.state.focus = { cwd: "/other", pane: null, space: "s1" };
+  h.state.block = heldRoot.promise;
+  heldStatus.resolve();
+  await ticks();
+  assert.equal(h.changes.context, JSON.stringify({ cwd: "/other", on: null }));
+  assert.equal(h.changes.root, null);
+  assert.notEqual(h.changes.files, previousFiles);
+  assert.equal(h.changes.files.length, 0);
+  heldRoot.resolve();
+  await h.drain();
+  assert.equal(h.changes.root, "/other");
+  assert.equal(h.changes.files[0].path, "other.ts");
 });
 
 test("Changes notifies on diff changes, errors, and recovery", async () => {
