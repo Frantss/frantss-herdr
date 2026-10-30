@@ -191,11 +191,7 @@ export default class Toolbar extends View {
       label: Element | string,
       tooltip: string,
       action: (cx: Context) => unknown,
-    ) =>
-      sharedButton(id, label, action, { variant: "quiet", square: true, tooltip }).on_mouse_down(
-        "left",
-        stop,
-      );
+    ) => sharedButton(id, label, action, { variant: "quiet", square: true, tooltip });
     const panel = findNode(layout() as LayoutNode, "panel");
     // The welcome screen picks Files and Changes; custom panels stay available.
     const enabled = [
