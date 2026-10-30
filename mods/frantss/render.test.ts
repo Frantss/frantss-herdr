@@ -360,6 +360,19 @@ test("top breadcrumbs retain labels, checkout menus, local actions, and remote i
   assert.equal(byId(remote, "crumb-workspace").handlers.on_click, undefined);
 });
 
+test("top looks up only the current space's place and the saved workspaces", async () => {
+  const h = await harness("top");
+  const looked = [];
+  h.view.repos = {};
+  h.view.lookUp = (place) => {
+    looked.push(place);
+    h.view.repos[place] = null;
+  };
+  h.render();
+  assert.deepEqual(looked, [key("/project/live"), key("/project"), key("/closed")]);
+  assert.equal(h.state.shared.has("frantss.spaceWorkspaces"), false);
+});
+
 test("each new render uses current titles and cwds without retaining live-data maps", async () => {
   const h = await harness();
   h.render();

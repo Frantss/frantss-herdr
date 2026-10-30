@@ -272,16 +272,12 @@ export default class Frantss extends View {
         refreshAgents(machine).catch(() => {});
   }
 
-  // Looks up places it hasn't seen. Render runs whenever spaces, panes or shared state change, so
-  // no timer is needed.
-  track(cx: Context, snapshot: WorkspaceSnapshot, role: string) {
+  // Looks up the places and saved workspaces it hasn't seen. Render runs whenever spaces, panes or
+  // shared state change, so no timer is needed.
+  track(cx: Context, places: Iterable<string>) {
     if (!this.repos) return;
-    const keys = [
-      ...snapshot.placeBySpace.values(),
-      ...savedWorkspaces().map((w) => folderKey(w.folder)),
-    ];
+    const keys = [...places, ...savedWorkspaces().map((w) => folderKey(w.folder))];
     for (const key of keys) if (!(key in this.repos)) this.lookUp(key, cx);
-    if (role === "rail") this.publishWorkspaces(snapshot);
   }
 
   // Asks the core which terminals finished whenever an agent or a pane goes (a closed tab takes
@@ -422,9 +418,9 @@ export default class Frantss extends View {
   }
 
   // Spaces in order, those of one repo (or, outside a repo, one folder) together where the first of them is.
-  spaceGroups(snapshot: WorkspaceSnapshot) {
+  spaceGroups(snapshot: WorkspaceSnapshot, list = snapshot.spaces) {
     const groups = new Map<string, SpaceGroup>();
-    for (const s of snapshot.spaces) {
+    for (const s of list) {
       const repo = this.repos?.[snapshot.placeBySpace.get(s.id)];
       const key = this.workspaceKey(s, snapshot);
       if (!groups.has(key))
@@ -452,13 +448,18 @@ export default class Frantss extends View {
     };
   }
 
-  top(t: Theme, snapshot: WorkspaceSnapshot) {
-    const space = snapshot.spaces.find((s) => s.active),
-      tab = space?.tabs.find((t) => t.active);
+  top(t: Theme, snapshot: WorkspaceSnapshot, space: SpaceInfo | undefined) {
+    const tab = space?.tabs.find((t) => t.active);
     // Like the site's path line, faint crumbs joined by "/" with the current one accented, naming where
     // you stand in the rail: workspace / branch / tab. Each crumb opens what it names.
-    const group =
-      space && this.spaceGroups(snapshot).find((g) => g.spaces.some((s) => s.id === space.id));
+    // Only the current space's place is looked up, which is all its group's name and folder need.
+    const key = space && this.workspaceKey(space, snapshot);
+    const [group] = space
+      ? this.spaceGroups(
+          snapshot,
+          snapshot.spaces.filter((s) => this.workspaceKey(s, snapshot) === key),
+        )
+      : [];
     const saved =
       group &&
       savedWorkspaces()
@@ -1026,8 +1027,13 @@ export default class Frantss extends View {
     const role = props()?.role;
     if (role === "pane") return this.pane(t);
     const snapshot = workspaceSnapshot();
-    this.track(cx, snapshot, role);
-    if (role === "top") return this.top(t, snapshot);
+    if (role === "top") {
+      const space = snapshot.spaces.find((s) => s.active);
+      this.track(cx, space ? [snapshot.placeBySpace.get(space.id)] : []);
+      return this.top(t, snapshot, space);
+    }
+    this.track(cx, snapshot.placeBySpace.values());
+    this.publishWorkspaces(snapshot);
     const list = agents();
     this.trackAgents(cx, list, snapshot);
     return this.rail(t, list, snapshot);
