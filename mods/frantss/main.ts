@@ -91,13 +91,6 @@ const RAIL = { pad: 16, header: 24, row: 24, rowGap: 2, sectionGap: 16, emptyGap
 const GLIDE = { response: 300, damping: 1 };
 const glide = (e: Element, y: number) => e.absolute().top(y).spring("top", GLIDE);
 
-// `status`: an agent state, which colors the label (theme colors named working, blocked, done, idle).
-const label = (t: Theme, text: string, status: string) =>
-  div()
-    .flex_none()
-    .text_size(10)
-    .text_color(t[status] ?? t.dim)
-    .child(text);
 const icon = (t: Theme, program: Program, size = 14) =>
   !program?.icon
     ? null
@@ -1028,17 +1021,7 @@ export default class Frantss extends View {
           .child(pane?.program?.name ?? "Terminal"),
       )
       .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(where))
-      .when(Boolean(pane?.status), (e) =>
-        e
-          .child(dot(t, pane.status))
-          .child(
-            label(
-              t,
-              GROUPS.find((g) => g.status === pane.status)?.label ?? pane.status.toUpperCase(),
-              pane.status,
-            ),
-          ),
-      )
+      .when(Boolean(pane?.status), (e) => e.child(dot(t, pane.status)))
       .when(Boolean(pane), (e) =>
         e
           .child(
