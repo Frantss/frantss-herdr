@@ -191,12 +191,14 @@ export default class GitHub extends View {
     cx.spawn((cx) => this.loadPlace(place, cx));
   }
 
-  async loadPlace(place: Location, cx: Context) {
+  async loadPlace(place: Location, cx: Context, seen?: Set<string>) {
     let repo = null,
       started = false;
     try {
       repo = await this.repoOf(place);
       if (!repo) throw new Error("Not a Git repository.");
+      if (seen?.has(repo)) return;
+      seen?.add(repo);
       if (this.inflight.has(repo)) return;
       this.inflight.add(repo);
       started = true;
@@ -247,7 +249,8 @@ export default class GitHub extends View {
       ...spaces().map((space) => ({ cwd: spaceFolder(space), on: space.machine ?? null })),
     ].filter((place) => place?.cwd);
     cx.spawn(async (cx) => {
-      for (const place of places) await this.loadPlace(place, cx);
+      const seen = new Set<string>();
+      for (const place of places) await this.loadPlace(place, cx, seen);
     });
   }
 
