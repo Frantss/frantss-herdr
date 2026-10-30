@@ -21,17 +21,19 @@ export const INSTALLED = "frantss.apps";
 export const knownApps = (keys: unknown) =>
   APPS.filter((app) => Array.isArray(keys) && keys.includes(app.key));
 
-// `open -Ra` finds an app without opening it, and fails when there is none.
-export async function findApps(exec: typeof Exec): Promise<App[]> {
-  const found = await Promise.all(
+// `open -Ra` finds an app without opening it, and fails when there is none. Apps rarely come or go
+// while Herdr runs, so a mod looks once while it is loaded.
+let lookup: Promise<App[]> | null = null;
+export function installedApps(exec: typeof Exec): Promise<App[]> {
+  lookup ??= Promise.all(
     APPS.map((app) =>
       exec("open", ["-Ra", app.app]).then(
         (r) => r.code === 0,
         () => false,
       ),
     ),
-  );
-  return APPS.filter((_app, i) => found[i]);
+  ).then((found) => APPS.filter((_app, i) => found[i]));
+  return lookup;
 }
 
 // A folder opens in every app; a file opens as the app takes it.

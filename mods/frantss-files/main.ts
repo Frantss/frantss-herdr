@@ -46,7 +46,7 @@ import { statusMarks, type Mark } from "./status.ts";
 import { daemonName, daemonRunning, freshConfig, freshTheme, FRESH_THEME } from "./fresh.ts";
 import { editorLanguage, previewKind, previewText } from "./preview.ts";
 import { checkName, menuItems, parentOf, type MenuItem } from "./menu.ts";
-import { appIcon, findApps, INSTALLED, knownApps, openArgs, type App } from "./apps.ts";
+import { appIcon, installedApps, INSTALLED, knownApps, openArgs, type App } from "./apps.ts";
 import { followedPlace, panelShown } from "./panel.ts";
 import { button } from "./button.ts";
 
@@ -665,12 +665,12 @@ export default class Files extends View {
     return !this.on && window()?.platform === "macos";
   }
 
-  // The apps found last time show at once; a fresh look replaces them.
+  // The apps found last time show at once, until this load's one look answers.
   loadApps(cx: Context) {
     const known = shared(INSTALLED);
     this.apps = knownApps(known);
     cx.spawn(async (cx) => {
-      const found = await findApps(exec),
+      const found = await installedApps(exec),
         keys = found.map((app) => app.key);
       if (JSON.stringify(keys) !== JSON.stringify(known)) setShared(INSTALLED, keys);
       this.apps = found;

@@ -1,6 +1,6 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
-import { APPS, findApps, knownApps, openArgs } from "./apps.ts";
+import { APPS, installedApps, knownApps, openArgs } from "./apps.ts";
 
 const app = (key: string) => APPS.find((app) => app.key === key);
 
@@ -33,13 +33,15 @@ test("known apps follow the stored keys in list order and ignore anything else",
   assert.deepEqual(knownApps(null), []);
 });
 
-test("apps are found by asking open for each one, and a failure counts as missing", async () => {
+test("apps are found once by asking open for each one, and a failure counts as missing", async () => {
   const asked: string[] = [];
-  const found = await findApps((async (_command: string, args: string[]) => {
+  const exec = (async (_command: string, args: string[]) => {
     asked.push(args[1]);
     if (args[1] === "Zed") throw new Error("no open");
     return { code: args[1] === "Finder" || args[1] === "Ghostty" ? 0 : 1, stdout: "", stderr: "" };
-  }) as never);
+  }) as never;
+  const found = await installedApps(exec);
+  assert.equal(await installedApps(exec), found);
   assert.deepEqual(
     asked,
     APPS.map((app) => app.app),

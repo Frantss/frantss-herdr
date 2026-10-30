@@ -5,7 +5,7 @@ import type { AsyncContext, FocusHandle } from "gpui-kit";
 import { View, div, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, exec, closeOverlay, props, shared, setShared } from "herdr";
-import { appIcon, findApps, INSTALLED, knownApps, openArgs, type App } from "./apps.ts";
+import { appIcon, installedApps, INSTALLED, knownApps, openArgs, type App } from "./apps.ts";
 
 export default class Open extends View {
   declare installed: App[];
@@ -16,7 +16,7 @@ export default class Open extends View {
     this.handle = cx.focus_handle();
     this.handle.focus();
     cx.spawn(async (cx) => {
-      this.installed = await findApps(exec);
+      this.installed = await installedApps(exec);
       const keys = this.installed.map((a) => a.key);
       if (JSON.stringify(keys) !== JSON.stringify(known)) setShared(INSTALLED, keys);
       cx.notify();

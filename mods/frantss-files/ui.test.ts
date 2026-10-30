@@ -1261,6 +1261,8 @@ test("Open in shows the installed apps beside the menu and opens files as each a
   assert.ok(textOf(header).startsWith("Open in"));
   findNode(header, byId("files-app-zed")).handlers.on_click({}, h.cx);
   assert.deepEqual(h.state.commands.at(-1), ["open", "-a", "Zed", "/repo", null]);
+  await h.drain();
+  assert.equal(h.state.commands.filter((command) => command[1] === "-Ra").length, 5);
   h.files.on = "server";
   assert.equal(findNode(h.render(), byId("files-root")).handlers.on_click, undefined);
   assert.equal(findNode(press("a.ts"), byId("files-menu-open-in")), undefined);
