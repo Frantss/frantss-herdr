@@ -1,5 +1,6 @@
 import { defineConfig } from "vite-plus";
-import { appHome, outputRoot } from "./scripts/paths.ts";
+import { appHome, outputRoot, packageRoot } from "./scripts/paths.ts";
+import { pruneOutput } from "./scripts/prune.ts";
 import { refreshInstall } from "./scripts/watch.ts";
 
 export default defineConfig({
@@ -38,6 +39,7 @@ export default defineConfig({
       },
     ],
     onSuccess: () => {
+      pruneOutput(outputRoot, packageRoot);
       refreshInstall(outputRoot, appHome);
     },
   },
