@@ -65,3 +65,26 @@ test("a repository without commits has no HEAD", () => {
   assert.equal(parseStatus("## HEAD (no branch)\0").hasHead, true);
   assert.deepEqual(parseStatus("## main\0A  a.ts\0").entries, [{ xy: "A ", path: "a.ts" }]);
 });
+
+test("the branch line names the branch, its upstream, and how far apart they are", () => {
+  const branch = (line: string) => {
+    const { branch, upstream, ahead, behind } = parseStatus(`${line}\0`);
+    return { branch, upstream, ahead, behind };
+  };
+  assert.deepEqual(branch("## main...origin/main [ahead 1, behind 22]"), {
+    branch: "main",
+    upstream: "origin/main",
+    ahead: 1,
+    behind: 22,
+  });
+  assert.deepEqual(branch("## main...origin/main"), {
+    branch: "main",
+    upstream: "origin/main",
+    ahead: 0,
+    behind: 0,
+  });
+  assert.deepEqual(branch("## feat/x"), { branch: "feat/x", upstream: null, ahead: 0, behind: 0 });
+  assert.equal(branch("## main...origin/main [gone]").upstream, null);
+  assert.equal(branch("## HEAD (no branch)").branch, null);
+  assert.equal(branch("## No commits yet on main").branch, null);
+});

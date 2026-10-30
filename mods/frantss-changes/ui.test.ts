@@ -179,6 +179,10 @@ async function harness(refresh = false) {
         state.indexCalls = [...(state.indexCalls ?? []), ["trash", ...args.slice(3)]];
         return state.trashResult ?? { code: 0, stdout: "", stderr: "" };
       }
+      if (command === "env") {
+        state.indexCalls = [...(state.indexCalls ?? []), args];
+        return state.indexResult ?? { code: 0, stdout: "", stderr: "" };
+      }
       if (command === "sh") {
         const side = args[1].startsWith("git show") ? "old" : "new";
         state.highlights.push([side, ...args.slice(3)]);
@@ -204,7 +208,7 @@ async function harness(refresh = false) {
       if (args.includes("status"))
         return {
           code: 0,
-          stdout: `## ${state.unborn ? "No commits yet on main" : "main"}\0${state.status}`,
+          stdout: `## ${state.unborn ? "No commits yet on main" : (state.branchLine ?? "main")}\0${state.status}`,
           stderr: "",
         };
       if (args.includes("--numstat"))
@@ -221,7 +225,7 @@ async function harness(refresh = false) {
         };
       if (args[0] === "show") return { code: 0, stdout: state.index ?? "", stderr: "" };
       if (args[0] === "log") return { code: 0, stdout: state.lastMessage ?? "", stderr: "" };
-      if (["add", "reset", "restore", "commit"].includes(args[0])) {
+      if (["add", "reset", "restore", "commit", "stash"].includes(args[0])) {
         state.indexCalls = [...(state.indexCalls ?? []), args];
         return state.indexResult ?? { code: 0, stdout: "", stderr: "" };
       }
@@ -957,6 +961,75 @@ test("each place keeps its own commit draft", async () => {
   h.changes.switchTo(JSON.stringify({ cwd: "/repo", on: null }));
   assert.equal(h.changes.commitMessage, "for repo");
   assert.equal(h.changes.commitInput.value(), "for repo");
+});
+
+test("Sync pulls then pushes and shows how far apart the branch and its upstream are", async () => {
+  const h = await harness(true);
+  h.state.branchLine = "main...origin/main [ahead 1, behind 2]";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  const sync = () => byId(h.render(), "changes-sync");
+  assert.ok(text(sync()).includes("↓2 ↑1"));
+  sync().handlers.on_click({}, h.cx);
+  assert.ok(text(sync()).includes("Syncing…") && disabled(sync()));
+  await h.drain();
+  const network = ["GIT_TERMINAL_PROMPT=0", "GIT_MERGE_AUTOEDIT=no", "git"];
+  assert.deepEqual(plain(h.state.indexCalls), [
+    [...network, "pull"],
+    [...network, "push"],
+  ]);
+
+  h.state.indexCalls = [];
+  h.state.branchLine = "main...origin/main";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.ok(text(sync()).includes("Sync"));
+  h.state.branchLine = "feat/x";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.ok(text(sync()).includes("Publish"));
+  sync().handlers.on_click({}, h.cx);
+  await h.drain();
+  assert.deepEqual(plain(h.state.indexCalls), [[...network, "push", "-u", "origin", "HEAD"]]);
+  h.state.branchLine = "HEAD (no branch)";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(sync(), undefined);
+});
+
+test("a failed sync shows Git's error", async () => {
+  const h = await harness(true);
+  h.state.branchLine = "main...origin/main [ahead 1, behind 1]";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.state.indexResult = { code: 128, stdout: "", stderr: "fatal: Not possible to fast-forward" };
+  h.changes.sync(h.cx);
+  await h.drain();
+  assert.equal(h.state.indexCalls.length, 1);
+  assert.ok(String(h.changes.note).includes("Not possible to fast-forward"));
+});
+
+test("Stash stashes tracked changes and Pop brings back the latest stash", async () => {
+  const h = await harness(true);
+  h.state.status = "?? new.ts\0";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.ok(disabled(byId(h.render(), "changes-stash")));
+  h.state.status = " M file.ts\0?? new.ts\0";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  byId(h.render(), "changes-stash").handlers.on_click({}, h.cx);
+  await h.drain();
+  byId(h.render(), "changes-pop").handlers.on_click({}, h.cx);
+  await h.drain();
+  assert.deepEqual(plain(h.state.indexCalls), [
+    ["stash", "push"],
+    ["stash", "pop"],
+  ]);
+  h.state.indexResult = { code: 1, stdout: "", stderr: "No stash entries found." };
+  h.changes.run([["git", ["stash", "pop"]]], h.cx);
+  await h.drain();
+  assert.ok(String(h.changes.note).includes("No stash entries found."));
 });
 
 // Values built inside the module's VM realm compare by structure once copied here.

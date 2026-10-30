@@ -78,6 +78,10 @@ type Snapshot = Pick<
   | "gitDir"
   | "on"
   | "hasHead"
+  | "branch"
+  | "upstream"
+  | "ahead"
+  | "behind"
   | "files"
   | "limited"
   | "error"
@@ -106,7 +110,12 @@ const TRASH = "mods/frantss-changes/trash.svg",
   TREE = "mods/frantss-changes/tree.svg",
   PLUS = "mods/frantss-changes/plus.svg",
   MINUS = "mods/frantss-changes/minus.svg",
-  UNDO = "mods/frantss-changes/undo.svg";
+  UNDO = "mods/frantss-changes/undo.svg",
+  STASH = "mods/frantss-changes/archive.svg",
+  POP = "mods/frantss-changes/archive-restore.svg";
+// A network command fails instead of waiting for a password it cannot be given, and a pull's
+// merge takes Git's message instead of waiting for an editor.
+const NETWORK_GIT = ["GIT_TERMINAL_PROMPT=0", "GIT_MERGE_AUTOEDIT=no", "git"];
 const SECTION_TITLE: Record<Section, string> = { staged: "Staged Changes", unstaged: "Changes" };
 const TREE_SETTING = "changes-tree";
 // Diff rows indent their text past the line number and the hover "+".
@@ -130,6 +139,10 @@ const SNAPSHOT = [
   "gitDir",
   "on",
   "hasHead",
+  "branch",
+  "upstream",
+  "ahead",
+  "behind",
   "files",
   "limited",
   "error",
@@ -252,7 +265,7 @@ export default class Changes extends View {
   declare loading: boolean;
   declare again: boolean;
   // The git action running, if any; one runs at a time.
-  declare acting: "index" | "commit" | null;
+  declare acting: "index" | "commit" | "sync" | null;
   declare loadingRendered: boolean;
   declare watchToken: object;
   declare stale: boolean;
@@ -261,6 +274,12 @@ export default class Changes extends View {
   declare open: string | null;
   declare closed: boolean;
   declare hasHead: boolean;
+  // The branch (null when detached or before the first commit), its upstream, and how far
+  // apart they are as of the last fetch.
+  declare branch: string | null;
+  declare upstream: string | null;
+  declare ahead: number;
+  declare behind: number;
 
   init(_props: unknown, cx: AsyncContext) {
     this.files = [];
@@ -401,7 +420,7 @@ export default class Changes extends View {
         if (key() !== context) return;
         for (const result of results) if (result.code !== 0) throw new Error(result.stderr);
         const [status, staged, unstaged] = results.map((result) => result.stdout),
-          { hasHead, entries } = parseStatus(status),
+          { hasHead, branch, upstream, ahead, behind, entries } = parseStatus(status),
           files = changedFiles(
             entries.slice(0, 1000),
             parseNumstat(staged),
@@ -411,6 +430,7 @@ export default class Changes extends View {
         this.gitDir = gitDir;
         this.on = on;
         this.hasHead = hasHead;
+        Object.assign(this, { branch, upstream, ahead, behind });
         this.files = files;
         this.limited = entries.length > 1000;
         this.error = null;
@@ -481,6 +501,7 @@ export default class Changes extends View {
     else {
       this.root = null;
       this.gitDir = null;
+      this.branch = null;
       this.files = [];
       this.open = null;
       this.setLines([]);
@@ -1275,8 +1296,45 @@ export default class Changes extends View {
               disabled: !this.hasHead || Boolean(this.acting),
               tooltip: this.amending ? "Stop amending" : "Amend the last commit",
             }).when(this.amending, (e) => e.text_color(t.accent)),
-          ),
+          )
+          .when(Boolean(this.branch), (e) => e.child(this.syncButton(t))),
       );
+  }
+
+  // Sync pulls then pushes, as of a fresh fetch; a branch without an upstream publishes instead.
+  sync(cx: Context) {
+    this.run(
+      this.upstream
+        ? [
+            ["env", [...NETWORK_GIT, "pull"]],
+            ["env", [...NETWORK_GIT, "push"]],
+          ]
+        : [["env", [...NETWORK_GIT, "push", "-u", "origin", "HEAD"]]],
+      cx,
+      "sync",
+    );
+  }
+
+  syncButton(t: Theme) {
+    const syncing = this.acting === "sync",
+      counts = [this.behind && `↓${this.behind}`, this.ahead && `↑${this.ahead}`].filter(Boolean);
+    return button(
+      "changes-sync",
+      this.upstream
+        ? syncing
+          ? "Syncing…"
+          : counts.join(" ") || "Sync"
+        : syncing
+          ? "Publishing…"
+          : "Publish",
+      (cx) => this.sync(cx),
+      {
+        disabled: Boolean(this.acting),
+        tooltip: this.upstream
+          ? `Pull and push ${this.upstream}; counts are as of the last fetch`
+          : `Push ${this.branch} to origin and track it`,
+      },
+    ).when(counts.length > 0, (e) => e.text_color(t.accent));
   }
 
   // Each section's header row, then its files.
@@ -1393,6 +1451,35 @@ export default class Changes extends View {
             ),
           )
           .child(div().flex_1())
+          .when(Boolean(this.root), (e) =>
+            e
+              .child(
+                button(
+                  "changes-stash",
+                  svg(STASH).size(14),
+                  (cx) => this.run([["git", ["stash", "push"]]], cx),
+                  {
+                    variant: "quiet",
+                    square: true,
+                    disabled: Boolean(this.acting) || !this.files.some((file) => !file.fresh),
+                    tooltip: "Stash changes",
+                  },
+                ),
+              )
+              .child(
+                button(
+                  "changes-pop",
+                  svg(POP).size(14),
+                  (cx) => this.run([["git", ["stash", "pop"]]], cx),
+                  {
+                    variant: "quiet",
+                    square: true,
+                    disabled: Boolean(this.acting) || !this.hasHead,
+                    tooltip: "Pop latest stash",
+                  },
+                ),
+              ),
+          )
           .child(
             button(
               "changes-tree",

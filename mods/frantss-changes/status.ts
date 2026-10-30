@@ -31,12 +31,22 @@ export function parseNumstat(stdout: string): Record<string, FileStats> {
 
 const letter = (code: string) => (code === "D" ? "D" : code === "A" ? "A" : "M");
 
-// `git status --porcelain=v1 -z --branch --no-renames` output: whether HEAD exists, and the
+// `git status --porcelain=v1 -z --branch --no-renames` output: whether HEAD exists; the branch,
+// null when detached or before the first commit; its upstream, null when it has none or the
+// remote deleted it; how far the branch is ahead of and behind it as of the last fetch; and the
 // changed paths with their index (X) and worktree (Y) codes.
 export function parseStatus(stdout: string) {
-  const [branch = "", ...entries] = stdout.split("\0").filter(Boolean);
+  const [line = "", ...entries] = stdout.split("\0").filter(Boolean),
+    hasHead = !/^## (No commits yet|Initial commit) on /.test(line),
+    [, name = "", upstream = null, track = ""] =
+      /^## (.+?)(?:\.\.\.(\S+))?(?: \[(.*)\])?$/.exec(line) ?? [],
+    count = (word: string) => Number(new RegExp(`${word} (\\d+)`).exec(track)?.[1] ?? 0);
   return {
-    hasHead: !/^## (No commits yet|Initial commit) on /.test(branch),
+    hasHead,
+    branch: hasHead && name !== "HEAD (no branch)" ? name : null,
+    upstream: track === "gone" ? null : upstream,
+    ahead: count("ahead"),
+    behind: count("behind"),
     entries: entries.map((entry) => ({ xy: entry.slice(0, 2), path: entry.slice(3) })),
   };
 }
