@@ -182,6 +182,7 @@ export default class AgentGraph extends View {
   declare size: { width: number; height: number };
   declare ended: Map<string, TerminalRecord>;
   declare liveKey: string | null;
+  declare syncing: boolean;
   declare stale: boolean;
   declare outline: boolean;
 
@@ -191,6 +192,7 @@ export default class AgentGraph extends View {
     this.size = { width: 0, height: 0 };
     this.ended = new Map();
     this.liveKey = null;
+    this.syncing = false;
     this.syncFinished(cx);
     // terminals() lists live terminals only. hc runs when that list changes, and every 30 s
     // for finished ones removed with hc rm; the 30 s tick also ages the durations.
@@ -211,24 +213,49 @@ export default class AgentGraph extends View {
     const key = terminals()
       .map((k) => k.address)
       .join(" ");
-    if (key === this.liveKey) return;
+    if (this.syncing || key === this.liveKey) return;
     this.liveKey = key;
+    this.syncing = true;
     cx.spawn(async (cx) => {
-      const result = await hc(["ls", "--all", "--json"]);
-      if (result.code !== 0) return;
-      // hc ls gives short records without times; a finished sub-agent's full record never
-      // changes, so hc get fetches it once.
-      const ended = (JSON.parse(result.stdout).terminals as TerminalRecord[]).filter(
-        (k) => k.state !== "live" && k.parent,
-      );
-      for (const k of ended) {
-        if (this.ended.has(k.address)) continue;
-        const full = await hc(["get", k.address, "--json"]);
-        if (full.code === 0) this.ended.set(k.address, JSON.parse(full.stdout));
+      let failed = false;
+      try {
+        const result = await hc(["ls", "--all", "--json"]);
+        if (result.code !== 0) {
+          failed = true;
+          return;
+        }
+        // hc ls gives short records without times; a finished sub-agent's full record never
+        // changes, so hc get fetches it once.
+        const ended = (JSON.parse(result.stdout).terminals as TerminalRecord[]).filter(
+          (k) => k.state !== "live" && k.parent,
+        );
+        const missing = ended.filter((k) => !this.ended.has(k.address));
+        let next = 0;
+        await Promise.all(
+          Array.from({ length: Math.min(4, missing.length) }, async () => {
+            for (;;) {
+              const k = missing[next++];
+              if (!k) return;
+              try {
+                const full = await hc(["get", k.address, "--json"]);
+                if (full.code === 0) this.ended.set(k.address, JSON.parse(full.stdout));
+                else failed = true;
+              } catch {
+                failed = true;
+              }
+            }
+          }),
+        );
+        const listed = new Set(ended.map((k) => k.address));
+        for (const address of this.ended.keys())
+          if (!listed.has(address)) this.ended.delete(address);
+        cx.notify();
+      } catch {
+        failed = true;
+      } finally {
+        if (failed) this.liveKey = null;
+        this.syncing = false;
       }
-      const listed = new Set(ended.map((k) => k.address));
-      for (const address of this.ended.keys()) if (!listed.has(address)) this.ended.delete(address);
-      cx.notify();
     });
   }
 
