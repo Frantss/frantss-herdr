@@ -741,25 +741,32 @@ export default class Frantss extends View {
       onMenu: () => workspaceMenu(w.folder, true),
     });
     const open = this.spaceGroups(snapshot);
+    const openByKey = new Map(open.map((group) => [group.key, group]));
+    const savedKeys = new Set<string>();
     const saved = savedWorkspaces()
       .map((w) => this.workspace(w))
-      .filter((w, i, list) => list.findIndex((o) => o.key === w.key) === i);
+      .filter((w) => {
+        if (savedKeys.has(w.key)) return false;
+        savedKeys.add(w.key);
+        return true;
+      });
+    const unsaved = open.filter((group) => !savedKeys.has(group.key));
     const groupRows = (g: SpaceGroup, w: NamedWorkspace) => [
       groupRow(g, w),
       ...(workspaceClosed(g) ? [] : g.spaces.flatMap(withTabs)),
     ];
     const workspaceRows = [
       ...saved.flatMap((w) => {
-        const g = open.find((g) => g.key === w.key);
+        const g = openByKey.get(w.key);
         return g ? groupRows(g, w) : [closedRow(w)];
       }),
-      ...open.filter((g) => !saved.some((w) => w.key === g.key)).flatMap((g) => groupRows(g, null)),
+      ...unsaved.flatMap((g) => groupRows(g, null)),
     ];
     const sections: RailSection[] = [
       {
         id: "spaces",
         title: "WORKSPACES",
-        count: saved.length + open.filter((g) => !saved.some((w) => w.key === g.key)).length,
+        count: saved.length + unsaved.length,
         action: this.plus(t, "add-workspace", "Add workspace", (_e, cx) => this.addWorkspace(cx)),
         rows: workspaceRows,
       },

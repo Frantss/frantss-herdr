@@ -309,3 +309,74 @@ test("pane headers retain their single pane lookup without workspace indexing", 
   assert.match(text(tree), /main · agent/);
   assert.deepEqual(h.state.calls, { spaces: 0, panes: 1, paneVisits: 0 });
 });
+
+test("duplicate saved workspaces retain the first folder for rows and menus", async () => {
+  const h = await harness();
+  h.state.shared.set("frantss.workspaces", [
+    { folder: "/project/first" },
+    { folder: "/closed/first" },
+    { folder: "/project/second" },
+    { folder: "/closed/second" },
+  ]);
+  h.view.repos[key("/project/first")] = "/project/.git";
+  h.view.repos[key("/project/second")] = "/project/.git";
+  h.view.repos[key("/closed/first")] = "/closed/.git";
+  h.view.repos[key("/closed/second")] = "/closed/.git";
+  const tree = h.render(),
+    project = key("/project/.git"),
+    closed = key("/closed/.git");
+  const groups = descendants(tree)
+    .map((node) => node?.elementId)
+    .filter((id) => id?.startsWith("group-"));
+  assert.deepEqual(groups, [
+    `group-${project}`,
+    `group-${closed}`,
+    `group-${key("/project/.git", "build")}`,
+    `group-${key("/outside")}`,
+  ]);
+  byId(tree, `group-${project}`).handlers.on_mouse_down({}, h.cx);
+  assert.deepEqual(plain(h.state.overlays.at(-1).props), { folder: "/project/first", saved: true });
+  byId(tree, `group-${closed}`).handlers.on_mouse_down({}, h.cx);
+  assert.deepEqual(plain(h.state.overlays.at(-1).props), { folder: "/closed/first", saved: true });
+  byId(tree, `group-${closed}`).handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands.at(-1)), ["space.new", { folder: "/closed/first" }]);
+  byId(tree, `new-${closed}`).handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.overlays.at(-1).props), { folder: "/closed/first", repo: true });
+});
+
+test("workspace membership key reads stay linear as saved and open workspaces grow", async () => {
+  const h = await harness(),
+    savedCount = 300,
+    unsavedCount = 100;
+  h.state.spaces = Array.from({ length: savedCount + unsavedCount }, (_, index) =>
+    space(`space-${index}`, `/workspace/${index}`, [tab(`tab-${index}`, { named: true })]),
+  );
+  h.state.panes = [];
+  h.state.shared.set(
+    "frantss.workspaces",
+    Array.from({ length: savedCount }, (_, index) => ({ folder: `/workspace/${index}` })),
+  );
+  for (const space of h.state.spaces) h.view.repos[key(space.folder)] = null;
+  let keyReads = 0;
+  const workspace = h.view.workspace.bind(h.view),
+    groups = h.view.spaceGroups.bind(h.view);
+  const counted = (item) => {
+    const value = item.key;
+    return Object.defineProperty(item, "key", {
+      get() {
+        keyReads++;
+        return value;
+      },
+    });
+  };
+  h.view.workspace = (saved) => counted(workspace(saved));
+  h.view.spaceGroups = (snapshot) => groups(snapshot).map(counted);
+  const tree = h.render();
+  const rows = descendants(tree).filter((node) => node?.elementId?.startsWith("group-"));
+  assert.equal(rows.length, savedCount + unsavedCount);
+  assert.equal(text(byId(tree, "header-spaces")), "WORKSPACES400+");
+  assert.ok(
+    keyReads <= 20 * (savedCount + unsavedCount),
+    `Expected linear key reads, received ${keyReads}`,
+  );
+});
