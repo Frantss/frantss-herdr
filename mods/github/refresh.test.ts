@@ -43,9 +43,24 @@ async function harness() {
   };
   const context = vm.createContext({ localStorage: { setItem() {} } });
   const unused = () => assert.fail("Unexpected UI host call");
+  function element() {
+    const proxy = new Proxy(
+      {},
+      {
+        get(_target, name) {
+          if (name === "then") return undefined;
+          return (...args) => {
+            if (name === "when" && args[0]) args[1](proxy);
+            return proxy;
+          };
+        },
+      },
+    );
+    return proxy;
+  }
   const natives = {
-    "gpui-kit": { View: class {}, div: unused, svg: unused, image: unused },
-    "gpui-base": { v_flex: unused, h_flex: unused, Button: {} },
+    "gpui-kit": { View: class {}, div: element, svg: unused, image: unused },
+    "gpui-base": { v_flex: element, h_flex: unused, Button: {} },
     herdr: {
       spaces: () => state.spaces,
       panes: () => [],
@@ -164,6 +179,55 @@ test("GitHub refreshes the current repository first and loads each machine/repos
     h.view.repos.get(JSON.stringify({ cwd: "/repo", on: "build-server" })),
     h.view.repo,
   );
+});
+
+test("collapsed GitHub sections keep their counts without constructing hidden rows", async () => {
+  const h = await harness();
+  await h.refresh();
+  const pr = (number, extra = {}) => ({
+    number,
+    author: "me",
+    requested: [],
+    draft: false,
+    decision: null,
+    checks: { state: "PENDING", failed: [] },
+    threads: [],
+    ...extra,
+  });
+  h.view.cache.set(h.view.repo, {
+    repo: "owner/repo",
+    viewer: "me",
+    prs: [
+      pr(1, { checks: { state: "FAILURE", failed: [{ name: "test" }] } }),
+      pr(2, { threads: [{ author: "ana" }] }),
+      pr(3, { author: "ana", requested: ["me"] }),
+      pr(4, { decision: "APPROVED", checks: { state: "SUCCESS", failed: [] } }),
+    ],
+  });
+  h.view.linkedAgents = () => [{ number: 5, kinds: [] }];
+  const headers: [string, number][] = [],
+    rows: string[] = [];
+  h.view.groupHeader = (title, count) => {
+    headers.push([title, count]);
+    return {};
+  };
+  h.view.itemRow = (item) => {
+    rows.push(item.id);
+    return {};
+  };
+  h.view.agentRow = () => {
+    rows.push("agent");
+    return {};
+  };
+  const titles = ["Failing CI", "Comments", "Review requested", "Ready to merge", "Agents on it"];
+  h.view.collapsed = new Set(titles);
+  h.view.body({});
+  assert.deepEqual(rows, []);
+  assert.equal(headers.length, 5);
+  assert.ok(headers.every(([, count]) => count === 1));
+  h.view.collapsed.delete("Comments");
+  h.view.body({});
+  assert.deepEqual(rows, ["2:address"]);
 });
 
 test("a failed repository does not repeat within its cycle or prevent later repositories loading", async () => {

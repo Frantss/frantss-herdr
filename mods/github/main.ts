@@ -820,28 +820,24 @@ export default class GitHub extends View {
     this.groups = buildInbox(this.data, busy);
     const colors = { ci: t.blocked, comments: t.accent, review: t.accent, ready: t.idle };
     const [ci, comments, review, ready] = this.groups;
-    const section = (title, color, rows) =>
-      rows.length
+    const section = (title, color, count, renderRows) =>
+      count
         ? [
             v_flex()
               .gap(6)
-              .child(this.groupHeader(title, rows.length, color, t))
-              .when(!this.collapsed.has(title), (el) => el.children(rows)),
+              .child(this.groupHeader(title, count, color, t))
+              .when(!this.collapsed.has(title), (el) => el.children(renderRows())),
           ]
         : [];
     const group = (g) =>
-      section(
-        g.title,
-        colors[g.key],
+      section(g.title, colors[g.key], g.items.length, () =>
         g.items.map((item) => this.itemRow(item, t)),
       );
     const sections = [
       ...group(ci),
       ...group(comments),
       ...group(review),
-      ...section(
-        "Agents on it",
-        t.working,
+      ...section("Agents on it", t.working, linked.length, () =>
         linked.map((a) => this.agentRow(a, t)),
       ),
       ...group(ready),
