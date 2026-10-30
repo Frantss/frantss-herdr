@@ -291,6 +291,7 @@ async function harness(refresh = false) {
     agentAddress: null,
     choosingAgent: false,
     tree: false,
+    listSize: 200,
     collapsed: new Set(),
     handle: { focus() {} },
     context: JSON.stringify({ cwd: "/repo", on: null }),
@@ -490,6 +491,18 @@ const deferred = () => {
   });
   return { promise, resolve, reject };
 };
+
+test("the file list keeps the height it was dragged to when the panel shows again", async () => {
+  const h = await harness();
+  h.changes.files = [file("a.ts")];
+  const split = (node) =>
+    node?.handlers?.on_resize ? node : (node?.childNodes ?? []).map(split).find(Boolean);
+  split(h.render()).handlers.on_resize([320, 400], h.cx);
+  const sized = (node) =>
+    node?.styles?.some(([key, value]) => key === "size" && value === 320) ||
+    (node?.childNodes ?? []).some(sized);
+  assert.ok(sized(h.render()));
+});
 
 test("unchanged Changes refreshes preserve file and diff arrays without notifying", async () => {
   const h = await harness(true);

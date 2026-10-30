@@ -117,7 +117,8 @@ const TRASH = "mods/frantss-changes/trash.svg",
 // merge takes Git's message instead of waiting for an editor.
 const NETWORK_GIT = ["GIT_TERMINAL_PROMPT=0", "GIT_MERGE_AUTOEDIT=no", "git"];
 const SECTION_TITLE: Record<Section, string> = { staged: "Staged Changes", unstaged: "Changes" };
-const TREE_SETTING = "changes-tree";
+const TREE_SETTING = "changes-tree",
+  SPLIT_SETTING = "changes-split";
 // Diff rows indent their text past the line number and the hover "+".
 const GUTTER = 62,
   COMPOSER = 48;
@@ -213,6 +214,8 @@ export default class Changes extends View {
   // Show the files as a folder tree instead of a flat list; folder rows hold the collapsed paths.
   declare tree: boolean;
   declare collapsed: ReadonlySet<string>;
+  // The file list's height above the diff.
+  declare listSize: number;
   declare shownFiles: {
     files: ChangedFile[];
     tree: boolean;
@@ -284,6 +287,7 @@ export default class Changes extends View {
   init(_props: unknown, cx: AsyncContext) {
     this.files = [];
     this.tree = localStorage.getItem(TREE_SETTING) === "true";
+    this.listSize = Number(localStorage.getItem(SPLIT_SETTING)) || 200;
     this.collapsed = new Set();
     this.comments = [];
     this.reviewNote = DEFAULT_NOTE;
@@ -1500,9 +1504,14 @@ export default class Changes extends View {
         v_resizable("changes-split")
           .flex_1()
           .min_h(0)
+          // Hiding the panel drops the split, so its size is kept to start from.
+          .on_resize((sizes) => {
+            this.listSize = sizes[0];
+            localStorage.setItem(SPLIT_SETTING, String(sizes[0]));
+          })
           .child(
             resizable_panel()
-              .size(200)
+              .size(this.listSize)
               .size_range(44)
               .child(
                 v_flex()
