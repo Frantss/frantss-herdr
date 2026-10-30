@@ -195,7 +195,7 @@ async function harness(refresh = false) {
         }
       }
       if (command === "git" && args.includes("--show-toplevel"))
-        return { code: 0, stdout: options.cwd, stderr: "" };
+        return { code: 0, stdout: `${options.cwd}\n${options.cwd}/.git\n`, stderr: "" };
       if (command === "git" && args.includes("status"))
         return { code: 0, stdout: state.gitStatus ?? " M changed.ts\0", stderr: "" };
       throw new Error(`Unexpected command ${command}`);
@@ -242,6 +242,7 @@ async function harness(refresh = false) {
     fullRefresh: false,
     pending: new Set(),
     kept: new Map(),
+    gitRoots: new Map(),
     file: null,
     fileText: null,
     fileError: null,
@@ -504,6 +505,40 @@ test("file watcher refreshes affected loaded folders and Git marks without listi
   assert.equal(h.files.entries.get("src")[0].name, "next.ts");
   assert.equal(h.files.entries.get("tests")[0].name, "old.ts");
   assert.equal(h.files.marks["/repo/changed.ts"], "M");
+});
+
+test("Files looks up a place's repository once", async () => {
+  const h = await expandedFiles();
+  h.files.refresh(h.cx);
+  await h.drain();
+  h.files.refresh(h.cx, ["/repo/src/next.ts"]);
+  await h.drain();
+  const lookups = h.state.executions.filter((call) => call.args.includes("--show-toplevel"));
+  assert.equal(lookups.length, 1);
+});
+
+test("the timer reloads only what the watcher cannot see", async () => {
+  const h = await expandedFiles();
+  h.files.refresh(h.cx);
+  await h.drain();
+  const commands = () => {
+    const calls = h.state.executions.map((call) => call.command);
+    h.state.executions = [];
+    return calls;
+  };
+  commands();
+  h.files.watched = "/repo";
+  h.files.poll(h.cx);
+  await h.drain();
+  assert.deepEqual(commands(), []);
+  h.files.gitRoots.set(h.files.context, { top: "/", dir: "/.git" });
+  h.files.poll(h.cx);
+  await h.drain();
+  assert.deepEqual(commands(), ["git"]);
+  h.files.watched = null;
+  h.files.poll(h.cx);
+  await h.drain();
+  assert.deepEqual(commands(), ["sh", "sh", "sh", "git"]);
 });
 
 test("unknown, root, outside, and Git changes use full reconciliation", async () => {

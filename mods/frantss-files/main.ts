@@ -174,6 +174,8 @@ export default class Files extends View {
   declare invalidated: Set<string>;
   declare fullRefresh: boolean;
   declare kept: Map<string, FileSnapshot>;
+  // Each place's repository, looked up once: its top folder and its Git folder.
+  declare gitRoots: Map<string, { top: string; dir: string }>;
   // The previewed file: code, rendered markdown (or its source), or an image.
   declare file: string | null;
   declare fileText: string | null;
@@ -216,6 +218,7 @@ export default class Files extends View {
     this.invalidated = new Set();
     this.fullRefresh = false;
     this.kept = new Map();
+    this.gitRoots = new Map();
     this.file = null;
     this.fileText = null;
     this.fileError = null;
@@ -238,7 +241,16 @@ export default class Files extends View {
       cx.notify();
     });
     this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    cx.timer.every(10000, (cx) => this.poll(cx));
+  }
+
+  // The watcher reports changes under the root. Without it (a remote place, a stopped watcher) the
+  // tree reloads; a Git folder outside the root (a subfolder, a worktree) reloads only the marks.
+  poll(cx: Context) {
+    const git = this.gitRoots.get(this.context),
+      root = this.root?.replace(/\/+$/, "");
+    if (this.watched !== this.root) this.refresh(cx);
+    else if (git && !(git.top === root && git.dir.startsWith(root + "/"))) this.refresh(cx, []);
   }
 
   watch(root: string, cx: Context) {
@@ -433,12 +445,20 @@ export default class Files extends View {
           }
         }
         if (!this.current(context, generation)) return;
-        const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(
-          (): null => null,
-        );
-        if (!this.current(context, generation)) return;
+        let git = this.gitRoots.get(context);
+        if (!git) {
+          const found = await exec("git", ["rev-parse", "--show-toplevel", "--absolute-git-dir"], {
+            cwd,
+            on,
+          }).catch((): null => null);
+          if (!this.current(context, generation)) return;
+          if (found?.code === 0) {
+            const [top, dir] = found.stdout.trim().split(/\r?\n/);
+            this.gitRoots.set(context, (git = { top, dir }));
+          }
+        }
         let marks: Record<string, Mark> = {};
-        if (top?.code === 0) {
+        if (git) {
           const status = await exec(
             "git",
             [
@@ -452,7 +472,7 @@ export default class Files extends View {
             ],
             { cwd, on },
           ).catch((): null => null);
-          if (status?.code === 0) marks = statusMarks(status.stdout, top.stdout.trim(), TOTAL);
+          if (status?.code === 0) marks = statusMarks(status.stdout, git.top, TOTAL);
         }
         if (!this.current(context, generation)) return;
         const names = Object.keys(marks);
