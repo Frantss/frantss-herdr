@@ -555,6 +555,17 @@ export default class Frantss extends View {
     tooltip: string,
     onClick: (event: ClickEvent, cx: Context) => unknown,
   ) {
+    return this.control(t, id, tooltip, "+", onClick);
+  }
+
+  // A small control at a rail row's end, in the +'s column; it doesn't select the row it sits on.
+  control(
+    t: Theme,
+    id: string,
+    tooltip: string,
+    label: Element | string,
+    onClick: (event: ClickEvent, cx: Context) => unknown,
+  ) {
     return div()
       .id(id)
       .tooltip(tooltip)
@@ -570,7 +581,7 @@ export default class Frantss extends View {
         cx.stop_propagation();
         onClick(e, cx);
       })
-      .child("+");
+      .child(label);
   }
 
   addWorkspace(cx: Context) {
@@ -849,8 +860,11 @@ export default class Frantss extends View {
       );
   }
 
+  // A pane's header; a pane that shares its tab can be closed from it (a lone one closes with its tab).
   pane(t: Theme) {
-    const pane = panes().find((p) => p.pane === props().pane);
+    const all = panes();
+    const pane = all.find((p) => p.pane === props().pane);
+    const withOthers = all.filter((p) => p.tab === pane?.tab).length > 1;
     const where = [pane?.branch, pane?.cwd?.split("/").pop()].filter(Boolean).join(" · ");
     return h_flex()
       .size_full()
@@ -878,6 +892,13 @@ export default class Frantss extends View {
               pane.status,
             ),
           ),
+      )
+      .when(withOthers, (e) =>
+        e.child(
+          this.control(t, "close-pane", "Close pane", svg("mods/pane/close.svg").size(10), () =>
+            run("pane.close", { pane: pane.pane }),
+          ),
+        ),
       );
   }
 

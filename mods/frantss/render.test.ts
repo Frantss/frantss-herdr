@@ -343,6 +343,13 @@ test("pane headers retain their single pane lookup without workspace indexing", 
   assert.match(text(tree), /Claude Code/);
   assert.match(text(tree), /main · agent/);
   assert.deepEqual(h.state.calls, { spaces: 0, panes: 1, paneVisits: 0 });
+  byId(tree, "close-pane").handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands.at(-1)), [
+    "pane.close",
+    { pane: "pane-t-agent-✳ Fix API" },
+  ]);
+  h.state.pane = "pane-t-named-Ignored title";
+  assert.equal(byId(h.render(), "close-pane"), null);
 });
 
 test("duplicate saved workspaces retain the first folder for rows and menus", async () => {
