@@ -203,6 +203,7 @@ const sameRows = (left: DiffRow[], right: DiffRow[]) =>
 
 export default class Changes extends View {
   declare files: ChangedFile[];
+  declare totals: { files: ChangedFile[]; add: number; del: number } | null;
   // Shown rows: the diff's plain rows with expanded gaps and colors.
   declare rows: DiffRow[];
   declare plainRows: DiffRow[];
@@ -463,7 +464,10 @@ export default class Changes extends View {
       if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
       else {
         const preview = untrackedPreview(text);
-        if (preview.add !== null) file.add = preview.add;
+        if (preview.add !== null && file.add !== preview.add) {
+          file.add = preview.add;
+          this.totals = null;
+        }
         lines = preview.lines;
       }
     } else {
@@ -859,6 +863,19 @@ export default class Changes extends View {
       );
   }
 
+  fileTotals() {
+    if (this.totals?.files !== this.files) {
+      let add = 0,
+        del = 0;
+      for (const file of this.files) {
+        add += file.add;
+        del += file.del;
+      }
+      this.totals = { files: this.files, add, del };
+    }
+    return this.totals;
+  }
+
   render(cx: Context) {
     if (!shown()) return div();
     if (this.stale) {
@@ -868,8 +885,7 @@ export default class Changes extends View {
     if (key() !== this.context) this.refresh(cx);
     if (this.loading) this.loadingRendered = true;
     const t = theme() as Theme,
-      add = this.files.reduce((n, f) => n + f.add, 0),
-      del = this.files.reduce((n, f) => n + f.del, 0);
+      { add, del } = this.fileTotals();
     return v_flex()
       .id("changes")
       .size_full()

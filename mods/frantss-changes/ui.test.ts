@@ -337,6 +337,52 @@ test("Changes constructs only requested file rows and selects by stable path aft
   assert.deepEqual(h.state.calls, [["pick", "src/file-300.ts"]]);
 });
 
+test("Changes reuses header totals across renders of the same file list", async () => {
+  const h = await harness();
+  let additionsRead = 0,
+    deletionsRead = 0;
+  h.changes.files = Array.from({ length: 1000 }, (_, i) => ({
+    ...file(`file-${i}.ts`),
+    get add() {
+      additionsRead++;
+      return 1;
+    },
+    get del() {
+      deletionsRead++;
+      return 2;
+    },
+  }));
+  assert.ok(text(h.render()).includes("+1000 −2000"));
+  assert.ok(text(h.render()).includes("+1000 −2000"));
+  assert.equal(additionsRead, 1000);
+  assert.equal(deletionsRead, 1000);
+  h.changes.files = [file("replacement.ts")];
+  assert.ok(text(h.render()).includes("+1 −2"));
+});
+
+test("Changes totals follow untracked count updates and restored places", async () => {
+  const h = await harness(true);
+  h.state.status = "?? file.txt\0";
+  h.state.stats = "";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  const files = h.changes.files;
+  assert.ok(text(h.render()).includes("+2 −0"));
+  h.state.untracked = "one\ntwo\nthree\nfour\n";
+  await h.changes.load("file.txt", h.changes.context, h.cx);
+  await h.drain();
+  assert.equal(h.changes.files, files);
+  assert.ok(text(h.render()).includes("+4 −0"));
+
+  h.state.cwd = "/other";
+  h.changes.switchTo(JSON.stringify({ cwd: "/other", on: null }));
+  assert.ok(text(h.render()).includes("+0 −0"));
+  h.state.cwd = "/repo";
+  h.changes.switchTo(JSON.stringify({ cwd: "/repo", on: null }));
+  assert.equal(h.changes.files, files);
+  assert.ok(text(h.render()).includes("+4 −0"));
+});
+
 test("Changes starts the resizable file list at 200 and preserves empty and error messages", async () => {
   const h = await harness();
   const empty = h.render();
