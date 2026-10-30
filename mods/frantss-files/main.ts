@@ -63,6 +63,7 @@ interface FileRow extends FileEntry {
   ignored: boolean;
 }
 type Theme = Record<string, Color>;
+type FileSnapshot = Pick<Files, "entries" | "folders" | "marks" | "error" | "limited">;
 
 const key = () => JSON.stringify(location());
 
@@ -108,7 +109,8 @@ const openEditorTab = (folder: string, argv: string[]) =>
   run("tab.new", { name: "editor", folder, argv });
 
 const PER_FOLDER = 500,
-  TOTAL = 5000;
+  TOTAL = 5000,
+  KEPT_PLACES = 20;
 
 async function directory(path: string, on: string | null): Promise<FileEntry[]> {
   if (!on && window()?.platform === "windows") {
@@ -151,6 +153,7 @@ export default class Files extends View {
   declare generation: number;
   declare invalidated: Set<string>;
   declare fullRefresh: boolean;
+  declare kept: Map<string, FileSnapshot>;
 
   init(_props: unknown, cx: AsyncContext) {
     this.entries = new Map();
@@ -160,6 +163,7 @@ export default class Files extends View {
     this.generation = 0;
     this.invalidated = new Set();
     this.fullRefresh = false;
+    this.kept = new Map();
     cx.spawn(async (cx) => {
       const text = await readTextFile(`${appHome()}/mods/frantss-files/material-icons.json`).catch(
         (): null => null,
@@ -274,20 +278,32 @@ export default class Files extends View {
       context = JSON.stringify({ cwd, on });
     let changed = context !== this.context;
     if (changed) {
+      const cached = this.kept.get(context);
+      if (this.context && this.root) {
+        this.kept.delete(this.context);
+        this.kept.set(this.context, {
+          entries: new Map(this.entries),
+          folders: new Set(this.folders),
+          marks: { ...this.marks },
+          error: this.error,
+          limited: this.limited,
+        });
+        if (this.kept.size > KEPT_PLACES) this.kept.delete(this.kept.keys().next().value);
+      }
       this.generation = (this.generation ?? 0) + 1;
       this.loading = false;
       this.invalidated = new Set();
-      this.fullRefresh = false;
+      this.fullRefresh = true;
       this.context = context;
       this.root = cwd;
       this.on = on;
-      this.entries = new Map();
-      this.folders = new Set();
+      this.entries = new Map(cached?.entries);
+      this.folders = new Set(cached?.folders);
       this.pending = new Set();
-      this.marks = {};
+      this.marks = { ...cached?.marks };
       this.watched = null;
-      this.error = null;
-      this.limited = false;
+      this.error = cached?.error ?? null;
+      this.limited = cached?.limited ?? false;
     }
     if (!cwd) return;
     const affected = changedPaths ? this.affectedFolders(changedPaths) : null;

@@ -1,11 +1,12 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const here = new URL("../../dist/mods/git-history/", import.meta.url);
+const here = new URL("./", import.meta.url);
 const hostTypes = await readFile(
   join(process.env.HERDR_APP_HOME || join(homedir(), ".config/herdr-app"), "gpui-kit.d.ts"),
   "utf8",
@@ -307,14 +308,16 @@ async function harness() {
           { context },
         )
       : new vm.SourceTextModule(
-          await readFile(new URL(specifier.replace(/^\.\//, ""), here), "utf8"),
+          stripTypeScriptTypes(
+            await readFile(new URL(specifier.replace(/^\.\//, ""), here), "utf8"),
+          ),
           { context, identifier: specifier },
         );
     cache.set(specifier, module);
     await module.link(moduleFor);
     return module;
   }
-  const main = await moduleFor("./main.js");
+  const main = await moduleFor("./main.ts");
   await main.evaluate();
   const view = new (main.namespace as any).default();
   view.init({}, ctx);
@@ -754,4 +757,160 @@ test("virtual row extents and measured panel bounds account for app zoom", async
   await h.flush();
   tree = h.render();
   assert.equal(list(h, "history-diff").size, 28.5);
+});
+
+test("History immediately restores navigation rows and reconciles the cached page size with fresh tips", async () => {
+  const h = await harness();
+  h.state.records.set(
+    "/repo/a",
+    Array.from({ length: 80 }, (_, i) => commit(80 - i, i < 79 ? [hash(79 - i)] : [])),
+  );
+  await loaded(h);
+  h.view.refresh(h.ctx, true);
+  await h.flush();
+  assert.equal(h.view.limit, 50);
+  h.view.pick(hash(80), h.ctx);
+  await h.flush();
+  assert.ok(h.view.details);
+  const cached = h.view.commits,
+    snapshot = h.view.snapshot;
+  h.state.props = { cwd: "/repo/b" };
+  h.state.records.set("/repo/b", [commit(100)]);
+  await loaded(h);
+  h.state.records.get("/repo/a").unshift(commit(81, [hash(80)]));
+  h.state.props = { cwd: "/repo/a" };
+  const held = h.hold((args, opts) => args.includes("show-ref") && opts.cwd === "/repo/a");
+  h.view.refresh(h.ctx);
+  assert.equal(h.view.commits, cached);
+  assert.equal(h.view.limit, 50);
+  assert.equal(h.view.selected, null);
+  assert.equal(h.view.details, null);
+  held.resolve();
+  await h.flush();
+  assert.equal(h.view.limit, 50);
+  assert.equal(h.view.commits.length, 50);
+  assert.equal(h.view.commits[0].hash, hash(81));
+  assert.notEqual(h.view.snapshot, snapshot);
+  const reconciled = h.view.snapshot;
+  h.view.refresh(h.ctx);
+  await h.flush();
+  assert.equal(h.view.limit, 25);
+  assert.equal(h.view.commits.length, 25);
+  assert.notEqual(h.view.snapshot, reconciled);
+});
+
+test("History snapshots stay separate by scope and machine", async () => {
+  const h = await harness();
+  await loaded(h);
+  const current = h.view.commits;
+  h.view.setScope("all", h.ctx);
+  assert.equal(h.view.commits.length, 0);
+  await h.flush();
+  const all = h.view.commits;
+  h.view.setScope("current", h.ctx);
+  assert.equal(h.view.commits, current);
+  await h.flush();
+  h.view.setScope("all", h.ctx);
+  assert.equal(h.view.commits, all);
+  await h.flush();
+  h.state.props = { cwd: "/repo/a", on: "server" };
+  h.view.refresh(h.ctx);
+  assert.equal(h.view.commits.length, 0);
+  await h.flush();
+  h.state.props = { cwd: "/repo/a", on: null };
+  h.view.refresh(h.ctx);
+  assert.ok(h.view.commits.length > 0);
+  await h.flush();
+});
+
+test("History context caches reject obsolete A→B→A responses", async () => {
+  const h = await harness();
+  await loaded(h);
+  const old = h.hold((args, opts) => args.includes("log") && opts.cwd === "/repo/a");
+  h.view.refresh(h.ctx);
+  await h.tick();
+  h.state.props = { cwd: "/repo/b" };
+  h.state.records.set("/repo/b", [commit(9)]);
+  h.view.refresh(h.ctx);
+  await h.tick();
+  h.state.records.set("/repo/a", [commit(7)]);
+  h.state.props = { cwd: "/repo/a" };
+  h.view.refresh(h.ctx);
+  await h.tick();
+  old.resolve();
+  await h.flush();
+  assert.deepEqual(
+    Array.from(h.view.commits, (item: any) => item.hash),
+    [hash(7)],
+  );
+  assert.equal(h.view.loading, false);
+});
+
+test("History evicts context snapshots after twenty entries", async () => {
+  const h = await harness();
+  await loaded(h);
+  for (let i = 0; i < 21; i++) {
+    const cwd = `/repo-${i}`;
+    h.state.props = { cwd };
+    h.state.records.set(cwd, [commit(i + 100)]);
+    await loaded(h);
+  }
+  assert.equal(h.view.kept.size, 20);
+  h.state.props = { cwd: "/repo/a" };
+  h.view.refresh(h.ctx);
+  assert.equal(h.view.commits.length, 0);
+  await h.flush();
+});
+
+test("History refresh and append replace polling ownership without blocking future polls", async () => {
+  for (const append of [false, true]) {
+    const h = await harness();
+    await loaded(h);
+    const old = h.hold((args) => args.includes("show-ref"));
+    h.view.poll(h.ctx);
+    await h.tick();
+    const oldTask = h.state.tasks.at(-1);
+    assert.equal(h.view.polling, true);
+    h.view.refresh(h.ctx, append);
+    await h.state.tasks.at(-1);
+    assert.equal(h.view.polling, false);
+
+    const current = h.hold((args) => args.includes("show-ref"));
+    h.view.poll(h.ctx);
+    await h.tick();
+    const currentTask = h.state.tasks.at(-1);
+    assert.equal(h.view.polling, true);
+    old.resolve();
+    await oldTask;
+    assert.equal(h.view.polling, true, "The old poll must not release the newer poll's ownership");
+    current.resolve();
+    await currentTask;
+    assert.equal(h.view.polling, false);
+
+    const next = h.hold((args) => args.includes("show-ref"));
+    h.view.poll(h.ctx);
+    await h.tick();
+    assert.equal(h.view.polling, true, "Future polling must still run");
+    next.resolve();
+    await h.flush();
+    assert.equal(h.view.polling, false);
+  }
+});
+
+test("History revisits the oldest snapshot when the outgoing place fills the cache", async () => {
+  const h = await harness();
+  await loaded(h);
+  const cached = h.view.commits;
+  for (let i = 0; i < 20; i++) {
+    const cwd = `/repo-${i}`;
+    h.state.props = { cwd };
+    h.state.records.set(cwd, [commit(i + 100)]);
+    await loaded(h);
+  }
+  assert.equal(h.view.kept.size, 20);
+  h.state.props = { cwd: "/repo/a" };
+  h.view.refresh(h.ctx);
+  assert.equal(h.view.commits, cached);
+  assert.equal(h.view.kept.size, 20);
+  await h.flush();
 });

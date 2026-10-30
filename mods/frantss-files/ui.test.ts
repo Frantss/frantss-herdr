@@ -173,6 +173,7 @@ async function harness(refresh = false) {
     invalidated: new Set(),
     fullRefresh: false,
     pending: new Set(),
+    kept: new Map(),
     root: "/repo",
     context: JSON.stringify({ cwd: "/repo", on: null }),
   });
@@ -388,6 +389,7 @@ test("an obsolete expansion cannot clear a new context's pending folder", async 
   h.state.directories.set("/repo", [{ name: "src", dir: true }]);
   h.files.refresh(h.cx);
   h.state.held.set("/repo/src", current.promise);
+  if (h.files.folders.has("src")) h.files.toggle("src", h.cx);
   h.files.toggle("src", h.cx);
   old.resolve([{ name: "obsolete.ts", dir: false }]);
   await oldTask;
@@ -574,4 +576,90 @@ test("child-first watcher events apply the parent before fetching a deleted chil
   assert.deepEqual(listedFolders(h.state), ["/repo/src"]);
   assert.equal(h.files.entries.has("src/deep"), false);
   assert.equal(h.files.error, null);
+});
+
+test("Files restores cloned context rows immediately and then reconciles the full tree", async () => {
+  const h = await expandedFiles();
+  h.files.refresh(h.cx);
+  await h.drain();
+  const entries = h.files.entries,
+    folders = h.files.folders;
+  h.state.cwd = "/other";
+  h.state.directories.set("/other", [{ name: "other.ts", dir: false }]);
+  h.files.refresh(h.cx);
+  await h.drain();
+  const held = deferred();
+  h.state.held.set("/repo", held.promise);
+  h.state.cwd = "/repo";
+  h.files.refresh(h.cx);
+  assert.equal(h.files.entries.get("src")[0].name, "next.ts");
+  assert.equal(h.files.folders.has("src"), true);
+  assert.notEqual(h.files.entries, entries);
+  assert.notEqual(h.files.folders, folders);
+  assert.equal(h.files.pending.size, 0);
+  const start = h.state.executions.length;
+  held.resolve([{ name: "fresh.ts", dir: false }]);
+  await h.drain();
+  assert.equal(h.files.entries.get("")[0].name, "fresh.ts");
+  assert.equal(h.files.folders.size, 0);
+  assert.equal(
+    h.state.executions
+      .slice(start)
+      .find((call) => call.command === "sh")
+      .args.at(-1),
+    "/repo",
+  );
+});
+
+test("Files snapshots distinguish machines for the same checkout path", async () => {
+  const h = await harness(true);
+  h.state.directories.set("/repo", [{ name: "local.ts", dir: false }]);
+  h.files.refresh(h.cx);
+  await h.drain();
+  h.state.on = "server";
+  h.state.directories.set("/repo", [{ name: "remote.ts", dir: false }]);
+  h.files.refresh(h.cx);
+  assert.equal(h.files.entries.has(""), false);
+  await h.drain();
+  assert.equal(h.files.entries.get("")[0].name, "remote.ts");
+  h.state.on = null;
+  h.state.directories.set("/repo", [{ name: "local.ts", dir: false }]);
+  h.files.refresh(h.cx);
+  assert.equal(h.files.entries.get("")[0].name, "local.ts");
+  await h.drain();
+});
+
+test("Files evicts old context snapshots after twenty entries", async () => {
+  const h = await harness(true);
+  h.state.directories.set("/repo", [{ name: "original.ts", dir: false }]);
+  h.files.refresh(h.cx);
+  await h.drain();
+  for (let i = 0; i < 21; i++) {
+    h.state.cwd = `/repo-${i}`;
+    h.files.refresh(h.cx);
+    await h.drain();
+  }
+  assert.equal(h.files.kept.size, 20);
+  h.state.cwd = "/repo";
+  h.files.refresh(h.cx);
+  assert.equal(h.files.entries.has(""), false);
+  await h.drain();
+});
+
+test("Files revisits the oldest snapshot when saving the outgoing place fills the cache", async () => {
+  const h = await harness(true);
+  h.state.directories.set("/repo", [{ name: "original.ts", dir: false }]);
+  h.files.refresh(h.cx);
+  await h.drain();
+  for (let i = 0; i < 20; i++) {
+    h.state.cwd = `/repo-${i}`;
+    h.files.refresh(h.cx);
+    await h.drain();
+  }
+  assert.equal(h.files.kept.size, 20);
+  h.state.cwd = "/repo";
+  h.files.refresh(h.cx);
+  assert.equal(h.files.entries.get("")[0].name, "original.ts");
+  assert.equal(h.files.kept.size, 20);
+  await h.drain();
 });

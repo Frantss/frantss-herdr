@@ -41,6 +41,23 @@ type Theme = Record<string, Color>;
 
 const AccordionHeader = NativeAccordionHeader as unknown as { new: (trigger: Element) => Element };
 
+const CACHED_LIST = [
+  "commits",
+  "graph",
+  "edges",
+  "limit",
+  "snapshot",
+  "signature",
+  "hasMore",
+  "root",
+  "branch",
+  "head",
+  "changed",
+] as const;
+type CachedList = Pick<GitHistory, (typeof CACHED_LIST)[number]>;
+const listKey = (context: string, scope: HistoryScope) => JSON.stringify([context, scope]);
+const KEPT_PLACES = 20;
+
 const MAX_COMMITS = 2000;
 const ROW_HEIGHT = 42;
 const LANE_WIDTH = 14;
@@ -142,9 +159,13 @@ export default class GitHistory extends View {
   declare root: string | null;
   declare branch: string | null;
   declare head: string | null;
+  declare kept: Map<string, CachedList>;
+  declare restoreLimit: boolean;
 
   init(_props, cx: AsyncContext) {
     this.scope = "current";
+    this.kept = new Map();
+    this.restoreLimit = false;
     this.historyOpen = true;
     this.detailsOpen = false;
     this.commits = [];
@@ -187,11 +208,26 @@ export default class GitHistory extends View {
     return JSON.stringify([refs.stdout, branch.stdout]);
   }
 
-  reset(place: Location) {
+  reset(place: Location, scope = this.scope) {
+    const context = contextKey(place),
+      cached =
+        context === this.context && scope === this.scope
+          ? null
+          : this.kept.get(listKey(context, scope));
+    if (this.context && this.snapshot) {
+      const key = listKey(this.context, this.scope);
+      this.kept.delete(key);
+      this.kept.set(
+        key,
+        Object.fromEntries(CACHED_LIST.map((name) => [name, this[name]])) as CachedList,
+      );
+      if (this.kept.size > KEPT_PLACES) this.kept.delete(this.kept.keys().next().value);
+    }
+    this.scope = scope;
     this.generation++;
     this.detailGeneration++;
     this.diffGeneration++;
-    this.context = contextKey(place);
+    this.context = context;
     this.place = place;
     this.historyOpen = true;
     this.detailsOpen = false;
@@ -207,7 +243,11 @@ export default class GitHistory extends View {
     this.diffError = null;
     this.diff = null;
     this.file = null;
+    this.fileIndex = -1;
+    this.diffLines = [];
+    this.diffWidth = 0;
     this.loading = false;
+    this.polling = false;
     this.detailsLoading = false;
     this.diffLoading = false;
     this.changed = false;
@@ -216,6 +256,8 @@ export default class GitHistory extends View {
     this.root = null;
     this.branch = null;
     this.head = null;
+    this.restoreLimit = Boolean(cached);
+    if (cached) Object.assign(this, cached);
     this.scroll.scroll_to_item(0);
   }
 
@@ -225,11 +267,17 @@ export default class GitHistory extends View {
     if (!place.cwd || this.loading) return;
     const generation = ++this.generation,
       key = this.context;
-    const limit = append ? Math.min(MAX_COMMITS, this.limit + PAGE_SIZE) : PAGE_SIZE;
+    const limit = append
+      ? Math.min(MAX_COMMITS, this.limit + PAGE_SIZE)
+      : this.restoreLimit
+        ? this.limit
+        : PAGE_SIZE;
+    this.restoreLimit = false;
     const snapshot = append ? this.snapshot : null;
     const git = this.gitAt(place),
       scope = this.scope;
     this.loading = true;
+    this.polling = false;
     this.error = null;
     cx.spawn(async (cx) => {
       try {
@@ -292,15 +340,14 @@ export default class GitHistory extends View {
       } catch {
         /* Explicit Refresh reports connection and Git errors. */
       } finally {
-        this.polling = false;
+        if (generation === this.generation) this.polling = false;
       }
     });
   }
 
   setScope(scope: HistoryScope, cx: Context) {
     if (scope === this.scope) return;
-    this.scope = scope;
-    this.reset(location());
+    this.reset(location(), scope);
     this.refresh(cx);
   }
 
