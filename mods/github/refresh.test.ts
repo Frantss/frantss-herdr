@@ -36,9 +36,15 @@ async function harness() {
     layout: null as any,
     timers: [] as unknown[],
     elements: 0,
+    notifications: 0,
+    writes: [] as { key: string; value: string }[],
+    writeAttempts: 0,
+    storageFailure: false,
   };
   const cx = {
-    notify() {},
+    notify() {
+      state.notifications++;
+    },
     timer: { every: (...args) => state.timers.push(args) },
     spawn(callback: (cx: unknown) => unknown) {
       const task = Promise.resolve().then(() => callback(cx));
@@ -46,7 +52,16 @@ async function harness() {
       return task;
     },
   };
-  const context = vm.createContext({ localStorage: { getItem: () => null, setItem() {} } });
+  const context = vm.createContext({
+    localStorage: {
+      getItem: () => null,
+      setItem(key: string, value: string) {
+        state.writeAttempts++;
+        if (state.storageFailure) throw new Error("Storage unavailable");
+        state.writes.push({ key, value });
+      },
+    },
+  });
   const unused = () => assert.fail("Unexpected UI host call");
   function element() {
     state.elements++;
@@ -253,6 +268,87 @@ test("GitHub refreshes the current repository first and loads each machine/repos
   );
 });
 
+test("GitHub batches a three-repository cycle into one cache write and only foreground updates", async () => {
+  const h = await harness();
+  await h.refresh();
+  assert.equal(h.state.writes.length, 1);
+  assert.equal(h.state.writes[0].key, "cache");
+  assert.equal(JSON.parse(h.state.writes[0].value).cache.length, 3);
+  assert.equal(h.state.notifications, 2);
+  assert.equal(h.view.refreshingAll, false);
+});
+
+test("explicit GitHub loads persist their result immediately", async () => {
+  const h = await harness();
+  h.view.load(h.state.place, h.cx);
+  await h.drain();
+  assert.equal(h.requests().length, 1);
+  assert.equal(h.state.writes.length, 1);
+  assert.equal(JSON.parse(h.state.writes[0].value).cache.length, 1);
+  assert.equal(h.state.notifications, 2);
+});
+
+test("overlapping GitHub refresh cycles share the active queue", async () => {
+  const h = await harness(),
+    held = deferred();
+  h.state.holds.set(placeKey("/repo/worktree"), held.promise);
+  h.view.refreshAll(h.cx);
+  for (let i = 0; i < 20 && !h.requests().length; i++) await Promise.resolve();
+  assert.equal(h.requests().length, 1);
+  h.view.refreshAll(h.cx);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  assert.equal(h.requests().length, 1);
+  assert.equal(h.state.tasks.length, 1);
+  held.resolve();
+  await h.drain();
+  assert.equal(h.requests().length, 3);
+  assert.equal(h.state.writes.length, 1);
+  assert.equal(h.view.refreshingAll, false);
+});
+
+test("resolving the current alias exposes cached data and active loading without another GitHub request", async () => {
+  const h = await harness(),
+    held = deferred();
+  const repo = JSON.stringify({ repo: "/repo/.git", on: null });
+  const cached = { repo: "owner/repo", viewer: "me", prs: [] };
+  h.view.cache.set(repo, cached);
+  h.state.holds.set(placeKey("/repo/worktree"), held.promise);
+  const first = h.view.loadPlace(h.state.place, h.cx);
+  for (let i = 0; i < 20 && !h.requests().length; i++) await Promise.resolve();
+  assert.equal(h.requests().length, 1);
+  const alias = { cwd: "/alias", on: null };
+  h.state.repositories.set(placeKey("/alias"), "/repo/.git");
+  h.state.place = alias;
+  h.view.place = alias;
+  h.view.context = JSON.stringify(alias);
+  assert.equal(h.view.data, null);
+  assert.equal(h.view.loading(), false);
+  h.state.notifications = 0;
+  await h.view.loadPlace(alias, h.cx);
+  assert.equal(h.state.notifications, 1);
+  assert.equal(h.view.data, cached);
+  assert.equal(h.view.loading(), true);
+  assert.equal(h.requests().length, 1);
+  held.resolve();
+  await first;
+  assert.equal(h.state.notifications, 2);
+  assert.equal(h.view.loading(), false);
+});
+
+test("GitHub cache write failures keep in-memory results and release the cycle guard", async () => {
+  const h = await harness();
+  h.state.storageFailure = true;
+  await h.refresh();
+  assert.equal(h.view.cache.size, 3);
+  assert.equal(h.view.error, null);
+  assert.equal(h.state.writeAttempts, 1);
+  assert.equal(h.view.refreshingAll, false);
+  h.state.storageFailure = false;
+  await h.refresh();
+  assert.equal(h.state.writeAttempts, 2);
+  assert.equal(h.state.writes.length, 1);
+});
+
 test("collapsed GitHub sections keep their counts without constructing hidden rows", async () => {
   const h = await harness();
   await h.refresh();
@@ -309,11 +405,13 @@ test("a failed repository does not repeat within its cycle or prevent later repo
   assert.equal(h.requests().length, 3);
   assert.equal(h.view.error, "GitHub is unavailable");
   assert.equal(h.view.cache.size, 2);
+  assert.equal(h.state.writes.length, 1);
   h.state.failures.clear();
   await h.refresh();
   assert.equal(h.requests().length, 6);
   assert.equal(h.view.error, null);
   assert.equal(h.view.cache.size, 3);
+  assert.equal(h.state.writes.length, 2);
 });
 
 test("a folder outside a repository does not stop the remaining refresh queue", async () => {

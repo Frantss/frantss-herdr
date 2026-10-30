@@ -118,9 +118,11 @@ export default class GitHub extends View {
   declare place: Location;
   declare confirming: boolean;
   declare pendingInitialRefresh: boolean;
+  declare refreshingAll: boolean;
 
   init(_props, cx: AsyncContext) {
     this.pendingInitialRefresh = true;
+    this.refreshingAll = false;
     this.groups = [];
     this.selected = new Set();
     this.starting = new Set();
@@ -193,36 +195,57 @@ export default class GitHub extends View {
     cx.spawn((cx) => this.loadPlace(place, cx));
   }
 
-  async loadPlace(place: Location, cx: Context, seen?: Set<string>) {
+  persistCache() {
+    try {
+      localStorage.setItem(
+        "cache",
+        JSON.stringify({ cache: [...this.cache], repos: [...this.repos] }),
+      );
+    } catch {
+      /* Memory still has them. */
+    }
+  }
+
+  async loadPlace(
+    place: Location,
+    cx: Context,
+    options: { seen?: Set<string>; persist?: boolean } = {},
+  ) {
+    const context = contextKey(place),
+      previousRepo = this.repos.get(context);
     let repo = null,
-      started = false;
+      started = false,
+      errorChanged = false;
+    const displayed = () => this.context === context || (repo !== null && this.repo === repo);
     try {
       repo = await this.repoOf(place);
       if (!repo) throw new Error("Not a Git repository.");
-      if (seen?.has(repo)) return;
-      seen?.add(repo);
+      if (options.seen?.has(repo)) return;
+      options.seen?.add(repo);
       if (this.inflight.has(repo)) return;
       this.inflight.add(repo);
       started = true;
-      cx.notify();
+      if (displayed()) cx.notify();
       this.cache.set(
         repo,
         await loadPullRequests((args) => exec("gh", args, { cwd: place.cwd, on: place.on })),
       );
       this.errors.delete(repo);
-      try {
-        localStorage.setItem(
-          "cache",
-          JSON.stringify({ cache: [...this.cache], repos: [...this.repos] }),
-        );
-      } catch {
-        /* Memory still has them. */
-      }
+      if (options.persist !== false) this.persistCache();
     } catch (error) {
-      this.errors.set(repo ?? contextKey(place), errorText(error));
+      const key = repo ?? context,
+        message = errorText(error);
+      errorChanged = this.errors.get(key) !== message;
+      this.errors.set(key, message);
     } finally {
       if (started) this.inflight.delete(repo);
-      cx.notify();
+      const mappingChanged = this.repos.get(context) !== previousRepo;
+      if (
+        (started && displayed()) ||
+        (errorChanged && displayed()) ||
+        (mappingChanged && this.context === context)
+      )
+        cx.notify();
     }
   }
 
@@ -246,14 +269,21 @@ export default class GitHub extends View {
   // The shown one loads first; the others follow one at a time so they don't delay it.
   refreshAll(cx: Context) {
     this.pendingInitialRefresh = false;
+    if (this.refreshingAll) return;
     this.refresh(cx, false, false);
     const places = [
       this.place,
       ...spaces().map((space) => ({ cwd: spaceFolder(space), on: space.machine ?? null })),
     ].filter((place) => place?.cwd);
+    this.refreshingAll = true;
     cx.spawn(async (cx) => {
-      const seen = new Set<string>();
-      for (const place of places) await this.loadPlace(place, cx, seen);
+      try {
+        const seen = new Set<string>();
+        for (const place of places) await this.loadPlace(place, cx, { seen, persist: false });
+      } finally {
+        this.refreshingAll = false;
+        this.persistCache();
+      }
     });
   }
 
