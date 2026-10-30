@@ -920,20 +920,58 @@ export default class Frantss extends View {
     const chevron = (e: Element) =>
       e.left(12).h(RAIL.row).flex().items_center().text_size(12).text_color(t.accent).child("❯");
     return v_flex()
-      .id("frantss-rail")
       .size_full()
-      .overflow_y_scrollbar()
       .child(
-        div()
-          .relative()
-          .w_full()
-          .flex_none()
-          .h(y - gap + RAIL.pad)
-          .children(items)
-          .child(this.marker("mark-space", spaceY, chevron))
-          .child(this.marker("mark-agent", agentY, chevron))
-          // The site's outline bar: one accent bar on the rail's right rule, beside the focused agent.
-          .child(this.marker("mark-bar", agentY, (e) => e.right(0).w(2).h(RAIL.row).bg(t.accent))),
+        v_flex()
+          .id("frantss-rail")
+          .flex_1()
+          .min_h(0)
+          .overflow_y_scrollbar()
+          .child(
+            div()
+              .relative()
+              .w_full()
+              .flex_none()
+              .h(y - gap + RAIL.pad)
+              .children(items)
+              .child(this.marker("mark-space", spaceY, chevron))
+              .child(this.marker("mark-agent", agentY, chevron))
+              // The site's outline bar: one accent bar on the rail's right rule, beside the focused agent.
+              .child(
+                this.marker("mark-bar", agentY, (e) => e.right(0).w(2).h(RAIL.row).bg(t.accent)),
+              ),
+          ),
+      )
+      .child(this.footer(t));
+  }
+
+  // Herdr's own sidebar footer, in the rail's row style: it stays below the scrolling sections.
+  footer(t: Theme) {
+    const action = (id: string, icon: string, text: string, onClick: () => unknown): RailRow => ({
+      id,
+      text,
+      lead: svg(`mods/workspace-chrome/${icon}.svg`).size(14).flex_none(),
+      onClick,
+    });
+    return v_flex()
+      .flex_none()
+      .py(8)
+      .gap(RAIL.rowGap)
+      .border_t(1)
+      .border_color(t.border)
+      .child(
+        this.row(
+          t,
+          action("settings", "settings", "Settings", () => run("app.settings")),
+        ),
+      )
+      .child(
+        this.row(
+          t,
+          action("add-machine", "plus", "Add machine", () =>
+            run("mod.open", { name: "machine-add" }),
+          ),
+        ),
       );
   }
 

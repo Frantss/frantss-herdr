@@ -365,6 +365,17 @@ test("pane headers retain their single pane lookup without workspace indexing", 
   assert.equal(byId(h.render(), "close-pane"), null);
 });
 
+test("the rail's footer opens the settings and adds a machine", async () => {
+  const h = await harness("rail");
+  const tree = h.render();
+  byId(tree, "settings").handlers.on_click({}, h.cx);
+  byId(tree, "add-machine").handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands.slice(-2)), [
+    ["app.settings"],
+    ["mod.open", { name: "machine-add" }],
+  ]);
+});
+
 test("duplicate saved workspaces retain the first folder for rows and menus", async () => {
   const h = await harness();
   h.state.shared.set("frantss.workspaces", [
