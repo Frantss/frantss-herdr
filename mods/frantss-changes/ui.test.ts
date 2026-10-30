@@ -18,6 +18,8 @@ async function harness(refresh = false) {
     stats: "1\t2\tfile.ts\0",
     diff: "@@ -1 +1 @@\n-old\n+new\n",
     watches: [],
+    queryStarts: [],
+    queryBlocks: new Map(),
   };
   const cx: any = {
     spawn(callback) {
@@ -114,14 +116,31 @@ async function harness(refresh = false) {
   };
   if (refresh) {
     natives.herdr.exec = async (_command, args, options) => {
+      const query = args.includes("status")
+        ? "status"
+        : args.includes("--verify")
+          ? "head"
+          : args.includes("--numstat")
+            ? args.includes("--cached")
+              ? "cached"
+              : "unstaged"
+            : "other";
+      state.queryStarts.push(query);
+      if (state.queryBlocks.has(query)) await state.queryBlocks.get(query);
       if (args.includes("--show-toplevel")) {
         if (state.block) await state.block;
         if (state.error) throw new Error(state.error);
         return { code: 0, stdout: options.cwd, stderr: "" };
       }
       if (args.includes("status")) return { code: 0, stdout: state.status, stderr: "" };
-      if (args.includes("--verify")) return { code: 0, stdout: "head", stderr: "" };
-      if (args.includes("--numstat")) return { code: 0, stdout: state.stats, stderr: "" };
+      if (args.includes("--verify"))
+        return { code: state.headCode ?? 0, stdout: "head", stderr: "" };
+      if (args.includes("--numstat"))
+        return {
+          code: 0,
+          stdout: args.includes("--cached") ? (state.cachedStats ?? state.stats) : state.stats,
+          stderr: "",
+        };
       if (args.includes("diff")) return { code: 0, stdout: state.diff, stderr: "" };
       throw new Error(`Unexpected Git args ${args}`);
     };
@@ -344,4 +363,46 @@ test("a render that starts a Changes refresh records its displayed loading state
   await h.drain();
   assert.equal(h.changes.loading, false);
   assert.ok(h.state.notifications > 0);
+});
+
+const ticks = async () => {
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+};
+
+test("Changes overlaps status and HEAD discovery after resolving the repository root", async () => {
+  const h = await harness(true);
+  const status = deferred(),
+    head = deferred();
+  h.state.queryBlocks.set("status", status.promise);
+  h.state.queryBlocks.set("head", head.promise);
+  h.changes.refresh(h.cx);
+  await ticks();
+  const started = h.state.queryStarts.slice();
+  head.resolve();
+  await ticks();
+  assert.equal(h.state.queryStarts.includes("unstaged"), false);
+  status.resolve();
+  await h.drain();
+  assert.ok(started.includes("status") && started.includes("head"));
+});
+
+test("Changes overlaps unborn repository statistics and sums staged and unstaged counts", async () => {
+  const h = await harness(true);
+  h.state.headCode = 1;
+  h.state.cachedStats = "2\t3\tfile.ts\0";
+  h.state.stats = "5\t7\tfile.ts\0";
+  const cached = deferred(),
+    unstaged = deferred();
+  h.state.queryBlocks.set("cached", cached.promise);
+  h.state.queryBlocks.set("unstaged", unstaged.promise);
+  h.changes.refresh(h.cx);
+  await ticks();
+  const started = h.state.queryStarts.slice();
+  unstaged.resolve();
+  await ticks();
+  cached.resolve();
+  await h.drain();
+  assert.ok(started.includes("cached") && started.includes("unstaged"));
+  assert.equal(h.changes.files[0].add, 7);
+  assert.equal(h.changes.files[0].del, 10);
 });

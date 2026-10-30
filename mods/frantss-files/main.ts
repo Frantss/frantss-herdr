@@ -217,7 +217,7 @@ export default class Files extends View {
     return generation === this.generation && context === this.context && key() === context;
   }
 
-  async loadFolder(
+  async fetchFolder(
     path: string,
     context: string,
     generation: number,
@@ -225,7 +225,21 @@ export default class Files extends View {
     on: string | null,
   ) {
     if (!this.current(context, generation) || (path && !this.folders.has(path))) return;
-    const entries = await directory(path ? `${root}/${path}` : root, on);
+    return directory(path ? `${root}/${path}` : root, on);
+  }
+
+  async loadFolder(
+    path: string,
+    context: string,
+    generation: number,
+    root: string,
+    on: string | null,
+  ) {
+    const entries = await this.fetchFolder(path, context, generation, root, on);
+    if (entries) return this.applyFolder(path, entries, context, generation);
+  }
+
+  applyFolder(path: string, entries: FileEntry[], context: string, generation: number) {
     if (!this.current(context, generation) || (path && !this.folders.has(path))) return;
     const used = [...this.entries.entries()]
       .filter(([p]) => p !== path)
@@ -285,7 +299,9 @@ export default class Files extends View {
     }
     if (this.loading) return;
     const generation = this.generation,
-      paths = this.fullRefresh ? ["", ...this.folders] : [...this.invalidated],
+      paths = ["", ...this.folders].filter(
+        (path) => this.fullRefresh || this.invalidated.has(path),
+      ),
       previousLimited = this.limited,
       previousError = this.error;
     if (this.fullRefresh) this.limited = false;
@@ -295,9 +311,28 @@ export default class Files extends View {
     this.loadingRendered = false;
     cx.spawn(async (cx) => {
       try {
-        for (const path of paths) {
+        // Apply a parent before fetching descendants, so deleted folders are pruned first.
+        if (paths.includes(""))
+          changed = (await this.loadFolder("", context, generation, cwd, on)) || changed;
+        const folders = paths.filter(Boolean);
+        for (let i = 0; i < folders.length;) {
           if (!this.current(context, generation)) return;
-          changed = (await this.loadFolder(path, context, generation, cwd, on)) || changed;
+          const first = folders[i],
+            second = folders[i + 1],
+            dependent =
+              second && (second.startsWith(first + "/") || first.startsWith(second + "/")),
+            batch = folders.slice(i, i + (dependent ? 1 : 2));
+          i += batch.length;
+          const results = await Promise.allSettled(
+            batch.map((path) => this.fetchFolder(path, context, generation, cwd, on)),
+          );
+          if (!this.current(context, generation)) return;
+          for (let j = 0; j < results.length; j++) {
+            const result = results[j];
+            if (result.status === "rejected") throw result.reason;
+            if (result.value)
+              changed = this.applyFolder(batch[j], result.value, context, generation) || changed;
+          }
         }
         if (!this.current(context, generation)) return;
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(

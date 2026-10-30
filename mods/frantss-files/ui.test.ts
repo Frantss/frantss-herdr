@@ -19,6 +19,8 @@ async function harness(refresh = false) {
     held: new Map(),
     notifications: 0,
     watchEvents: [],
+    activeDirectories: 0,
+    maxDirectories: 0,
   };
   const cx: any = {
     spawn(callback) {
@@ -112,12 +114,18 @@ async function harness(refresh = false) {
       if (command === "sh") {
         const path = args.at(-1);
         if (path === state.directoryError) throw new Error("Cannot list folder");
-        const entries = await (state.held.get(path) ?? state.directories.get(path) ?? []);
-        return {
-          code: 0,
-          stdout: entries.map((entry) => `${entry.dir ? "d" : "f"}\0${entry.name}\0`).join(""),
-          stderr: "",
-        };
+        state.activeDirectories++;
+        state.maxDirectories = Math.max(state.maxDirectories, state.activeDirectories);
+        try {
+          const entries = await (state.held.get(path) ?? state.directories.get(path) ?? []);
+          return {
+            code: 0,
+            stdout: entries.map((entry) => `${entry.dir ? "d" : "f"}\0${entry.name}\0`).join(""),
+            stderr: "",
+          };
+        } finally {
+          state.activeDirectories--;
+        }
       }
       if (command === "git" && args.includes("--show-toplevel"))
         return { code: 0, stdout: options.cwd, stderr: "" };
@@ -452,4 +460,118 @@ test("Files completes loading visibly when an intervening render exposed it", as
   await h.drain();
   assert.equal(h.files.loading, false);
   assert.equal(h.state.notifications, 1);
+});
+
+const ticks = async () => {
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+};
+
+test("Files overlaps two sibling listings but applies them in original order", async () => {
+  const h = await expandedFiles();
+  const src = deferred(),
+    tests = deferred();
+  h.state.held.set("/repo/src", src.promise);
+  h.state.held.set("/repo/tests", tests.promise);
+  h.files.refresh(h.cx);
+  await ticks();
+  const overlap = h.state.maxDirectories;
+  tests.resolve([{ name: "second.ts", dir: false }]);
+  await ticks();
+  assert.equal(h.files.entries.get("tests")[0].name, "old.ts");
+  src.resolve([{ name: "first.ts", dir: false }]);
+  await h.drain();
+  assert.equal(overlap, 2);
+  assert.equal(h.state.maxDirectories, 2);
+  assert.equal(h.files.entries.get("src")[0].name, "first.ts");
+  assert.equal(h.files.entries.get("tests")[0].name, "second.ts");
+});
+
+test("reverse directory completion preserves deterministic global entry limits", async () => {
+  const h = await expandedFiles();
+  h.files.entries.set("src", []);
+  h.files.entries.set("tests", []);
+  for (let i = 0; i < 9; i++) {
+    h.files.entries.get("").push({ name: `filler-${i}`, dir: true });
+    h.files.entries.set(
+      `filler-${i}`,
+      Array.from({ length: 500 }, (_, j) => ({ name: `file-${j}`, dir: false })),
+    );
+  }
+  const src = deferred(),
+    tests = deferred();
+  h.state.held.set("/repo/src", src.promise);
+  h.state.held.set("/repo/tests", tests.promise);
+  h.files.refresh(h.cx, ["/repo/src/file", "/repo/tests/file"]);
+  await ticks();
+  tests.resolve(Array.from({ length: 300 }, (_, i) => ({ name: `second-${i}`, dir: false })));
+  await ticks();
+  src.resolve(Array.from({ length: 300 }, (_, i) => ({ name: `first-${i}`, dir: false })));
+  await h.drain();
+  assert.equal(h.files.entries.get("src").length, 300);
+  assert.equal(h.files.entries.get("tests").length, 189);
+  assert.equal(
+    [...h.files.entries.values()].reduce((total, entries) => total + entries.length, 0),
+    5000,
+  );
+  assert.equal(h.files.limited, true);
+});
+
+test("directory batch errors retain earlier progress and stop subsequent batches", async () => {
+  const h = await expandedFiles();
+  h.files.folders.add("other");
+  h.files.entries.set("other", [{ name: "old.ts", dir: false }]);
+  h.state.directoryError = "/repo/tests";
+  h.files.refresh(h.cx, ["/repo/src/file", "/repo/tests/file", "/repo/other/file"]);
+  await h.drain();
+  assert.equal(h.files.entries.get("src")[0].name, "next.ts");
+  assert.equal(h.files.entries.get("other")[0].name, "old.ts");
+  assert.deepEqual(listedFolders(h.state), ["/repo/src", "/repo/tests"]);
+  assert.equal(h.files.error, "Error: Cannot list folder");
+});
+
+test("a stale directory batch cannot apply results or start later directory and Git commands", async () => {
+  const h = await expandedFiles();
+  const src = deferred(),
+    tests = deferred();
+  h.state.held.set("/repo/src", src.promise);
+  h.state.held.set("/repo/tests", tests.promise);
+  h.files.refresh(h.cx, ["/repo/src/file", "/repo/tests/file"]);
+  await ticks();
+  h.state.cwd = "/other";
+  h.files.refresh(h.cx);
+  src.resolve([{ name: "obsolete.ts", dir: false }]);
+  tests.resolve([]);
+  await h.drain();
+  assert.equal(h.files.root, "/other");
+  assert.equal(h.files.entries.has("src"), false);
+  assert.ok(
+    h.state.executions
+      .filter((call) => call.command === "git")
+      .every((call) => call.options.cwd === "/other"),
+  );
+});
+
+test("parent listings prune deleted nested folders before later batches fetch them", async () => {
+  const h = await expandedFiles();
+  h.files.entries.set("src", [{ name: "deep", dir: true }]);
+  h.files.folders.add("src/deep");
+  h.files.entries.set("src/deep", [{ name: "old.ts", dir: false }]);
+  h.files.refresh(h.cx);
+  await h.drain();
+  assert.deepEqual(listedFolders(h.state), ["/repo", "/repo/src", "/repo/tests"]);
+  assert.equal(h.files.folders.has("src/deep"), false);
+  assert.equal(h.files.entries.has("src/deep"), false);
+});
+
+test("child-first watcher events apply the parent before fetching a deleted child", async () => {
+  const h = await expandedFiles();
+  h.files.entries.set("src", [{ name: "deep", dir: true }]);
+  h.files.folders.add("src/deep");
+  h.files.entries.set("src/deep", [{ name: "old.ts", dir: false }]);
+  h.state.directoryError = "/repo/src/deep";
+  h.files.refresh(h.cx, ["/repo/src/deep/old.ts", "/repo/src/deep"]);
+  await h.drain();
+  assert.deepEqual(listedFolders(h.state), ["/repo/src"]);
+  assert.equal(h.files.entries.has("src/deep"), false);
+  assert.equal(h.files.error, null);
 });

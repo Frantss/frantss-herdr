@@ -236,24 +236,28 @@ export default class Changes extends View {
         }
         const root = top.stdout.trim(),
           git = (args: string[]) => exec("git", args, { cwd: root, on });
-        const status = await git([
-          "--no-optional-locks",
-          "status",
-          "--porcelain=v1",
-          "-z",
-          "--no-renames",
-          "--untracked-files=all",
+        const [status, head] = await Promise.all([
+          git([
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--no-renames",
+            "--untracked-files=all",
+          ]),
+          git(["rev-parse", "--verify", "HEAD"]),
         ]);
+        if (key() !== context) return;
         if (status.code !== 0) throw new Error(status.stderr);
-        const head = await git(["rev-parse", "--verify", "HEAD"]);
         const stats: Record<string, FileStats> = {};
         const results =
           head.code === 0
             ? [await git(["diff", "HEAD", "--numstat", "-z", "--no-renames"])]
-            : [
-                await git(["diff", "--cached", "--numstat", "-z", "--no-renames"]),
-                await git(["diff", "--numstat", "-z", "--no-renames"]),
-              ];
+            : await Promise.all([
+                git(["diff", "--cached", "--numstat", "-z", "--no-renames"]),
+                git(["diff", "--numstat", "-z", "--no-renames"]),
+              ]);
+        if (key() !== context) return;
         for (const result of results) {
           if (result.code !== 0) throw new Error(result.stderr);
           for (const entry of result.stdout.split("\0")) {
