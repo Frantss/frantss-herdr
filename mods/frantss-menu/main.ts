@@ -29,11 +29,11 @@ function place(s: import("herdr").SpaceInfo) {
 
 // A space's checkout: "main" (a repo's own), "linked" (a worktree), or null.
 async function checkout(folder: string, on: string | null) {
-  const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder, on });
-  const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
-    cwd: folder,
-    on,
-  });
+  const git = (args: string[]) => exec("git", args, { cwd: folder, on });
+  const [top, common] = await Promise.all([
+    git(["rev-parse", "--show-toplevel"]),
+    git(["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+  ]);
   if (top.code !== 0 || common.code !== 0) return null;
   return common.stdout.trim() === `${top.stdout.trim()}/.git` ? "main" : "linked";
 }
