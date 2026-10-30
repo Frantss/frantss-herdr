@@ -266,11 +266,16 @@ export default class Tabs extends View {
                 : image(program.icon).size(14),
             ),
           )
-          .child(
-            div()
-              .max_w(170)
-              .truncate()
-              .child(c.zoomed ? `${name} Z` : name),
+          .child(div().max_w(170).truncate().child(name))
+          .when(Boolean(c.zoomed), (el) =>
+            el.child(
+              div()
+                .id(`zoomed-${c.id}`)
+                .tooltip("Zoomed")
+                .flex_none()
+                .text_color(t.dim)
+                .child(svg("mods/frantss-tabs/zoom.svg").size(12)),
+            ),
           )
           // Every agent tab shows its status, idle (grey) too; a tab with no agent has none.
           .when(Boolean(c.status), (el) => el.child(dot(t, c.status)))
