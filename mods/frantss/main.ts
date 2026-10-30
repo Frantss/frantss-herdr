@@ -990,9 +990,10 @@ export default class Frantss extends View {
 
   // A pane's header; a pane that shares its tab can be closed from it (a lone one closes with its tab).
   pane(t: Theme) {
-    const all = panes();
-    const pane = all.find((p) => p.pane === props().pane);
-    const withOthers = all.filter((p) => p.tab === pane?.tab).length > 1;
+    const all = panes(),
+      id = props().pane;
+    const pane = all.find((p) => p.pane === id);
+    const withOthers = Boolean(pane) && all.some((p) => p !== pane && p.tab === pane.tab);
     const where = [pane?.branch, pane?.cwd?.split("/").pop()].filter(Boolean).join(" · ");
     return h_flex()
       .size_full()

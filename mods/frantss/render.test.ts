@@ -82,6 +82,7 @@ async function harness(role = "rail") {
     tasks: [] as ((cx: unknown) => Promise<void>)[],
     terminals: [] as { address: string; state: string; cwd?: string }[],
     cancelled: [] as unknown[],
+    propsCalls: 0,
   };
   function element(kind = "div", source?) {
     const node: any = {
@@ -145,7 +146,10 @@ async function harness(role = "rail") {
         });
       },
       agents: () => state.agents,
-      props: () => ({ role: state.role, pane: state.pane }),
+      props: () => {
+        state.propsCalls++;
+        return { role: state.role, pane: state.pane };
+      },
       theme: () => ({}),
       settings: () => ({}),
       shared: (name) => state.shared.get(name) ?? null,
@@ -375,6 +379,8 @@ test("pane headers retain their single pane lookup without workspace indexing", 
   assert.match(text(tree), /Claude Code/);
   assert.match(text(tree), /main · agent/);
   assert.deepEqual(h.state.calls, { spaces: 0, panes: 1, paneVisits: 0 });
+  // One props read for the role and one for the pane, not one per pane searched.
+  assert.equal(h.state.propsCalls, 2);
   byId(tree, "close-pane").handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.commands.at(-1)), [
     "pane.close",
