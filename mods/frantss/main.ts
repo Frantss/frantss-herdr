@@ -30,6 +30,7 @@ import {
   type CoreTerminal,
 } from "./closed.ts";
 import { button } from "./button.ts";
+import { hcOrToast } from "./agent-hc.ts";
 
 type Theme = Record<string, `#${string}`>;
 type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
@@ -65,6 +66,8 @@ type RailRow = {
   end?: Element;
   onClick: (event: ClickEvent, cx: Context) => unknown;
   onMenu?: (event: MouseButtonEvent, cx: Context) => unknown;
+  // Controls shown in place of `value` while the row is hovered.
+  hoverEnd?: Element;
   collapsed?: boolean;
   agent?: boolean;
 };
@@ -255,6 +258,7 @@ export default class Frantss extends View {
   // The local agents shown since the rail last recorded them, by address.
   declare seenAgents: Map<string, AgentInfo>;
   declare settling: Task;
+  declare hovered: string | null;
   init(_p: unknown, _cx: AsyncContext) {
     // The rail and the breadcrumb both name workspaces by repo.
     if (props()?.role !== "rail" && props()?.role !== "top") return;
@@ -555,9 +559,11 @@ export default class Frantss extends View {
       end,
       onClick,
       onMenu,
+      hoverEnd,
       collapsed,
     }: RailRow,
   ) {
+    const hovered = Boolean(hoverEnd) && this.hovered === id;
     return (
       h_flex()
         .id(id)
@@ -573,6 +579,13 @@ export default class Frantss extends View {
         .hover((s) => s.text_color(t.foreground))
         .on_click(onClick)
         .when(Boolean(onMenu), (e) => e.on_mouse_down("right", onMenu))
+        .when(Boolean(hoverEnd), (e) =>
+          e.on_hover((over, cx) => {
+            if (over) this.hovered = id;
+            else if (this.hovered === id) this.hovered = null;
+            cx.notify();
+          }),
+        )
         // The chevron sits at the row's indent, in the column a ❯ marks on other rows.
         .child(
           h_flex()
@@ -583,7 +596,8 @@ export default class Frantss extends View {
         )
         .when(lead !== false, (e) => e.child(lead ?? div().w(14).flex_none()))
         .child(div().flex_1().min_w(0).truncate().child(text))
-        .when(value !== undefined, (e) =>
+        .when(hovered, (e) => e.child(hoverEnd))
+        .when(!hovered && value !== undefined, (e) =>
           e.child(
             div().flex_none().max_w(80).truncate().text_size(11).text_color(t.dim).child(value),
           ),
@@ -647,6 +661,29 @@ export default class Frantss extends View {
       square: true,
       tooltip,
     }).text_color(t.dim);
+  }
+
+  // An agent row's hover controls: peek, and interrupt while it works.
+  agentControls(t: Theme, a: AgentInfo) {
+    return h_flex()
+      .gap(4)
+      .items_center()
+      .child(
+        this.control(t, `peek-${a.address}`, "Peek", svg("mods/github/eye.svg").size(10), () =>
+          run("terminal.peek", { terminal: a.address }),
+        ),
+      )
+      .when(a.status === "working", (e) =>
+        e.child(
+          this.control(
+            t,
+            `interrupt-${a.address}`,
+            "Interrupt",
+            svg("mods/workspace-chrome/square.svg").size(10),
+            (cx) => cx.spawn(() => hcOrToast(["interrupt", a.address], "Could not interrupt")),
+          ),
+        ),
+      );
   }
 
   addWorkspace(cx: Context) {
@@ -881,6 +918,7 @@ export default class Frantss extends View {
             value: a.space_name,
             onClick: () => run("agent.focus", { terminal: a.address }),
             onMenu: () => menu("pane", { pane: a.pane, terminal: a.address }),
+            hoverEnd: this.agentControls(t, a),
           })),
         })),
     ];
@@ -959,10 +997,17 @@ export default class Frantss extends View {
         e.child(
           v_flex()
             .id("frantss-closed")
-            .max_h(5 * RAIL.row + 4 * RAIL.rowGap)
+            // A scroll container needs a definite height; max_h alone never scrolls.
+            .h(Math.min(rows.length, 5) * (RAIL.row + RAIL.rowGap) - RAIL.rowGap)
+            .flex_none()
             .overflow_y_scrollbar()
-            .gap(RAIL.rowGap)
-            .children(rows.map((r) => this.row(t, r))),
+            // flex_none keeps the rows at full height, so they overflow the cap instead of shrinking into it.
+            .child(
+              v_flex()
+                .flex_none()
+                .gap(RAIL.rowGap)
+                .children(rows.map((r) => this.row(t, r))),
+            ),
         ),
       );
   }

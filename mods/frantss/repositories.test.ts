@@ -31,6 +31,7 @@ async function harness() {
     "gpui-kit": { View: class {}, div: unused, svg: unused, image: unused },
     "gpui-base": { h_flex: unused, v_flex: unused, Button: { new: unused } },
     herdr: {
+      notify: () => {},
       agents: unused,
       spaces: unused,
       panes: unused,

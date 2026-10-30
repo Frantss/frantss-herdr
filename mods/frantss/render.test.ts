@@ -127,6 +127,7 @@ async function harness(role = "rail") {
       Button: { new: (id) => element().id(id) },
     },
     herdr: {
+      notify: () => {},
       spaces: () => {
         state.calls.spaces++;
         return state.spaces;
