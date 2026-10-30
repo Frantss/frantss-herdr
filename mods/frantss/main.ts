@@ -21,6 +21,7 @@ import type { AgentInfo, SpaceInfo, TabInfo, PaneInfo, Program } from "herdr";
 
 type Theme = Record<string, `#${string}`>;
 type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
+type RepositoryLookup = { repo: string | null; checkout: "main" | "linked" | null };
 type SavedWorkspace = { folder: string };
 type NamedWorkspace = SavedWorkspace & { key: string; repo: boolean; name: string };
 type SpaceGroup = {
@@ -141,6 +142,37 @@ const base = (path: string) => path.replace(/\/+$/, "").split("/").pop();
 // A repo's own folder from its git folder (`frantssb/.git`); a bare repo is its git folder (`frantssb.git`).
 const repoRoot = (gitDir: string) => gitDir.replace(/\/\.git$/, "");
 const repoName = (gitDir: string) => base(repoRoot(gitDir)).replace(/\.git$/, "");
+const repositoryLookups = new Map<string, Promise<RepositoryLookup>>();
+
+function discoverRepository(key: string): Promise<RepositoryLookup> {
+  let lookup = repositoryLookups.get(key);
+  if (!lookup) {
+    const [on, cwd] = JSON.parse(key);
+    lookup = (async () => {
+      const found: RepositoryLookup = { repo: null, checkout: null };
+      try {
+        const result = await exec(
+          "git",
+          ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+          {
+            cwd,
+            on,
+          },
+        );
+        if (result.code === 0) found.repo = result.stdout.trim();
+        const top =
+          result.code === 0
+            ? await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on })
+            : null;
+        if (top?.code === 0)
+          found.checkout = found.repo === `${top.stdout.trim()}/.git` ? "main" : "linked";
+      } catch {}
+      return found;
+    })();
+    repositoryLookups.set(key, lookup);
+  }
+  return lookup;
+}
 
 // The workspaces you added, kept in shared state (persisted, and the workspace menu changes it):
 // [{ folder }], folders on this machine. They stay in the rail when none of their spaces is open.
@@ -263,23 +295,10 @@ export default class Frantss extends View {
   // The git folder a place shares with its worktrees. A machine that can't answer groups by folder.
   lookUp(key: string, cx: Context) {
     this.repos[key] = null;
-    const [on, cwd] = JSON.parse(key);
     cx.spawn(async (cx) => {
-      try {
-        const r = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
-          cwd,
-          on,
-        });
-        if (r.code === 0) this.repos[key] = r.stdout.trim();
-        const top =
-          r.code === 0 ? await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }) : null;
-        this.checkouts[key] =
-          top?.code === 0
-            ? this.repos[key] === `${top.stdout.trim()}/.git`
-              ? "main"
-              : "linked"
-            : null;
-      } catch {}
+      const found = await discoverRepository(key);
+      this.repos[key] = found.repo;
+      this.checkouts[key] = found.checkout;
       cx.notify();
     });
   }
