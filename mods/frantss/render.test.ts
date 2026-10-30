@@ -83,6 +83,7 @@ async function harness(role = "rail") {
     terminals: [] as { address: string; state: string; cwd?: string }[],
     cancelled: [] as unknown[],
     propsCalls: 0,
+    agentOrder: [] as string[],
   };
   function element(kind = "div", source?) {
     const node: any = {
@@ -154,7 +155,9 @@ async function harness(role = "rail") {
       settings: () => ({}),
       shared: (name) => state.shared.get(name) ?? null,
       setShared: (name, value) => state.shared.set(name, value),
-      setAgentOrder() {},
+      setAgentOrder: (addresses) => {
+        state.agentOrder = addresses;
+      },
       run: (...args) => state.commands.push(args),
       openOverlay: (options) => state.overlays.push(options),
       exec: unused,
@@ -483,6 +486,24 @@ test("workspace membership key reads stay linear as saved and open workspaces gr
     keyReads <= 20 * (savedCount + unsavedCount),
     `Expected linear key reads, received ${keyReads}`,
   );
+});
+
+test("the rail lists agent groups and navigates agents in the order they need attention", async () => {
+  const h = await harness();
+  h.state.agents = ["idle", "working", "done", "blocked"].map((status) => ({
+    address: status,
+    space: "primary",
+    space_name: "primary",
+    status,
+    program: agent,
+    title: "x",
+  }));
+  const tree = h.render();
+  const headers = descendants(tree)
+    .map((node) => node?.elementId)
+    .filter((id) => ["blocked", "done", "working", "idle"].includes(id?.replace("header-", "")));
+  assert.deepEqual(headers, ["header-blocked", "header-done", "header-working", "header-idle"]);
+  assert.deepEqual(plain(h.state.agentOrder), ["blocked", "done", "working", "idle"]);
 });
 
 test("the rail records local agents and lists closed ones with history, resume, and forget", async () => {

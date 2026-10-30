@@ -79,8 +79,8 @@ type RailSection = {
 
 const GROUPS = [
   { status: "blocked", label: "NEEDS YOU" },
-  { status: "working", label: "WORKING" },
   { status: "done", label: "UNREAD" },
+  { status: "working", label: "WORKING" },
   { status: "idle", label: "IDLE" },
 ];
 
@@ -129,7 +129,7 @@ const statusDot = (t: Theme, status: string) =>
   status && status !== "idle" ? dot(t, status) : null;
 // The rail's + is this wide, so rows without one can keep their dots in the same column.
 const PLUS_WIDTH = 20;
-const URGENT = ["blocked", "done", "working"];
+const URGENT = GROUPS.map((g) => g.status).filter((status) => status !== "idle");
 
 // What a program says it is doing, from its terminal title: Claude Code names its thread there
 // ("✳ Fix tab width"). Spinner glyphs go; paths, user@host and the program's own name aren't
