@@ -111,6 +111,7 @@ async function harness(refresh = false) {
       state.executions.push({ command, args, options });
       if (command === "sh") {
         const path = args.at(-1);
+        if (path === state.directoryError) throw new Error("Cannot list folder");
         const entries = await (state.held.get(path) ?? state.directories.get(path) ?? []);
         return {
           code: 0,
@@ -179,7 +180,7 @@ async function harness(refresh = false) {
     cx,
     drain,
     watch,
-    render: () => files.render({}),
+    render: () => files.render(cx),
     range(list, start, end) {
       phase = "layout";
       try {
@@ -399,4 +400,56 @@ test("mixed watcher batches ignore lock files and dependency paths before invali
   h.watch("/repo", h.cx);
   await h.drain();
   assert.deepEqual(listedFolders(h.state), ["/repo/src"]);
+});
+
+test("unchanged Files refreshes preserve arrays and marks without notifying", async () => {
+  const h = await expandedFiles();
+  h.files.refresh(h.cx);
+  await h.drain();
+  const entries = h.files.entries.get("src"),
+    marks = h.files.marks;
+  h.state.notifications = 0;
+  h.files.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.state.notifications, 0);
+  assert.equal(h.files.entries.get("src"), entries);
+  assert.equal(h.files.marks, marks);
+});
+
+test("Files notifies on changes, errors, and recovery but suppresses repeated errors", async () => {
+  const h = await expandedFiles();
+  h.files.refresh(h.cx);
+  await h.drain();
+  h.state.notifications = 0;
+  h.state.directories.set("/repo/src", [{ name: "changed.ts", dir: false }]);
+  h.files.refresh(h.cx, ["/repo/src/changed.ts"]);
+  await h.drain();
+  assert.equal(h.state.notifications, 1);
+  h.state.directoryError = "/repo/src";
+  h.files.refresh(h.cx, ["/repo/src/file.ts"]);
+  await h.drain();
+  assert.equal(h.state.notifications, 2);
+  h.files.refresh(h.cx, ["/repo/src/file.ts"]);
+  await h.drain();
+  assert.equal(h.state.notifications, 2);
+  h.state.directoryError = null;
+  h.files.refresh(h.cx, ["/repo/src/file.ts"]);
+  await h.drain();
+  assert.equal(h.state.notifications, 3);
+});
+
+test("Files completes loading visibly when an intervening render exposed it", async () => {
+  const h = await expandedFiles();
+  h.files.refresh(h.cx);
+  await h.drain();
+  h.state.notifications = 0;
+  const held = deferred();
+  h.state.held.set("/repo", held.promise);
+  h.files.refresh(h.cx);
+  h.render();
+  assert.equal(h.files.loadingRendered, true);
+  held.resolve(h.state.directories.get("/repo"));
+  await h.drain();
+  assert.equal(h.files.loading, false);
+  assert.equal(h.state.notifications, 1);
 });

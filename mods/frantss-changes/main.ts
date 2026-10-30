@@ -120,6 +120,26 @@ function diffRows(lines: string[]): DiffRow[] {
   });
 }
 
+const sameFiles = (left: ChangedFile[], right: ChangedFile[]) =>
+  left.length === right.length &&
+  left.every((file, i) => {
+    const other = right[i];
+    return (
+      file.path === other.path &&
+      file.status === other.status &&
+      file.fresh === other.fresh &&
+      file.add === other.add &&
+      file.del === other.del &&
+      Boolean(file.binary) === Boolean(other.binary)
+    );
+  });
+const sameRows = (left: DiffRow[], right: DiffRow[]) =>
+  left.length === right.length &&
+  left.every(
+    (row, i) =>
+      row.kind === right[i].kind && row.number === right[i].number && row.text === right[i].text,
+  );
+
 export default class Changes extends View {
   declare files: ChangedFile[];
   declare rows: DiffRow[];
@@ -135,6 +155,8 @@ export default class Changes extends View {
   declare context: string;
   declare limited: boolean;
   declare loading: boolean;
+  declare loadingRendered: boolean;
+  declare watchToken: object;
   declare busy: boolean;
   declare stale: boolean;
   declare error: string | null;
@@ -170,17 +192,19 @@ export default class Changes extends View {
 
   watch(root: string, cx: Context) {
     if (this.on || this.watched === root) return;
+    const token = {};
+    this.watchToken = token;
     this.watched = root;
     cx.spawn(async (cx) => {
       try {
-        while (this.watched === root) {
+        while (this.watchToken === token && this.watched === root) {
           if (!meaningful(await watchFolder(root))) continue;
           // One refresh for a burst of saves.
           await cx.sleep(300);
-          if (this.watched === root) this.refresh(cx);
+          if (this.watchToken === token && this.watched === root) this.refresh(cx);
         }
       } catch {
-        this.watched = null;
+        if (this.watchToken === token && this.watched === root) this.watched = null;
       }
     });
   }
@@ -195,7 +219,9 @@ export default class Changes extends View {
       this.stale = true;
       return;
     }
+    const previous = Object.fromEntries(SNAPSHOT.map((name) => [name, this[name]])) as Snapshot;
     this.loading = true;
+    this.loadingRendered = false;
     cx.spawn(async (cx) => {
       try {
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
@@ -278,10 +304,25 @@ export default class Changes extends View {
       } catch (e) {
         if (key() === context) this.error = String(e);
       } finally {
+        const current = this.context === context && key() === context;
+        let changed = !current;
+        if (current) {
+          const filesEqual = sameFiles(previous.files, this.files),
+            rowsEqual = sameRows(previous.rows, this.rows);
+          changed =
+            !filesEqual ||
+            !rowsEqual ||
+            SNAPSHOT.some(
+              (name) => name !== "files" && name !== "rows" && this[name] !== previous[name],
+            );
+          if (filesEqual) this.files = previous.files;
+          if (rowsEqual) this.rows = previous.rows;
+        }
+        const notify = changed || this.loadingRendered;
         this.loading = false;
         // The place changed while git ran: refresh the one now shown.
         if (key() !== context) this.refresh(cx);
-        cx.notify();
+        if (notify) cx.notify();
       }
     });
   }
@@ -486,6 +527,7 @@ export default class Changes extends View {
       this.refresh(cx);
     }
     if (key() !== this.context) this.refresh(cx);
+    if (this.loading) this.loadingRendered = true;
     const t = theme() as Theme,
       add = this.files.reduce((n, f) => n + f.add, 0),
       del = this.files.reduce((n, f) => n + f.del, 0);

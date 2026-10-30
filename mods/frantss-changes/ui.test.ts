@@ -4,9 +4,40 @@ import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 
-async function harness() {
+async function harness(refresh = false) {
   let phase = "render";
-  const state: any = { lists: [], rows: [], calls: [], zoom: 0.8 };
+  const state: any = {
+    lists: [],
+    rows: [],
+    calls: [],
+    zoom: 0.8,
+    cwd: "/repo",
+    tasks: [],
+    notifications: 0,
+    status: " M file.ts\0",
+    stats: "1\t2\tfile.ts\0",
+    diff: "@@ -1 +1 @@\n-old\n+new\n",
+    watches: [],
+  };
+  const cx: any = {
+    spawn(callback) {
+      const task = Promise.resolve().then(() => callback(cx));
+      state.tasks.push(task);
+      return task;
+    },
+    notify() {
+      state.notifications++;
+    },
+    async sleep() {},
+  };
+  async function drain() {
+    for (let start = 0; start < state.tasks.length;) {
+      const batch = state.tasks.slice(start);
+      start = state.tasks.length;
+      await Promise.all(batch);
+    }
+    state.tasks = [];
+  }
   function element() {
     const node: any = { childNodes: [], styles: [], handlers: {} };
     const proxy = new Proxy(node, {
@@ -74,13 +105,29 @@ async function harness() {
       ]),
       ["spaces", () => []],
       ["panes", () => []],
-      ["focused", () => ({ cwd: "/repo", pane: null })],
+      ["focused", () => ({ cwd: state.cwd, pane: null })],
       ["layout", () => null],
       ["window", () => ({ platform: "macos" })],
       ["settings", () => ({ zoom: state.zoom })],
       ["theme", () => palette],
     ]),
   };
+  if (refresh) {
+    natives.herdr.exec = async (_command, args, options) => {
+      if (args.includes("--show-toplevel")) {
+        if (state.block) await state.block;
+        if (state.error) throw new Error(state.error);
+        return { code: 0, stdout: options.cwd, stderr: "" };
+      }
+      if (args.includes("status")) return { code: 0, stdout: state.status, stderr: "" };
+      if (args.includes("--verify")) return { code: 0, stdout: "head", stderr: "" };
+      if (args.includes("--numstat")) return { code: 0, stdout: state.stats, stderr: "" };
+      if (args.includes("diff")) return { code: 0, stdout: state.diff, stderr: "" };
+      throw new Error(`Unexpected Git args ${args}`);
+    };
+    natives.herdr.readTextFile = async () => state.untracked ?? "first\nsecond\n";
+    natives.herdr.watchFolder = () => state.watches.shift();
+  }
   const modules = new Map<string, vm.Module>();
   async function load(id: string): Promise<vm.Module> {
     if (modules.has(id)) return modules.get(id);
@@ -113,13 +160,26 @@ async function harness() {
     diffWidth: 0,
     message: "",
     root: "/repo",
+    on: null,
+    hasHead: true,
+    closed: false,
+    error: null,
+    limited: false,
+    open: null,
+    kept: new Map(),
+    input: { set_value() {} },
     context: JSON.stringify({ cwd: "/repo", on: null }),
   });
-  changes.pick = (path) => state.calls.push(["pick", path]);
+  const watch = changes.watch.bind(changes);
+  if (refresh) changes.watch = () => {};
+  else changes.pick = (path) => state.calls.push(["pick", path]);
   return {
     changes,
     state,
-    render: () => changes.render({}),
+    cx,
+    drain,
+    watch,
+    render: () => changes.render(cx),
     range(list, start, end) {
       phase = "layout";
       try {
@@ -169,4 +229,119 @@ test("Changes keeps the file viewport capped and preserves empty and error messa
     return (node?.childNodes ?? []).map((child) => find(child, id)).find(Boolean);
   }
   assert.ok(find(tree, "changes-list").styles.some(([key, value]) => key === "h" && value === 200));
+});
+
+const deferred = () => {
+  let resolve, reject;
+  const promise = new Promise<void>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+};
+
+test("unchanged Changes refreshes preserve file and diff arrays without notifying", async () => {
+  const h = await harness(true);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  const files = h.changes.files,
+    rows = h.changes.rows;
+  h.state.notifications = 0;
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.state.notifications, 0);
+  assert.equal(h.changes.files, files);
+  assert.equal(h.changes.rows, rows);
+});
+
+test("Changes notifies on diff changes, errors, and recovery", async () => {
+  const h = await harness(true);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.state.notifications = 0;
+  h.state.diff = "@@ -1 +1 @@\n-old\n+changed\n";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.state.notifications, 1);
+  h.state.error = "Cannot read Git";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.state.notifications, 2);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.state.notifications, 2);
+  h.state.error = null;
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.state.notifications, 3);
+});
+
+test("Changes notifies to re-enable commit controls after a render during loading", async () => {
+  const h = await harness(true);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.state.notifications = 0;
+  const held = deferred();
+  h.state.block = held.promise;
+  h.changes.message = "Commit these changes";
+  h.changes.refresh(h.cx);
+  h.render();
+  assert.equal(h.changes.loadingRendered, true);
+  held.resolve();
+  await h.drain();
+  assert.equal(h.changes.loading, false);
+  assert.equal(h.state.notifications, 1);
+});
+
+test("an old Changes watcher rejection cannot clear a newer watcher for the same root", async () => {
+  const h = await harness(true);
+  const old = deferred(),
+    other = deferred(),
+    current = deferred();
+  h.state.watches.push(old.promise, other.promise, current.promise);
+  h.watch("/repo", h.cx);
+  await Promise.resolve();
+  const oldTask = h.state.tasks[0];
+  h.watch("/other", h.cx);
+  await Promise.resolve();
+  h.watch("/repo", h.cx);
+  await Promise.resolve();
+  old.reject(new Error("Old watcher stopped"));
+  await oldTask;
+  assert.equal(h.changes.watched, "/repo");
+  h.changes.watched = null;
+  other.resolve();
+  current.resolve();
+  await h.drain();
+});
+
+test("unchanged untracked previews retain their computed counts and references", async () => {
+  const h = await harness(true);
+  h.state.status = "?? file.txt\0";
+  h.state.stats = "";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  const files = h.changes.files,
+    rows = h.changes.rows;
+  assert.equal(files[0].add, 2);
+  h.state.notifications = 0;
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.state.notifications, 0);
+  assert.equal(h.changes.files, files);
+  assert.equal(h.changes.rows, rows);
+  assert.equal(h.changes.open, "file.txt");
+});
+
+test("a render that starts a Changes refresh records its displayed loading state", async () => {
+  const h = await harness(true);
+  h.state.cwd = "/other";
+  const held = deferred();
+  h.state.block = held.promise;
+  h.render();
+  assert.equal(h.changes.loadingRendered, true);
+  held.resolve();
+  await h.drain();
+  assert.equal(h.changes.loading, false);
+  assert.ok(h.state.notifications > 0);
 });

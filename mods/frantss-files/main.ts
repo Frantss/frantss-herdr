@@ -144,6 +144,7 @@ export default class Files extends View {
   declare context: string;
   declare limited: boolean;
   declare loading: boolean;
+  declare loadingRendered: boolean;
   declare stale: boolean;
   declare error: string | null;
   declare icons: IconManifest | null;
@@ -229,12 +230,15 @@ export default class Files extends View {
     const used = [...this.entries.entries()]
       .filter(([p]) => p !== path)
       .reduce((n, [, e]) => n + e.length, 0);
-    this.entries.set(
-      path,
-      entries
+    const previous = this.entries.get(path),
+      next = entries
         .slice(0, Math.max(0, Math.min(PER_FOLDER, TOTAL - used)))
         .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name)),
-    );
+      changed =
+        !previous ||
+        previous.length !== next.length ||
+        previous.some((entry, i) => entry.name !== next[i].name || entry.dir !== next[i].dir);
+    if (changed) this.entries.set(path, next);
     if (entries.length > PER_FOLDER || used + entries.length > TOTAL) this.limited = true;
     const directories = new Set(
       this.entries
@@ -248,12 +252,14 @@ export default class Files extends View {
         name = folder.slice(slash + 1);
       if (parent === path && !directories.has(name)) this.closeFolder(folder);
     }
+    return changed;
   }
 
   refresh(cx: Context, changedPaths?: string[]) {
     const { cwd, on } = location(),
       context = JSON.stringify({ cwd, on });
-    if (context !== this.context) {
+    let changed = context !== this.context;
+    if (changed) {
       this.generation = (this.generation ?? 0) + 1;
       this.loading = false;
       this.invalidated = new Set();
@@ -279,16 +285,19 @@ export default class Files extends View {
     }
     if (this.loading) return;
     const generation = this.generation,
-      paths = this.fullRefresh ? ["", ...this.folders] : [...this.invalidated];
+      paths = this.fullRefresh ? ["", ...this.folders] : [...this.invalidated],
+      previousLimited = this.limited,
+      previousError = this.error;
     if (this.fullRefresh) this.limited = false;
     this.fullRefresh = false;
     this.invalidated.clear();
     this.loading = true;
+    this.loadingRendered = false;
     cx.spawn(async (cx) => {
       try {
         for (const path of paths) {
           if (!this.current(context, generation)) return;
-          await this.loadFolder(path, context, generation, cwd, on);
+          changed = (await this.loadFolder(path, context, generation, cwd, on)) || changed;
         }
         if (!this.current(context, generation)) return;
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(
@@ -313,17 +322,29 @@ export default class Files extends View {
           if (status?.code === 0) marks = statusMarks(status.stdout, top.stdout.trim(), TOTAL);
         }
         if (!this.current(context, generation)) return;
-        this.marks = marks;
+        const names = Object.keys(marks);
+        if (
+          names.length !== Object.keys(this.marks).length ||
+          names.some((name) => this.marks[name] !== marks[name])
+        ) {
+          this.marks = marks;
+          changed = true;
+        }
         this.error = null;
         this.watch(cwd, cx);
       } catch (e) {
         if (this.current(context, generation)) this.error = String(e);
       } finally {
         if (generation === this.generation) {
+          const notify =
+            changed ||
+            this.error !== previousError ||
+            this.limited !== previousLimited ||
+            this.loadingRendered;
           this.loading = false;
           if (key() !== context) this.refresh(cx);
           else if (this.fullRefresh || this.invalidated.size) this.refresh(cx, []);
-          cx.notify();
+          if (notify) cx.notify();
         }
       }
     });
@@ -472,6 +493,7 @@ export default class Files extends View {
       this.refresh(cx);
     }
     if (key() !== this.context) this.refresh(cx);
+    if (this.loading) this.loadingRendered = true;
     const t = theme() as Theme,
       rows = this.rows(),
       light = isLight(t.background);
