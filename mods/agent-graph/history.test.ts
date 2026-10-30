@@ -24,7 +24,11 @@ async function harness(fetch: (args: string[]) => Promise<Result>) {
   const calls: string[][] = [];
   const tasks: Promise<unknown>[] = [];
   const timers = new Map<number, () => void>();
-  const state = { live: [{ address: "parent", state: "live" }] as Terminal[], now: 10000000 };
+  const state = {
+    live: [{ address: "parent", state: "live" }] as Terminal[],
+    now: 10000000,
+    hidden: false,
+  };
   let notifications = 0;
   const cx = {
     notify() {
@@ -61,7 +65,12 @@ async function harness(fetch: (args: string[]) => Promise<Result>) {
       },
       settings: empty,
       theme: empty,
-      layout: () => null,
+      layout: () => ({
+        children: [
+          { id: "panel", hidden: state.hidden },
+          { id: "panel-body", active: "agent-graph" },
+        ],
+      }),
       shared: () => null,
     },
   };
@@ -168,4 +177,64 @@ test("a failed history listing retries without a live terminal change", async ()
   h.refresh();
   await h.settle();
   assert.equal(h.calls.length, 2);
+});
+
+test("history keeps recent full records and does not refetch expired records on later polls", async () => {
+  const records = [
+    finished("recent"),
+    { ...finished("expired"), finished_ms: 10000000 - 600000 },
+    { ...finished("untimed"), finished_ms: undefined },
+  ];
+  const h = await harness(async (args) =>
+    args[0] === "ls"
+      ? success({ terminals: records })
+      : success(records.find((record) => record.address === args[1])),
+  );
+  await h.settle();
+  assert.deepEqual([...h.graph.ended.keys()], ["recent"]);
+  h.graph.setScope("all");
+  h.timers.get(30000)();
+  await h.settle();
+  assert.equal(h.calls.filter((args) => args[0] === "get").length, 3);
+  assert.deepEqual([...h.graph.ended.keys()], ["recent"]);
+});
+
+test("finished full records expire while hidden without native calls or redraws", async () => {
+  const record = finished("recent");
+  const h = await harness(async (args) =>
+    args[0] === "ls" ? success({ terminals: [record] }) : success(record),
+  );
+  await h.settle();
+  assert.equal(h.graph.ended.size, 1);
+  const callsBefore = h.calls.length;
+  const notificationsBefore = h.notifications();
+  h.state.hidden = true;
+  h.state.now += 600000;
+  h.timers.get(2000)();
+  assert.equal(h.graph.ended.size, 0);
+  assert.equal(h.calls.length, callsBefore);
+  assert.equal(h.notifications(), notificationsBefore);
+  h.state.hidden = false;
+  h.timers.get(30000)();
+  await h.settle();
+  assert.equal(h.calls.filter((args) => args[0] === "get").length, 1);
+});
+
+test("removing expired records from core forgets their cache markers", async () => {
+  const record = { ...finished("expired"), finished_ms: 1 };
+  let records = [record];
+  const h = await harness(async (args) =>
+    args[0] === "ls" ? success({ terminals: records }) : success(record),
+  );
+  await h.settle();
+  records = [];
+  h.timers.get(30000)();
+  await h.settle();
+  assert.equal(h.graph.ended.size, 0);
+  assert.equal(h.graph.expired.size, 0);
+  records = [record];
+  h.timers.get(30000)();
+  await h.settle();
+  assert.equal(h.calls.filter((args) => args[0] === "get").length, 2);
+  assert.equal(h.graph.expired.size, 1);
 });

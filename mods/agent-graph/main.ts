@@ -181,6 +181,7 @@ export default class AgentGraph extends View {
   declare scope: string;
   declare size: { width: number; height: number };
   declare ended: Map<string, TerminalRecord>;
+  declare expired: Set<string>;
   declare liveKey: string | null;
   declare syncing: boolean;
   declare stale: boolean;
@@ -191,6 +192,7 @@ export default class AgentGraph extends View {
     this.scope = localStorage.getItem("scope") ?? "space";
     this.size = { width: 0, height: 0 };
     this.ended = new Map();
+    this.expired = new Set();
     this.liveKey = null;
     this.syncing = false;
     this.syncFinished(cx);
@@ -206,6 +208,12 @@ export default class AgentGraph extends View {
   }
 
   syncFinished(cx: Context) {
+    const now = Date.now();
+    for (const [address, record] of this.ended) {
+      if (now - (record.finished_ms ?? 0) < FINISHED_FOR_MS) continue;
+      this.ended.delete(address);
+      this.expired.add(address);
+    }
     if (!shown()) {
       this.stale = true;
       return;
@@ -229,7 +237,9 @@ export default class AgentGraph extends View {
         const ended = (JSON.parse(result.stdout).terminals as TerminalRecord[]).filter(
           (k) => k.state !== "live" && k.parent,
         );
-        const missing = ended.filter((k) => !this.ended.has(k.address));
+        const missing = ended.filter(
+          (k) => !this.ended.has(k.address) && !this.expired.has(k.address),
+        );
         let next = 0;
         await Promise.all(
           Array.from({ length: Math.min(4, missing.length) }, async () => {
@@ -238,8 +248,12 @@ export default class AgentGraph extends View {
               if (!k) return;
               try {
                 const full = await hc(["get", k.address, "--json"]);
-                if (full.code === 0) this.ended.set(k.address, JSON.parse(full.stdout));
-                else failed = true;
+                if (full.code === 0) {
+                  const record = JSON.parse(full.stdout) as TerminalRecord;
+                  if (Date.now() - (record.finished_ms ?? 0) < FINISHED_FOR_MS)
+                    this.ended.set(k.address, record);
+                  else this.expired.add(k.address);
+                } else failed = true;
               } catch {
                 failed = true;
               }
@@ -249,6 +263,7 @@ export default class AgentGraph extends View {
         const listed = new Set(ended.map((k) => k.address));
         for (const address of this.ended.keys())
           if (!listed.has(address)) this.ended.delete(address);
+        for (const address of this.expired) if (!listed.has(address)) this.expired.delete(address);
         cx.notify();
       } catch {
         failed = true;
