@@ -43,6 +43,7 @@ export default class Workspace extends View {
 
   render() {
     const t = theme() as Record<string, `#${string}`>;
+    // A popup doesn't block presses: stop them before a click lands on what is behind it.
     return v_flex()
       .id("workspace")
       .track_focus(this.handle)
@@ -51,6 +52,8 @@ export default class Workspace extends View {
       .p(4)
       .bg(t.popover)
       .text_size(12)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_mouse_down("right", (_e, cx) => cx.stop_propagation())
       .on_key_down((e) => {
         if (e.key === "escape") closeOverlay(props()?.overlay);
       })

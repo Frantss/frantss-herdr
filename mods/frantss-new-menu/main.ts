@@ -74,6 +74,7 @@ export default class NewMenu extends View {
     const installed = this.agents.filter((a) => a.installed);
     const choices = [...installed, ...this.agents.filter((a) => !a.installed).slice(0, 2)];
     const mod = window()?.platform === "macos" ? "⌘" : "Ctrl";
+    // A popup doesn't block presses: stop them before a click lands on what is behind it.
     return v_flex()
       .min_h(0)
       .w_full()
@@ -83,6 +84,8 @@ export default class NewMenu extends View {
       .text_size(12.8)
       .id("new-menu")
       .track_focus(this.handle)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_mouse_down("right", (_e, cx) => cx.stop_propagation())
       .on_key_down((e) => {
         if (!e.modifiers.control && !e.modifiers.platform) return;
         const agent = /^[1-9]$/.test(e.key) ? installed[Number(e.key) - 1] : null;
