@@ -4,12 +4,15 @@ import type { Context, AsyncContext, FocusHandle } from "gpui-kit";
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
 // a command "worktree" opens the worktree dialog instead, and "rename" Herdr's rename prompt starting
 // from the tab's or space's shown name (target.name, from the frantss mods that open this menu).
+// An agent's pane menu starts with its actions: "reply" opens frantss-reply, "interrupt" runs
+// hc interrupt, "copy" copies args.text, and "kill" asks first.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import {
   run,
   props,
+  agents,
   closeOverlay,
   openOverlay,
   theme,
@@ -20,6 +23,7 @@ import {
   exec,
 } from "herdr";
 import { closeTab } from "./close-tab.ts";
+import { hcOrToast } from "./agent-hc.ts";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s: import("herdr").SpaceInfo) {
@@ -50,23 +54,36 @@ type MenuTarget = {
 type MenuProps = { tab?: string; target?: MenuTarget; overlay?: string };
 type MenuItem = [label: string, command: string, args: Record<string, string>];
 
+// What the menu does to an agent, before the pane items.
+const agentItems = (terminal: string, cwd: string): MenuItem[] => [
+  ["Peek", "terminal.peek", { terminal }],
+  ["Reply…", "reply", { terminal }],
+  ["Interrupt", "interrupt", { terminal }],
+  ["Copy address", "copy", { text: terminal }],
+  ["Copy folder", "copy", { text: cwd }],
+  ["Kill…", "kill", { terminal }],
+];
+
 const renameItem = (what: string, tg: MenuTarget): MenuItem =>
   tg.name === undefined
     ? ["Rename", `${what}.rename`, { id: tg.id }]
     : ["Rename", "rename", { what, id: tg.id, name: tg.name }];
 
-function items(p: MenuProps, git: "main" | "linked" | null): MenuItem[] {
+export function items(p: MenuProps, git: "main" | "linked" | null): MenuItem[] {
   p = p ?? {};
   const tg = p.target ?? {};
   switch (p.tab) {
     case "pane": {
-      // A kept sub-agent can go back under its parent, still running.
+      // An agent, and a kept sub-agent, can go back to running without a pane: a sub-agent under
+      // its parent.
       const all = terminals();
       const term = all.find((t) => t.address === tg.terminal);
       const parent = term?.parent && all.find((t) => t.address === term.parent);
+      const agent = term && agents().some((a) => a.address === term.address);
       // Once they go to the program, Shift+right-click still opens this menu.
       const toProgram = term?.labels?.["herdr.right-click"] === "program";
       return [
+        ...(agent ? agentItems(term.address, term.cwd ?? "") : []),
         ["Split right", "pane.split", { direction: "right", pane: tg.pane }],
         ["Split down", "pane.split", { direction: "down", pane: tg.pane }],
         ["Zoom", "pane.zoom", { pane: tg.pane }],
@@ -93,7 +110,9 @@ function items(p: MenuProps, git: "main" | "linked" | null): MenuItem[] {
                 { terminal: term.address },
               ],
             ]
-          : []),
+          : agent
+            ? [["Send back", "terminal.park", { terminal: term.address }]]
+            : []),
         ["Close pane", "pane.close", { pane: tg.pane }],
       ] as MenuItem[];
     }
@@ -129,7 +148,17 @@ function items(p: MenuProps, git: "main" | "linked" | null): MenuItem[] {
   }
 }
 
+const AGENT_ICONS: Record<string, string> = {
+  "terminal.peek": "mods/github/eye.svg",
+  reply: "mods/github/message.svg",
+  interrupt: "mods/workspace-chrome/square.svg",
+  copy: "mods/workspace-chrome/files.svg",
+  kill: "mods/workspace-chrome/x.svg",
+  "terminal.park": "mods/workspace-chrome/pin-off.svg",
+};
+
 function menuIcon(command: string) {
+  if (AGENT_ICONS[command]) return AGENT_ICONS[command];
   const name = command.endsWith(".close")
     ? "x"
     : command.endsWith(".rename") || command === "rename"
@@ -184,11 +213,28 @@ export default class Menu extends View {
       });
   }
 
-  choose(i: number, _cx: Context) {
+  choose(i: number, cx: Context) {
     const it = items(props(), this.git)[i];
     if (!it) return;
     closeOverlay(props()?.overlay);
-    if (it[1] === "worktree")
+    if (it[1] === "copy") cx.write_to_clipboard(it[2].text);
+    else if (it[1] === "reply")
+      openOverlay({ mod: "frantss-reply", kind: "dialog", width: 480, height: 300, props: it[2] });
+    else if (it[1] === "interrupt")
+      cx.spawn(() => hcOrToast(["interrupt", it[2].terminal], "Could not interrupt"));
+    else if (it[1] === "kill")
+      openOverlay({
+        mod: "confirm",
+        kind: "dialog",
+        width: 400,
+        height: 170,
+        props: {
+          title: `Kill ${it[2].terminal}?`,
+          detail: "Its program stops, and what it was doing is lost.",
+          command: { name: "terminal.kill", args: { terminal: it[2].terminal } },
+        },
+      });
+    else if (it[1] === "worktree")
       openOverlay({
         mod: "worktree",
         kind: "dialog",
@@ -236,6 +282,9 @@ export default class Menu extends View {
             .when(
               i > 0 &&
                 (it[1].endsWith(".close") ||
+                  (it[1] === "pane.split" && list[i - 1][1] !== "pane.split") ||
+                  it[1] === "kill" ||
+                  (it[1] === "copy" && list[i - 1][1] !== "copy") ||
                   it[1] === "app.help" ||
                   (it[1] === "app.theme" && list[i - 1][1] !== "app.theme")),
               (el) => el.child(div().mx(4).my(4).h(1).bg(t.border)),

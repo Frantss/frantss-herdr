@@ -113,7 +113,7 @@ const menu = (tab: string, target: Record<string, unknown>) =>
     mod: "frantss-menu",
     kind: "popup",
     width: 320,
-    height: 260,
+    height: 380,
     props: { tab, target },
   });
 
