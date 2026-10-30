@@ -194,9 +194,18 @@ function parsePullRequest(node: PullRequestNode): PullRequest {
   };
 }
 
-// Open pull requests of the repository that `gh` resolves from its working folder.
-export async function loadPullRequests(gh: GitHubExecutor): Promise<PullRequests> {
-  const repo = JSON.parse(await run(gh, ["repo", "view", "--json", "owner,name"]));
+// Open pull requests of the repository `owner/name`, else the one that `gh` resolves from its
+// working folder.
+export async function loadPullRequests(
+  gh: GitHubExecutor,
+  nameWithOwner?: string,
+): Promise<PullRequests> {
+  let owner: string, name: string;
+  if (nameWithOwner) [owner, name] = nameWithOwner.split("/");
+  else {
+    const repo = JSON.parse(await run(gh, ["repo", "view", "--json", "owner,name"]));
+    [owner, name] = [repo.owner.login, repo.name];
+  }
   const { data } = JSON.parse(
     await run(gh, [
       "api",
@@ -204,9 +213,9 @@ export async function loadPullRequests(gh: GitHubExecutor): Promise<PullRequests
       "-f",
       `query=${QUERY}`,
       "-f",
-      `owner=${repo.owner.login}`,
+      `owner=${owner}`,
       "-f",
-      `name=${repo.name}`,
+      `name=${name}`,
     ]),
   );
   return {

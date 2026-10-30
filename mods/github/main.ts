@@ -105,6 +105,9 @@ export default class GitHub extends View {
   declare agentKey: string | null;
   declare cache: Map<string, PullRequests>;
   declare repos: Map<string, string | null>;
+  // Each repository's GitHub name, so later loads skip `gh repo view`. Kept in memory only, so a
+  // changed remote is seen after a reload or a failed load.
+  declare names: Map<string, string>;
   declare collapsed: Set<string>;
   declare context: string;
   declare place: Location;
@@ -138,6 +141,7 @@ export default class GitHub extends View {
     }
     this.cache = new Map(saved.cache ?? []);
     this.repos = new Map(saved.repos ?? []);
+    this.names = new Map();
     try {
       this.collapsed = new Set(JSON.parse(localStorage.getItem("collapsed") ?? "[]"));
     } catch {
@@ -221,15 +225,18 @@ export default class GitHub extends View {
       this.inflight.add(repo);
       started = true;
       if (displayed()) cx.notify();
-      this.cache.set(
-        repo,
-        await loadPullRequests((args) => exec("gh", args, { cwd: place.cwd, on: place.on })),
+      const data = await loadPullRequests(
+        (args) => exec("gh", args, { cwd: place.cwd, on: place.on }),
+        this.names.get(repo),
       );
+      this.cache.set(repo, data);
+      this.names.set(repo, data.repo);
       this.errors.delete(repo);
       if (options.persist !== false) this.persistCache();
     } catch (error) {
       const key = repo ?? context,
         message = errorText(error);
+      this.names.delete(repo);
       errorChanged = this.errors.get(key) !== message;
       this.errors.set(key, message);
     } finally {

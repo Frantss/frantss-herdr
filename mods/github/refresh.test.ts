@@ -111,17 +111,25 @@ async function harness() {
             ? { code: 1, stdout: "", stderr: failure }
             : {
                 code: 0,
-                stdout: JSON.stringify({ owner: { login: "owner" }, name: "repo" }),
+                stdout: JSON.stringify({
+                  owner: { login: on ?? "local" },
+                  name: cwd.slice(1).replaceAll("/", "-"),
+                }),
                 stderr: "",
               };
         }
         assert.deepEqual(Array.from(args.slice(0, 2)), ["api", "graphql"]);
+        const field = (name: string) =>
+          args.find((arg) => arg.startsWith(`${name}=`)).slice(name.length + 1);
         return {
           code: 0,
           stdout: JSON.stringify({
             data: {
               viewer: { login: "me" },
-              repository: { nameWithOwner: `${on ?? "local"}/${cwd}`, pullRequests: { nodes: [] } },
+              repository: {
+                nameWithOwner: `${field("owner")}/${field("name")}`,
+                pullRequests: { nodes: [] },
+              },
             },
           }),
           stderr: "",
@@ -168,6 +176,7 @@ async function harness() {
   const view = new GitHub();
   Object.assign(view, {
     repos: new Map(),
+    names: new Map(),
     cache: new Map(),
     errors: new Map(),
     inflight: new Set(),
@@ -406,7 +415,7 @@ test("a failed repository does not repeat within its cycle or prevent later repo
   assert.equal(h.state.writes.length, 1);
   h.state.failures.clear();
   await h.refresh();
-  assert.equal(h.requests().length, 6);
+  assert.equal(h.requests().length, 4);
   assert.equal(h.view.error, null);
   assert.equal(h.view.cache.size, 3);
   assert.equal(h.state.writes.length, 2);
@@ -490,6 +499,17 @@ test("GitHub reuses inbox models until repository data or agent assignments chan
   assert.ok(reads > assignedReads);
 });
 
+test("later GitHub loads reuse each repository's name", async () => {
+  const h = await harness();
+  const queries = () =>
+    h.state.calls.filter((call) => call.args[0] === "api").map((call) => call.args.slice(-4));
+  await h.refresh();
+  const first = queries();
+  await h.refresh();
+  assert.equal(h.requests().length, 3);
+  assert.deepEqual(queries(), [...first, ...first]);
+});
+
 test("a hidden GitHub panel refreshes every five minutes instead of every minute", async () => {
   const h = await harness();
   h.state.explicit = false;
@@ -499,18 +519,19 @@ test("a hidden GitHub panel refreshes every five minutes instead of every minute
   h.view.init(undefined, h.cx);
   const [[interval, tick]] = h.state.timers as [number, (cx: unknown) => void][];
   assert.equal(interval, 60000);
+  const loads = () => h.state.calls.filter((call) => call.command === "gh").length;
   tick(h.cx);
   await h.drain();
-  const requests = h.requests().length;
+  const requests = loads();
   assert.ok(requests > 0);
   h.view.polledAt = Date.now() - 4 * 60000;
   tick(h.cx);
   await h.drain();
-  assert.equal(h.requests().length, requests);
+  assert.equal(loads(), requests);
   h.view.polledAt = Date.now() - 5 * 60000;
   tick(h.cx);
   await h.drain();
-  assert.ok(h.requests().length > requests);
+  assert.ok(loads() > requests);
 });
 
 test("GitHub publishes the inbox count where it looks, without ready or assigned items", async () => {
