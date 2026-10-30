@@ -178,15 +178,15 @@ async function harness(refresh = false) {
       }
       const query = args.includes("status")
         ? "status"
-        : args.includes("--verify")
-          ? "head"
-          : args.includes("--numstat")
-            ? args.includes("--cached")
+        : args.includes("--numstat")
+          ? args.includes("HEAD")
+            ? "head"
+            : args.includes("--cached")
               ? "cached"
               : "unstaged"
-            : args.includes("--show-toplevel")
-              ? "root"
-              : "other";
+          : args.includes("--show-toplevel")
+            ? "root"
+            : "other";
       state.queryStarts.push(query);
       if (state.queryBlocks.has(query)) await state.queryBlocks.get(query);
       if (state.error) throw new Error(state.error);
@@ -195,11 +195,9 @@ async function harness(refresh = false) {
         return { code: 0, stdout: `${options.cwd}\n${options.cwd}/.git\n`, stderr: "" };
       }
       if (args.includes("status")) return { code: 0, stdout: state.status, stderr: "" };
-      if (args.includes("--verify"))
-        return { code: state.headCode ?? 0, stdout: "head", stderr: "" };
       if (args.includes("--numstat"))
         return {
-          code: 0,
+          code: query === "head" ? (state.headCode ?? 0) : 0,
           stdout: args.includes("--cached") ? (state.cachedStats ?? state.stats) : state.stats,
           stderr: "",
         };
@@ -597,7 +595,7 @@ const ticks = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
 
-test("Changes overlaps status and HEAD discovery after resolving the repository root", async () => {
+test("Changes overlaps status and HEAD statistics after resolving the repository root", async () => {
   const h = await harness(true);
   const status = deferred(),
     head = deferred();
@@ -611,7 +609,7 @@ test("Changes overlaps status and HEAD discovery after resolving the repository 
   assert.equal(h.state.queryStarts.includes("unstaged"), false);
   status.resolve();
   await h.drain();
-  assert.ok(started.includes("status") && started.includes("head"));
+  assert.deepEqual(started, ["root", "status", "head"]);
 });
 
 test("Changes overlaps unborn repository statistics and sums staged and unstaged counts", async () => {

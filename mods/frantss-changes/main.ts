@@ -321,7 +321,9 @@ export default class Changes extends View {
           }
           [root, gitDir] = top.stdout.trim().split(/\r?\n/);
         }
-        const git = (args: string[]) => exec("git", args, { cwd: root, on });
+        const git = (args: string[]) => exec("git", args, { cwd: root, on }),
+          numstat = (...args: string[]) =>
+            git(["diff", ...args, "--numstat", "-z", "--no-renames"]);
         const [status, head] = await Promise.all([
           git([
             "--no-optional-locks",
@@ -331,18 +333,14 @@ export default class Changes extends View {
             "--no-renames",
             "--untracked-files=all",
           ]),
-          git(["rev-parse", "--verify", "HEAD"]),
+          numstat("HEAD"),
         ]);
         if (key() !== context) return;
         if (status.code !== 0) throw new Error(status.stderr);
         const stats: Record<string, FileStats> = {};
+        // Before the first commit there is no HEAD: count the staged and unstaged changes.
         const results =
-          head.code === 0
-            ? [await git(["diff", "HEAD", "--numstat", "-z", "--no-renames"])]
-            : await Promise.all([
-                git(["diff", "--cached", "--numstat", "-z", "--no-renames"]),
-                git(["diff", "--numstat", "-z", "--no-renames"]),
-              ]);
+          head.code === 0 ? [head] : await Promise.all([numstat("--cached"), numstat()]);
         if (key() !== context) return;
         for (const result of results) {
           if (result.code !== 0) throw new Error(result.stderr);
