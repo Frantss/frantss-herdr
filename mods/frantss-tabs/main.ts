@@ -2,8 +2,20 @@ import type { Context, AsyncContext, Element, ClickEvent, MouseButtonEvent } fro
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { button as sharedButton } from "./button.ts";
-import { findNode, PANEL_MODS, type LayoutNode, type PanelId } from "./panel.ts";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, nextCommand } from "herdr";
+import { findNode, followedPlace, PANEL_MODS, type LayoutNode, type PanelId } from "./panel.ts";
+import {
+  spaces,
+  panes,
+  run,
+  openOverlay,
+  theme,
+  window,
+  shared,
+  layout,
+  nextCommand,
+  exec,
+  watchFolder,
+} from "herdr";
 
 import type { SpaceInfo, TabInfo, Program } from "herdr";
 
@@ -41,6 +53,10 @@ function tabName(c: TabInfo, ps = panes()) {
   ).toLowerCase();
 }
 
+// Git's lock files come and go with every git command; counting on them alone never ends.
+const meaningful = (paths: string[]) =>
+  paths.some((path) => !/\/\.git\/.*\.lock$|\/node_modules\//.test(path));
+
 // The frantss rail's space name: the name you gave it, else its branch, else Herdr's.
 const spaceName = (s: SpaceInfo) => (s.named ? s.name : (s.branch ?? s.name));
 
@@ -64,8 +80,15 @@ export default class Tabs extends View {
   declare panels: Record<string, string | null>;
   declare space: string;
   declare pending: { want: string | null; until: number } | null;
+  // The Changes button's count: the changed files where the Changes panel looks (null: not a repository).
+  declare changeCount: number | null;
+  declare countedPlace: string | null;
+  declare counting: boolean;
+  declare watchedRoot: string | null;
   init(_props: unknown, cx: AsyncContext) {
     this.pressed = null;
+    this.changeCount = null;
+    cx.timer.every(10000, (cx) => this.countChanges(cx));
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
     // "rename" (F2 in this layout, keys.json): rename the current tab; "rename-space" (shift-F2): its space.
     cx.spawn(async () => {
@@ -111,7 +134,65 @@ export default class Tabs extends View {
     localStorage.setItem("panels", JSON.stringify(this.panels));
   }
 
-  render() {
+  countChanges(cx: Context) {
+    if (this.counting) return;
+    const place = followedPlace(),
+      placeKey = JSON.stringify(place);
+    this.countedPlace = placeKey;
+    if (!place.cwd) {
+      this.changeCount = null;
+      return;
+    }
+    this.counting = true;
+    cx.spawn(async (cx) => {
+      try {
+        const git = (args: string[]) => exec("git", args, { cwd: place.cwd, on: place.on });
+        const [top, status] = await Promise.all([
+          git(["rev-parse", "--show-toplevel"]),
+          git([
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--no-renames",
+            "--untracked-files=all",
+          ]),
+        ]);
+        if (JSON.stringify(followedPlace()) !== placeKey) return;
+        const count = status.code === 0 ? status.stdout.split("\0").filter(Boolean).length : null;
+        if (count !== this.changeCount) {
+          this.changeCount = count;
+          cx.notify();
+        }
+        if (top.code === 0 && !place.on) this.watch(top.stdout.trim(), cx);
+      } catch {
+        // The count stays as it was; the next refresh tries again.
+      } finally {
+        this.counting = false;
+        // The place changed while git ran: count the one now followed.
+        if (JSON.stringify(followedPlace()) !== placeKey) this.countChanges(cx);
+      }
+    });
+  }
+
+  watch(root: string, cx: Context) {
+    if (this.watchedRoot === root) return;
+    this.watchedRoot = root;
+    cx.spawn(async (cx) => {
+      try {
+        while (this.watchedRoot === root) {
+          if (!meaningful(await watchFolder(root))) continue;
+          // One count for a burst of saves.
+          await cx.sleep(300);
+          if (this.watchedRoot === root) this.countChanges(cx);
+        }
+      } catch {
+        if (this.watchedRoot === root) this.watchedRoot = null;
+      }
+    });
+  }
+
+  render(cx: Context) {
     const ps = panes();
     const t = theme() as Record<string, `#${string}`>;
     const space = spaces().find((p) => p.active);
@@ -220,7 +301,9 @@ export default class Tabs extends View {
       "github",
     ];
     this.syncPanel(space, panel, enabled);
-    const panelButton = (id: PanelId, label: string, icon: string) => {
+    if (enabled.includes("changes") && JSON.stringify(followedPlace()) !== this.countedPlace)
+      this.countChanges(cx);
+    const panelButton = (id: PanelId, label: string, icon: string, count = 0) => {
       const on = panel && !panel.hidden && panel.active === id;
       return h_flex()
         .id(`panel-${id}`)
@@ -247,7 +330,23 @@ export default class Tabs extends View {
           }
         })
         .child(svg(icon).size(14))
-        .child(label);
+        .child(label)
+        .when(count > 0, (el) =>
+          el.child(
+            div()
+              .h(14)
+              .min_w(14)
+              .px(3)
+              .flex()
+              .items_center()
+              .justify_center()
+              .rounded(3)
+              .text_size(9)
+              .bg(t.accent)
+              .text_color(t.accent_foreground)
+              .child(String(count)),
+          ),
+        );
     };
     // No fill: the layout's dot texture shows through, as behind the rail and top bar.
     return (
@@ -290,7 +389,9 @@ export default class Tabs extends View {
           el.child(panelButton("files", "Files", "mods/files/file.svg")),
         )
         .when(enabled.includes("changes"), (el) =>
-          el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")),
+          el.child(
+            panelButton("changes", "Changes", "mods/changes/changes.svg", this.changeCount ?? 0),
+          ),
         )
         .child(panelButton("agent-graph", "Agents", "mods/agent-graph/graph.svg"))
         .child(panelButton("git-history", "History", "mods/git-history/history.svg"))
