@@ -352,6 +352,8 @@ const file = (path: string, section = "unstaged") => ({
   add: 1,
   del: 2,
 });
+// Where a list row's buttons start, from the list's right edge; presses count from there.
+const BUTTONS_RIGHT = 88;
 function byId(node, id) {
   if (node?.styles?.some(([key, value]) => key === "id" && value === id)) return node;
   return (node?.childNodes ?? []).map((child) => byId(child, id)).find(Boolean);
@@ -687,7 +689,7 @@ test("a press on a row's right end stages or unstages what the row holds", async
   const list = h.state.lists.findLast((list) => list.id === "changes-files"),
     press = (right: number, key: string) => {
       list.node.handlers.on_mouse_down({
-        local_position: { x: 300 - right, y: 0 },
+        local_position: { x: 300 - (BUTTONS_RIGHT + right) * h.state.zoom, y: 0 },
         bounds: { width: 300, height: 400 },
       });
       list.node.handlers.on_item_click(key, h.cx);
@@ -708,6 +710,8 @@ test("a press on a row's right end stages or unstages what the row holds", async
   ]);
   press(100, "unstaged:src/b.ts");
   assert.equal(h.changes.open, "unstaged:src/b.ts");
+  press(-20, "unstaged:src/a.ts");
+  assert.equal(h.changes.open, "unstaged:src/a.ts");
   assert.equal(h.state.indexCalls.length, 4);
 });
 
@@ -775,7 +779,7 @@ test("discard asks for a second press, then trashes untracked files and restores
   const list = () => h.state.lists.findLast((list) => list.id === "changes-files"),
     press = (right: number, key: string, count = 1) => {
       list().node.handlers.on_mouse_down({
-        local_position: { x: 300 - right, y: 0 },
+        local_position: { x: 300 - (BUTTONS_RIGHT + right) * h.state.zoom, y: 0 },
         bounds: { width: 300, height: 400 },
         click_count: count,
       });
@@ -808,6 +812,24 @@ test("discard asks for a second press, then trashes untracked files and restores
   ]);
   press(40, "unstaged:");
   assert.ok(rowText("unstaged:").includes("Discard all?"));
+});
+
+test("an armed discard shows its confirm beside the row's counts", async () => {
+  const h = await harness();
+  h.changes.files = [file("a.ts")];
+  h.render();
+  const row = () =>
+    text(
+      h.range(
+        h.state.lists.findLast((list) => list.id === "changes-files"),
+        1,
+        2,
+      )[0],
+    );
+  assert.ok(row().includes("+1 −2") && !row().includes("Discard?"));
+  h.changes.armed = "unstaged:a.ts";
+  h.render();
+  assert.ok(row().includes("+1 −2") && row().includes("Discard?"));
 });
 
 test("a place without a trash command discards nothing", async () => {

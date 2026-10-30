@@ -112,9 +112,12 @@ const TREE_SETTING = "changes-tree";
 // Diff rows indent their text past the line number and the hover "+".
 const GUTTER = 62,
   COMPOSER = 48;
-// The width of a list row's button and of its discard confirm, from the list's right edge.
-const INDEX_ACTION = 26,
-  CONFIRM = 80;
+// A list row's counts column; its buttons start left of it, past the row's padding and gap, and
+// a button and the discard confirm are this wide.
+const COUNTS = 76,
+  ACTIONS_RIGHT = 8 + COUNTS + 4,
+  INDEX_ACTION = 22,
+  CONFIRM = 76;
 const zoom = () => (settings().zoom as number | undefined) ?? 1;
 
 // Git's lock files come and go with every git command; refreshing on them alone never ends.
@@ -927,11 +930,10 @@ export default class Changes extends View {
           )
           .child(div().max_w(260).min_w(0).truncate().child(name)),
       )
-      .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
-      .when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)))
       .when(comments > 0, (e) =>
         e.child(div().text_size(11).text_color(t.accent).child(`✎ ${comments}`)),
       )
+      .child(this.counts(f, t))
       .child(this.rowActions(open, f.section, t));
   }
 
@@ -991,12 +993,7 @@ export default class Changes extends View {
           .text_color(t.dim),
       )
       .child(div().flex_1().min_w(0).truncate().child(row.name))
-      .when(row.add > 0, (e) =>
-        e.child(div().text_size(11).text_color(t.ansi2).child(`+${row.add}`)),
-      )
-      .when(row.del > 0, (e) =>
-        e.child(div().text_size(11).text_color(t.ansi1).child(`−${row.del}`)),
-      )
+      .child(this.counts(row, t))
       .child(this.rowActions(`${section}:${row.path}/`, section, t));
   }
 
@@ -1014,7 +1011,7 @@ export default class Changes extends View {
       .text_color(t.muted)
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .child(div().flex_1().min_w(0).truncate().child(SECTION_TITLE[section]))
-      .child(div().text_size(10).child(String(count)))
+      .child(h_flex().w(COUNTS).flex_none().justify_end().text_size(10).child(String(count)))
       .child(this.rowActions(`${section}:`, section, t));
   }
 
@@ -1031,15 +1028,29 @@ export default class Changes extends View {
     );
   }
 
-  // The row's buttons at its right end: stage or unstage, and discard left of it. A list row
-  // cannot take handlers, so the list's click handler finds a press over them. They show on hover:
-  // an overlay over the row, since a row cannot style its children, whose fill covers the counts.
-  // An armed discard shows its confirm until the next press.
+  // A list row's added and deleted lines, in a column of one width so the buttons left of it
+  // sit at one place.
+  counts({ add, del }: { add: number; del: number }, t: Theme) {
+    return h_flex()
+      .w(COUNTS)
+      .flex_none()
+      .justify_end()
+      .gap(8)
+      .text_size(11)
+      .when(add > 0, (e) => e.child(div().text_color(t.ansi2).child(`+${add}`)))
+      .when(del > 0, (e) => e.child(div().text_color(t.ansi1).child(`−${del}`)));
+  }
+
+  // The row's buttons left of its counts: stage or unstage, and discard left of it. A list row
+  // cannot take handlers, so the list's click handler finds a press over them. They show on hover
+  // over the end of the name: an overlay over the row, since a row cannot style its children. An
+  // armed discard shows its confirm there until the next press.
   rowActions(key: string, section: Section, t: Theme) {
     const armed = this.armed === key,
       icon = (path: string) =>
         div()
-          .size(20)
+          .w(INDEX_ACTION)
+          .h_full()
           .flex()
           .items_center()
           .justify_center()
@@ -1053,14 +1064,14 @@ export default class Changes extends View {
       .child(
         h_flex()
           .absolute()
-          .right(2)
+          .right(ACTIONS_RIGHT)
           .top(2)
           .h(20)
           .rounded(3)
           .bg(armed ? t.ansi1 : t.hover)
           .when(armed, (e) =>
             e
-              .w(CONFIRM - 4)
+              .w(CONFIRM)
               .justify_center()
               .items_center()
               .text_size(11)
@@ -1078,13 +1089,15 @@ export default class Changes extends View {
   // section's row does nothing, a folder's opens or closes it, and a file's shows its diff.
   clickListRow(key: string, cx: Context) {
     const armed = this.armed === key,
-      right = this.pressRight / zoom(),
+      // How far the press landed left of where the buttons start; the counts are right of it.
+      right = this.pressRight / zoom() - ACTIONS_RIGHT,
+      over = (width: number) => right >= 0 && right <= width,
       path = key.slice(key.indexOf(":") + 1);
     this.armed = null;
-    if (armed && right <= CONFIRM) {
+    if (armed && over(CONFIRM)) {
       if (this.pressCount === 1) this.discard(this.discardable(key), cx);
       else cx.notify();
-    } else if (right <= INDEX_ACTION) {
+    } else if (over(INDEX_ACTION)) {
       const paths = [path.replace(/\/$/, "") || "."];
       this.run(
         [
@@ -1097,7 +1110,7 @@ export default class Changes extends View {
         ],
         cx,
       );
-    } else if (right <= INDEX_ACTION * 2 && this.discardable(key).length) {
+    } else if (over(INDEX_ACTION * 2) && this.discardable(key).length) {
       this.armed = key;
       cx.notify();
     } else if (path.endsWith("/")) this.toggleFolder(key.slice(0, -1), cx);
