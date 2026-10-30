@@ -6,6 +6,8 @@ import vm from "node:vm";
 
 async function harness(width = 3000, childCount = 7, deep = false) {
   const paints: any[] = [];
+  const overlays: any[] = [];
+  const panes: any[] = [];
   const calls: any[] = [];
   const palette = { border: "#111111", input: "#222222", working: "#333333", blocked: "#444444" };
   const statuses = ["blocked", "working", "idle", "finished", "done", null, "error"];
@@ -89,11 +91,11 @@ async function harness(width = 3000, childCount = 7, deep = false) {
     },
     herdr: {
       notify: () => {},
-      openOverlay: () => {},
+      openOverlay: (spec) => overlays.push(spec),
       setAgentOrder: () => {},
       agents: () => [],
       terminals: () => records.filter((record) => record.state === "live"),
-      panes: () => [],
+      panes: () => panes,
       focused: () => ({ terminal: "parent" }),
       run: (...args) => calls.push(args),
       hc: () => assert.fail("Unexpected hc call"),
@@ -130,9 +132,7 @@ async function harness(width = 3000, childCount = 7, deep = false) {
   Object.assign(graph, {
     scope: "all",
     folded: new Set(),
-    handle: { focus() {} },
     hovered: null,
-    menu: null,
     replyTo: null,
     replyInput: { set_value() {}, focus() {}, value: () => "" },
     questions: new Map(),
@@ -148,7 +148,17 @@ async function harness(width = 3000, childCount = 7, deep = false) {
     stop_propagation: () => calls.push(["stop"]),
     spawn: () => {},
   };
-  return { graph, paints, palette, records, calls, cx, render: () => graph.render(cx) };
+  return {
+    graph,
+    paints,
+    palette,
+    records,
+    calls,
+    overlays,
+    panes,
+    cx,
+    render: () => graph.render(cx),
+  };
 }
 
 function byId(node, id) {
@@ -295,25 +305,13 @@ for (const width of [719, 720]) {
   });
 }
 
-test("a card's right-click menu kills its agent only on a second click", async () => {
+test("a card opens the shared menu: its pane's, or the terminal's own without a pane", async () => {
   const h = await harness(366, 1);
   byId(h.render(), "card-parent").handlers.on_mouse_down({}, h.cx);
-  byId(h.render(), "agent-menu-kill").handlers.on_click({}, h.cx);
-  assert.equal(h.graph.menu.confirm, true);
-  assert.ok(!h.calls.some(([name]) => name === "terminal.kill"));
-  byId(h.render(), "agent-menu-kill").handlers.on_click({}, h.cx);
-  assert.deepEqual(plain(h.calls.find(([name]) => name === "terminal.kill")), [
-    "terminal.kill",
-    { terminal: "parent" },
+  h.panes.push({ pane: "p1", terminal: "child-0" });
+  byId(h.render(), "card-child-0").handlers.on_mouse_down({}, h.cx);
+  assert.deepEqual(plain(h.overlays.map((spec) => [spec.mod, spec.props])), [
+    ["frantss-menu", { tab: "terminal", target: { terminal: "parent" } }],
+    ["frantss-menu", { tab: "pane", target: { pane: "p1", terminal: "child-0" } }],
   ]);
-  assert.equal(h.graph.menu, null);
-});
-
-test("replying from the menu opens the reply field on a card that is not blocked", async () => {
-  const h = await harness(366, 1);
-  byId(h.render(), "card-parent").handlers.on_mouse_down({}, h.cx);
-  byId(h.render(), "agent-menu-reply").handlers.on_click({}, h.cx);
-  const tree = h.render();
-  assert.equal(style(byId(tree, "card-parent"), "h"), 52 + 92);
-  assert.ok(byId(tree, "reply-field-parent"));
 });

@@ -1,7 +1,7 @@
 // Agents as a graph: each agent a card, a line from every agent to the sub-agents it started.
 // A tree when it fits the width, else an indented outline of the same cards.
 // Styled as a frantss side panel, beside Files and Changes. A card's hover buttons and right-click
-// menu act on its agent; in an outline, a blocked agent's card shows its question and takes a reply.
+// menu (frantss-menu) act on its agent; in an outline, a blocked agent's card shows its question and takes a reply.
 
 import {
   View,
@@ -12,7 +12,6 @@ import {
   type Context,
   type AsyncContext,
   type Color,
-  type FocusHandle,
 } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import {
@@ -30,7 +29,6 @@ import {
 } from "herdr";
 import { panelShown } from "./panel.ts";
 import { button } from "./button.ts";
-import { menuItems, INTERRUPT_ICON, PEEK_ICON, type MenuItem } from "./actions.ts";
 import { hcOrToast, readQuestion, replyArgs } from "./agent-hc.ts";
 
 type AgentStatus = "working" | "blocked" | "idle" | "done" | "finished" | "error";
@@ -54,7 +52,7 @@ interface TerminalRecord {
 interface AgentNode {
   k: TerminalRecord;
   status: AgentStatus | null;
-  // A blocked agent, or one being replied to: in an outline, its card shows its screen's last lines.
+  // A blocked agent: in an outline, its card shows its screen's last lines.
   asks: boolean;
   allKids: TerminalRecord[];
   kids: AgentNode[];
@@ -86,7 +84,8 @@ const TRUNK = 14;
 const QUESTION_LINES = 4;
 const QUESTION_LINE_H = 15;
 const QUESTION_H = QUESTION_LINES * QUESTION_LINE_H + 32;
-const MENU_W = 180;
+const PEEK_ICON = "mods/github/eye.svg";
+const INTERRUPT_ICON = "mods/workspace-chrome/square.svg";
 // How long a finished sub-agent stays on the graph after it ends.
 const FINISHED_FOR_MS = 10 * 60000;
 // Lines share trunks, so they are drawn least urgent first: the most urgent color stays on top.
@@ -218,10 +217,7 @@ export default class AgentGraph extends View {
   declare stale: boolean;
   declare outline: boolean;
   declare ages: string;
-  declare handle: FocusHandle;
   declare hovered: string | null;
-  // The card whose menu is open, where it opens in the canvas, and whether Kill waits for a confirm.
-  declare menu: { k: TerminalRecord; pane: boolean; x: number; y: number; confirm: boolean } | null;
   declare replyTo: string | null;
   declare replyInput: InputState;
   // Blocked agents' question lines, read once per status change.
@@ -230,9 +226,7 @@ export default class AgentGraph extends View {
   declare agentOrder: string;
 
   init(_props: unknown, cx: AsyncContext) {
-    this.handle = cx.focus_handle();
     this.hovered = null;
-    this.menu = null;
     this.replyTo = null;
     this.replyInput = InputState.new({ placeholder: "Reply" });
     this.replyInput.on("submit", (_e, cx) => this.sendReply(cx));
@@ -367,7 +361,7 @@ export default class AgentGraph extends View {
       return {
         k,
         status,
-        asks: (status === "blocked" && k.state === "live") || k.address === this.replyTo,
+        asks: status === "blocked" && k.state === "live",
         allKids,
         kids: this.folded.has(k.address) ? [] : allKids.map(build),
       };
@@ -398,53 +392,18 @@ export default class AgentGraph extends View {
     cx.spawn(() => hcOrToast(args, failure));
   }
 
-  // Opens a card's menu in the canvas: under its top row, or above it when the panel ends first.
-  openMenu(node: AgentNode, cx: Context) {
-    const pane = panes().some((p) => p.terminal === node.k.address);
-    const height = menuItems({ live: node.k.state === "live", pane, reply: this.outline }).reduce(
-      (h, item) => h + (item ? 24 : 9),
-      8,
-    );
-    const below = node.y + CARD_H;
-    this.menu = {
-      k: node.k,
-      pane,
-      x: Math.max(0, node.x + node.w - MENU_W),
-      y:
-        below + height > Math.max(this.size.height - 28, height)
-          ? Math.max(0, node.y - height)
-          : below,
-      confirm: false,
-    };
-    this.handle.focus();
-    cx.notify();
-  }
-
-  choose({ action }: MenuItem, cx: Context) {
-    const { k } = this.menu,
-      terminal = k.address;
-    if (action === "kill" && !this.menu.confirm) {
-      this.menu.confirm = true;
-      cx.notify();
-      return;
-    }
-    this.menu = null;
-    if (action === "focus") this.open(k);
-    else if (action === "peek") run("terminal.peek", { terminal });
-    else if (action === "keep") run("terminal.keep", { terminal });
-    else if (action === "park") run("terminal.park", { terminal });
-    else if (action === "kill") run("terminal.kill", { terminal });
-    else if (action === "reply") this.startReply(terminal);
-    else if (action === "interrupt")
-      this.hcAction(["interrupt", terminal], "Could not interrupt", cx);
-    else if (action === "copy-address") cx.write_to_clipboard(terminal);
-    else if (action === "copy-folder") cx.write_to_clipboard(k.cwd ?? "");
-    else if (action === "remove") {
-      this.ended.delete(terminal);
-      this.expired.add(terminal);
-      this.hcAction(["rm", terminal], "Could not remove the terminal", cx);
-    }
-    cx.notify();
+  // A card's menu is the shared one: its pane's menu, or for a terminal without a pane, its own.
+  openMenu(k: TerminalRecord) {
+    const pane = panes().find((p) => p.terminal === k.address)?.pane;
+    openOverlay({
+      mod: "frantss-menu",
+      kind: "popup",
+      width: 320,
+      height: 380,
+      props: pane
+        ? { tab: "pane", target: { pane, terminal: k.address } }
+        : { tab: "terminal", target: { terminal: k.address, cwd: k.cwd } },
+    });
   }
 
   startReply(address: string) {
@@ -560,7 +519,7 @@ export default class AgentGraph extends View {
           ),
         ),
       )
-      .child(quiet("more", "⋯", "More actions", (cx) => this.openMenu(node, cx)));
+      .child(quiet("more", "⋯", "More actions", () => this.openMenu(k)));
   }
 
   // A blocked card's question and the keys that answer it, or the reply field while replying.
@@ -628,7 +587,7 @@ export default class AgentGraph extends View {
     const name = k.name || k.template || k.program?.name || k.address;
     const on = k.address === shown;
     const pic = icon(k.program, 14, t.foreground);
-    const hovered = this.hovered === k.address || this.menu?.k.address === k.address;
+    const hovered = this.hovered === k.address;
     const asking = node.h > CARD_H;
     return v_flex()
       .id(`card-${k.address}`)
@@ -654,7 +613,7 @@ export default class AgentGraph extends View {
         cx.notify();
       })
       .on_click(() => this.open(k))
-      .on_mouse_down("right", (_e, cx) => this.openMenu(node, cx))
+      .on_mouse_down("right", () => this.openMenu(k))
       .child(
         v_flex()
           .h(CARD_H)
@@ -687,60 +646,6 @@ export default class AgentGraph extends View {
           ),
       )
       .when(asking, (el) => el.child(this.question(t, k)));
-  }
-
-  // The open card menu; Kill turns red and asks for a second click.
-  contextMenu(t: Theme) {
-    const { k, pane, x, y, confirm } = this.menu;
-    return (
-      v_flex()
-        .id("agent-menu")
-        .absolute()
-        .left(x)
-        .top(y)
-        .w(MENU_W)
-        .p(4)
-        .rounded(3)
-        .border_1()
-        .border_color(t.border)
-        .bg(t.popover ?? t.raised)
-        .text_size(12)
-        // A right press on a card opens that card's menu through the card's own handler.
-        .on_mouse_down_out((e, cx) => {
-          if (e.button === "right") return;
-          this.menu = null;
-          cx.notify();
-        })
-        .children(
-          menuItems({ live: k.state === "live", pane, reply: this.outline }).map((item) => {
-            if (!item) return div().mx(4).my(4).h(1).bg(t.border);
-            const danger = item.action === "kill" && confirm;
-            return h_flex()
-              .id(`agent-menu-${item.action}`)
-              .h(24)
-              .flex_none()
-              .px(6)
-              .gap(8)
-              .rounded(3)
-              .items_center()
-              .cursor_pointer()
-              .text_color(danger ? t.ansi1 : t.muted)
-              .hover((s) => s.bg(t.hover).text_color(danger ? t.ansi1 : t.foreground))
-              .on_click((_e, cx) => {
-                cx.stop_propagation();
-                this.choose(item, cx);
-              })
-              .child(svg(item.icon).size(14).flex_none())
-              .child(
-                div()
-                  .flex_1()
-                  .min_w(0)
-                  .truncate()
-                  .child(danger ? `Kill ${k.address}?` : item.label),
-              );
-          }),
-        )
-    );
   }
 
   // Where lines leave a parent and reach a child: centered in a tree, at the left in an outline.
@@ -950,7 +855,6 @@ export default class AgentGraph extends View {
     for (const address of this.questions.keys())
       if (!askingAddresses.has(address)) this.questions.delete(address);
     if (this.replyTo && !askingAddresses.has(this.replyTo)) this.replyTo = null;
-    if (this.menu && !nodes.some((n) => n.k.address === this.menu.k.address)) this.menu = null;
 
     const canvas = div()
       .relative()
@@ -958,17 +862,14 @@ export default class AgentGraph extends View {
       .h(height)
       .children(this.edgeLayers(t, nodes, width, height))
       .children(nodes.map((n) => this.card(t, n, shownTerminal, now)))
-      .children(nodes.filter((n) => n.allKids.length).map((n) => this.foldButton(t, n)))
-      .when(Boolean(this.menu), (el) => el.child(this.contextMenu(t)));
+      .children(nodes.filter((n) => n.allKids.length).map((n) => this.foldButton(t, n)));
 
     return (
       v_flex()
         .id("agent-graph")
-        .track_focus(this.handle)
-        // Esc closes the menu or leaves the reply field.
+        // Esc leaves the reply field.
         .on_key_down((e, cx) => {
-          if (e.key !== "escape" || (!this.menu && !this.replyTo)) return;
-          this.menu = null;
+          if (e.key !== "escape" || !this.replyTo) return;
           this.replyTo = null;
           cx.notify();
         })
