@@ -631,7 +631,7 @@ export default class Frantss extends View {
         ? []
         : s.tabs.map((tab) => ({
             id: `tab-${tab.id}`,
-            current: tab.active,
+            current: s.active && tab.active,
             indent: 28,
             lead: false,
             end: dotEnd(tab.status),
