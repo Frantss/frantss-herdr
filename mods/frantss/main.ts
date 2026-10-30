@@ -156,25 +156,15 @@ function discoverRepository(key: string): Promise<RepositoryLookup> {
   if (!lookup) {
     const [on, cwd] = JSON.parse(key);
     lookup = (async () => {
-      const found: RepositoryLookup = { repo: null, checkout: null };
-      try {
-        const result = await exec(
-          "git",
-          ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-          {
-            cwd,
-            on,
-          },
-        );
-        if (result.code === 0) found.repo = result.stdout.trim();
-        const top =
-          result.code === 0
-            ? await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on })
-            : null;
-        if (top?.code === 0)
-          found.checkout = found.repo === `${top.stdout.trim()}/.git` ? "main" : "linked";
-      } catch {}
-      return found;
+      const git = (args: string[]) => exec("git", args, { cwd, on }).catch((): null => null);
+      const [common, top] = await Promise.all([
+        git(["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+        git(["rev-parse", "--show-toplevel"]),
+      ]);
+      const repo = common?.code === 0 ? common.stdout.trim() : null;
+      const checkout =
+        repo && top?.code === 0 ? (repo === `${top.stdout.trim()}/.git` ? "main" : "linked") : null;
+      return { repo, checkout };
     })();
     repositoryLookups.set(key, lookup);
   }

@@ -121,7 +121,8 @@ test("repository discovery shares one in-flight Git pair and notifies each insta
   first.lookUp(place("/repo"), a.outer);
   second.lookUp(place("/repo"), b.outer);
   for (let i = 0; i < 10; i++) await Promise.resolve();
-  assert.equal(h.state.calls.length, 1);
+  // Both calls of the pair run at once.
+  assert.equal(h.state.calls.length, 2);
   held.resolve();
   await Promise.all([...a.tasks, ...b.tasks]);
   assert.equal(h.state.calls.length, 2);
