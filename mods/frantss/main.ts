@@ -71,8 +71,6 @@ const GROUPS = [
   { status: "done", label: "UNREAD" },
   { status: "idle", label: "IDLE" },
 ];
-// Like the site's index leaders: a run of middle dots clipped to the space between label and value.
-const DOTS = "·".repeat(200);
 
 // The rail places every item itself, so items, markers and the bar can glide between places.
 // `emptyGap`: after a section with no rows, so empty agent groups sit close together.
@@ -489,24 +487,11 @@ export default class Frantss extends View {
             .when(collapsed !== undefined, (e) => e.child(chevron(t, collapsed))),
         )
         .when(lead !== false, (e) => e.child(lead ?? div().w(14).flex_none()))
-        .when(value === undefined, (e) => e.child(div().flex_1().min_w(0).truncate().child(text)))
+        .child(div().flex_1().min_w(0).truncate().child(text))
         .when(value !== undefined, (e) =>
-          e
-            // The label takes the room it needs; the leader fills what is left, at least 12.
-            .child(div().flex_initial().min_w(0).truncate().child(text))
-            .child(
-              div()
-                .flex_1()
-                .min_w(12)
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_color(t.dim)
-                .opacity(0.6)
-                .child(DOTS),
-            )
-            .child(
-              div().flex_none().max_w(80).truncate().text_size(11).text_color(t.dim).child(value),
-            ),
+          e.child(
+            div().flex_none().max_w(80).truncate().text_size(11).text_color(t.dim).child(value),
+          ),
         )
         .when(Boolean(end), (e) => e.child(end))
     );
