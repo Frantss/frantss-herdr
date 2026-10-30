@@ -22,6 +22,7 @@ async function harness(refresh = false) {
     queryBlocks: new Map(),
     layout: null,
     elements: 0,
+    highlights: [],
   };
   const cx: any = {
     spawn(callback) {
@@ -118,7 +119,13 @@ async function harness(refresh = false) {
     ]),
   };
   if (refresh) {
-    natives.herdr.exec = async (_command, args, options) => {
+    natives.herdr.exec = async (command, args, options) => {
+      if (command === "sh") {
+        const side = args[1].startsWith("git show") ? "old" : "new";
+        state.highlights.push([side, ...args.slice(3)]);
+        if (state.batBlock) await state.batBlock;
+        return state.bat?.[side] ?? { code: 0, stdout: "", stderr: "" };
+      }
       const query = args.includes("status")
         ? "status"
         : args.includes("--verify")
@@ -455,4 +462,89 @@ test("Changes lays diff rows out at their zoomed height", async () => {
   h.render();
   const list = h.state.lists.find((list) => list.id === "changes-diff");
   assert.equal(list.extent, 20 * h.state.zoom);
+});
+
+// Values built inside the module's VM realm compare by structure once copied here.
+const plain = (value) => JSON.parse(JSON.stringify(value));
+const colored = (word: string) => ({ code: 0, stdout: `\x1b[35m${word}\x1b[0m\n`, stderr: "" });
+
+test("Changes shows plain diff rows first and colors them once from bat", async () => {
+  const h = await harness(true);
+  h.state.bat = { old: colored("old"), new: colored("new") };
+  const block = deferred();
+  h.state.batBlock = block.promise;
+  h.changes.refresh(h.cx);
+  await new Promise((done) => setTimeout(done));
+  assert.equal(h.changes.rows.length, 3);
+  assert.ok(h.changes.rows.every((row) => row.spans === undefined));
+  assert.deepEqual(h.state.highlights, [
+    ["old", "file.ts", "HEAD:"],
+    ["new", "file.ts"],
+  ]);
+  h.state.notifications = 0;
+  block.resolve();
+  await h.drain();
+  assert.equal(h.state.notifications, 1);
+  assert.deepEqual(plain(h.changes.rows[1].spans), [{ text: "old", color: 5 }]);
+  assert.deepEqual(plain(h.changes.rows[2].spans), [{ text: "new", color: 5 }]);
+  const rows = h.changes.rows;
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.rows, rows);
+  assert.equal(h.state.highlights.length, 2);
+});
+
+test("Changes keeps plain rows and notes once when bat is missing", async () => {
+  const h = await harness(true);
+  h.state.bat = { old: { code: 127, stdout: "", stderr: "bat: not found" } };
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.note, "Install bat for syntax colors");
+  assert.ok(h.changes.rows.every((row) => row.spans === undefined));
+});
+
+test("Changes drops colors that arrive after the shown file changed", async () => {
+  const h = await harness(true);
+  h.state.bat = { new: colored("new") };
+  const block = deferred();
+  h.state.batBlock = block.promise;
+  h.changes.refresh(h.cx);
+  await new Promise((done) => setTimeout(done));
+  h.changes.open = null;
+  block.resolve();
+  await h.drain();
+  assert.ok(h.changes.rows.every((row) => row.spans === undefined));
+});
+
+test("Changes colors only the new side of untracked files and skips binary ones", async () => {
+  const h = await harness(true);
+  h.state.status = "?? file.txt\0";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.deepEqual(h.state.highlights, [["new", "file.txt"]]);
+  const binary = await harness(true);
+  binary.state.untracked = "a\0b";
+  binary.state.status = "?? file.bin\0";
+  binary.changes.refresh(binary.cx);
+  await binary.drain();
+  assert.deepEqual(binary.state.highlights, []);
+});
+
+test("colored diff rows draw one theme-colored element per span", async () => {
+  const h = await harness();
+  const row = h.changes.diffRow(
+    { kind: "+", number: 1, text: "let a", spans: [{ text: "let", color: 2 }, { text: " a" }] },
+    { ansi2: "#00ff00", dim: "#555555" },
+  );
+  const [, cell] = row.childNodes;
+  assert.deepEqual(
+    cell.childNodes.map((span) => [
+      span.childNodes[0],
+      span.styles.find(([k]) => k === "text_color")?.[1],
+    ]),
+    [
+      ["let", "#00ff00"],
+      [" a", undefined],
+    ],
+  );
 });

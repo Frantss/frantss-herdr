@@ -12,6 +12,14 @@ import {
   layout,
 } from "herdr";
 import { trackedPreview, untrackedPreview } from "./preview.ts";
+import {
+  colorRows,
+  parseAnsi,
+  NEW_SOURCE,
+  OLD_SOURCE,
+  type DiffRow,
+  type Span,
+} from "./highlight.ts";
 
 interface LayoutNode {
   id?: string;
@@ -43,11 +51,6 @@ interface ChangedFile extends FileStats {
   path: string;
   status: string;
   fresh: boolean;
-}
-interface DiffRow {
-  kind: string;
-  number?: number;
-  text: string;
 }
 type Snapshot = Pick<
   Changes,
@@ -300,7 +303,7 @@ export default class Changes extends View {
         if (!this.open && !this.closed && files.length) this.open = files[0].path;
         if (this.open) {
           try {
-            await this.load(this.open, context);
+            await this.load(this.open, context, cx);
           } catch {
             if (key() === context)
               this.setLines(["Cannot preview this diff (too large or unreadable)"]);
@@ -360,13 +363,14 @@ export default class Changes extends View {
     }
   }
 
-  async load(path: string, context: string) {
+  async load(path: string, context: string, cx: Context) {
     const file = this.files.find((f) => f.path === path),
       root = this.root,
       on = this.on;
     if (!file) return;
+    const fresh = file.fresh || (!this.hasHead && file.status === "A");
     let lines: string[];
-    if (file.fresh || (!this.hasHead && file.status === "A")) {
+    if (fresh) {
       const text = await readTextFile(`${root}/${path}`, { on }).catch((): null => null);
       if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
       else {
@@ -391,11 +395,45 @@ export default class Changes extends View {
       if (r.code !== 0) throw new Error(r.stderr);
       lines = trackedPreview(r.stdout, Boolean(file.binary));
     }
-    if (key() === context && this.open === path) this.setLines(lines);
+    if (key() !== context || this.open !== path) return;
+    const rows = diffRows(lines);
+    // An unchanged diff keeps its colors without running bat again.
+    if (sameRows(this.rows, rows)) return;
+    this.setLines(lines, rows);
+    if (!file.binary && rows.some((row) => row.number !== undefined))
+      this.highlight(path, fresh, rows, cx);
   }
 
-  setLines(lines: string[]) {
-    this.rows = diffRows(lines);
+  // Shows the plain rows first and colors them when bat answers.
+  highlight(path: string, fresh: boolean, rows: DiffRow[], cx: Context) {
+    const context = this.context,
+      source = (script: string, ...args: string[]) =>
+        exec("sh", ["-c", script, "bat", path, ...args], { cwd: this.root, on: this.on }).catch(
+          (): null => null,
+        );
+    cx.spawn(async (cx) => {
+      const [old, next] = await Promise.all([
+        fresh ? null : source(OLD_SOURCE, this.hasHead ? "HEAD:" : ":"),
+        source(NEW_SOURCE),
+      ]);
+      if (key() !== context || this.open !== path || this.rows !== rows) return;
+      if (old?.code === 127 || next?.code === 127) {
+        if (!this.note) {
+          this.note = "Install bat for syntax colors";
+          cx.notify();
+        }
+        return;
+      }
+      const lines = (r: typeof old) => (r?.code === 0 ? parseAnsi(r.stdout) : []);
+      const colored = colorRows(rows, lines(old), lines(next));
+      if (colored === rows) return;
+      this.rows = colored;
+      cx.notify();
+    });
+  }
+
+  setLines(lines: string[], rows = diffRows(lines)) {
+    this.rows = rows;
     this.diffWidth = Math.max(300, ...lines.map((line) => line.length * 7 + 50));
   }
 
@@ -408,7 +446,7 @@ export default class Changes extends View {
     if (this.open)
       cx.spawn(async (cx) => {
         try {
-          await this.load(path, context);
+          await this.load(path, context, cx);
         } catch (e) {
           if (key() === context && this.open === path)
             this.note = `Cannot preview this diff (too large or unreadable): ${e}`;
@@ -451,7 +489,7 @@ export default class Changes extends View {
     cx.notify();
   }
 
-  diffRow({ kind, number, text }: DiffRow, t: Theme) {
+  diffRow({ kind, number, text, spans }: DiffRow, t: Theme) {
     if (kind === "@")
       return div()
         .w_full()
@@ -477,7 +515,23 @@ export default class Changes extends View {
           .text_color(t.dim)
           .child(number === undefined ? "" : String(number)),
       )
-      .child(div().flex_1().min_w(0).truncate().child(text));
+      .child(
+        spans
+          ? h_flex()
+              .flex_1()
+              .min_w(0)
+              .overflow_hidden()
+              .children(spans.map((span) => this.span(span, t)))
+          : div().flex_1().min_w(0).truncate().child(text),
+      );
+  }
+
+  span({ text, color }: Span, t: Theme) {
+    const tint = color === undefined ? undefined : t[`ansi${color}`];
+    return div()
+      .flex_none()
+      .when(Boolean(tint), (e) => e.text_color(tint))
+      .child(text);
   }
 
   fileRow(f: ChangedFile, t: Theme) {
