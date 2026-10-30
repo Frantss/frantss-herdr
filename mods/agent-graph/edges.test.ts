@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 
-async function harness(width = 3000, childCount = 7) {
+async function harness(width = 3000, childCount = 7, deep = false) {
   const paints: any[] = [];
   const calls: any[] = [];
   const palette = { border: "#111111", input: "#222222", working: "#333333", blocked: "#444444" };
@@ -13,7 +13,7 @@ async function harness(width = 3000, childCount = 7) {
     { address: "parent", state: "live", status: "working", created_ms: 0 },
     ...Array.from({ length: childCount }, (_, index) => ({
       address: `child-${index}`,
-      parent: "parent",
+      parent: deep && index > 0 ? `child-${index - 1}` : "parent",
       state: statuses[index % statuses.length] === "finished" ? "finished" : "live",
       status: statuses[index % statuses.length],
       created_ms: index + 1,
@@ -205,5 +205,30 @@ test("a thousand agent edges use at most four native path painters", async () =>
   assert.equal(
     h.paints.flatMap((paint) => paint.path.commands).filter(([kind]) => kind === "move").length,
     1000,
+  );
+});
+
+test("deep graph cards retain depth-first order and hide descendants when folded", async () => {
+  const h = await harness(366, 500, true);
+  const tree = h.render();
+  const canvas = byId(tree, "graph").childNodes[0];
+  const cards = canvas.childNodes.filter(
+    (node) => typeof node.id === "string" && node.id.startsWith("card-"),
+  );
+  assert.deepEqual(
+    cards.map((node) => node.id),
+    ["card-parent", ...Array.from({ length: 500 }, (_, index) => `card-child-${index}`)],
+  );
+  for (const [index, card] of cards.entries()) {
+    assert.equal(style(card, "top"), 16 + index * 56);
+    assert.equal(style(card, "left"), 16 + index * 28);
+  }
+  byId(tree, "fold-child-249").handlers.on_click({}, h.cx);
+  const foldedCanvas = byId(h.render(), "graph").childNodes[0];
+  assert.deepEqual(
+    foldedCanvas.childNodes
+      .filter((node) => typeof node.id === "string" && node.id.startsWith("card-"))
+      .map((node) => node.id),
+    cards.slice(0, 251).map((node) => node.id),
   );
 });

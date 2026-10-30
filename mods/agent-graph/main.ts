@@ -149,7 +149,16 @@ function placeOutline(node: AgentNode, depth: number, y: number, width: number):
   return next;
 }
 
-const flatten = (node: AgentNode): AgentNode[] => [node, ...node.kids.flatMap(flatten)];
+function flatten(root: AgentNode): AgentNode[] {
+  const nodes: AgentNode[] = [];
+  const pending = [root];
+  while (pending.length) {
+    const node = pending.pop();
+    nodes.push(node);
+    for (let index = node.kids.length - 1; index >= 0; index--) pending.push(node.kids[index]);
+  }
+  return nodes;
+}
 
 function find(node: LayoutNode | null, id: string): LayoutNode | null {
   if (node?.id === id) return node;
