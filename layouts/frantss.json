@@ -11,18 +11,36 @@
           "type": "column",
           "children": [
             {
-              "id": "frantss-top",
-              "type": "block",
-              "content": {
-                "mod": "frantss",
-                "props": {
-                  "role": "top"
+              "id": "frantss-header",
+              "type": "row",
+              "children": [
+                {
+                  "id": "frantss-top",
+                  "type": "block",
+                  "content": {
+                    "mod": "frantss",
+                    "props": {
+                      "role": "top"
+                    }
+                  },
+                  "window_drag": true
+                },
+                {
+                  "id": "frantss-toolbar",
+                  "type": "block",
+                  "content": {
+                    "mod": "frantss-toolbar"
+                  },
+                  "size": {
+                    "px": 560
+                  },
+                  "window_drag": true
                 }
-              },
+              ],
               "size": {
                 "px": 40
               },
-              "window_drag": true
+              "resizable": false
             },
             {
               "id": "frantss-body",
@@ -47,17 +65,6 @@
                   "id": "frantss-work",
                   "type": "column",
                   "children": [
-                    {
-                      "id": "frantss-tabs",
-                      "type": "block",
-                      "content": {
-                        "mod": "frantss-tabs"
-                      },
-                      "size": {
-                        "px": 42
-                      },
-                      "window_drag": true
-                    },
                     {
                       "id": "frantss-work-body",
                       "type": "row",

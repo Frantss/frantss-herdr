@@ -1,6 +1,6 @@
 # Git history
 
-Open **History** from the frantss tab bar. The panel follows the focused terminal's checkout and machine.
+Open **History** from the frantss header. The panel follows the focused terminal's checkout and machine.
 
 - **Current branch** follows HEAD, including its merged history. **All branches** includes local branches, remote-tracking branches and commit tags.
 - **History** and **Commit details** are collapsible sections. History starts open; Commit details starts closed. Select a commit, then expand Commit details for its message, author and changed files. Selecting another commit keeps your expansion choice. Select a file for its diff. Merge diffs compare with the first parent.

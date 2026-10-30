@@ -103,20 +103,15 @@ const icon = (t: Theme, program: Program, size = 14) =>
     : (program.tint ? svg(program.icon).text_color(t.muted) : image(program.icon))
         .size(size)
         .flex_none();
-// Working pulses like the site's live dot; blocked pulses faster. A pulse keeps the window redrawing,
-// so a dot standing for nothing stays still.
-const dot = (t: Theme, status: string, pulse = true) =>
+// Working pulses like the site's live dot; blocked pulses faster.
+const dot = (t: Theme, status: string) =>
   div()
     .size(6)
     .rounded(3)
     .flex_none()
     .bg(t[status] ?? t.dim)
-    .when(pulse && status === "working", (e) =>
-      e.loop("opacity", { from: 0.35, to: 1, period: 2400 }),
-    )
-    .when(pulse && status === "blocked", (e) =>
-      e.loop("opacity", { from: 0.35, to: 1, period: 900 }),
-    );
+    .when(status === "working", (e) => e.loop("opacity", { from: 0.35, to: 1, period: 2400 }))
+    .when(status === "blocked", (e) => e.loop("opacity", { from: 0.35, to: 1, period: 900 }));
 
 // Opens the right-click menu with the props Herdr gives it: `tab` names which menu, `target` what it acts on.
 // A popup is as tall as its items; height is only the most.
@@ -253,7 +248,7 @@ function workspaceSnapshot(): WorkspaceSnapshot {
 const paneName = (pane: PaneInfo | undefined) =>
   (threadTitle(pane?.title, pane?.program) ?? pane?.program?.name ?? "terminal").toLowerCase();
 
-// An unnamed tab is called after its lead pane (its first agent, else its first pane), as the tab bar does.
+// An unnamed tab is called after its lead pane (its first agent, else its first pane), as the toolbar does.
 const tabName = (tab: TabInfo, lead: PaneInfo | undefined) =>
   tab.named ? tab.name : paneName(lead);
 
@@ -453,7 +448,7 @@ export default class Frantss extends View {
     };
   }
 
-  top(t: Theme, list: AgentInfo[], snapshot: WorkspaceSnapshot) {
+  top(t: Theme, snapshot: WorkspaceSnapshot) {
     const space = snapshot.spaces.find((s) => s.active),
       tab = space?.tabs.find((t) => t.active);
     // Like the site's path line, faint crumbs joined by "/" with the current one accented, naming where
@@ -535,26 +530,7 @@ export default class Frantss extends View {
             : [crumbLink(crumb, false), div().flex_none().child("/")],
         ),
       );
-    return h_flex()
-      .size_full()
-      .pl(RAIL.pad)
-      .pr(16)
-      .items_center()
-      .gap(8)
-      .text_size(12)
-      .child(path)
-      .children(
-        GROUPS.map((g) => {
-          const count = list.filter((a) => a.status === g.status).length;
-          return h_flex()
-            .items_center()
-            .gap(6)
-            .ml(10)
-            .child(dot(t, g.status, count > 0))
-            .child(label(t, g.label, g.status))
-            .child(div().text_size(10).text_color(t.muted).child(String(count)));
-        }),
-      );
+    return h_flex().size_full().pl(RAIL.pad).pr(16).items_center().text_size(12).child(path);
   }
 
   // One rail row: "❯ label ······ value" with a `value`, else "❯ label" with an optional `end` beside it.
@@ -902,7 +878,7 @@ export default class Frantss extends View {
         action: this.plus(t, "add-workspace", "Add workspace", (_e, cx) => this.addWorkspace(cx)),
         rows: workspaceRows,
       },
-      // An agent group shows only while it has agents; the top bar counts every status.
+      // An agent group shows only while it has agents.
       ...groups
         .filter((g) => g.agents.length)
         .map((g) => ({
@@ -1023,8 +999,8 @@ export default class Frantss extends View {
     if (role === "pane") return this.pane(t);
     const snapshot = workspaceSnapshot();
     this.track(cx, snapshot, role);
+    if (role === "top") return this.top(t, snapshot);
     const list = agents();
-    if (role === "top") return this.top(t, list, snapshot);
     this.trackAgents(cx, list, snapshot);
     return this.rail(t, list, snapshot);
   }

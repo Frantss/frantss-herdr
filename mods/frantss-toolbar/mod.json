@@ -1,6 +1,6 @@
 {
   "place": "none",
-  "title": "Tabs",
+  "title": "Toolbar",
   "cloned_from": {
     "name": "tabs",
     "version": "0.1.7"

@@ -1277,7 +1277,7 @@ export default class Changes extends View {
       .when(this.choosingAgent, (e) => e.child(this.agentMenu(live, space, agent, t)));
   }
 
-  // Agents go by their tab's name, as the tab bar shows it.
+  // Agents go by their tab's name, as the rail shows it.
   agentName(agent: AgentInfo) {
     const tab = spaces()
       .find((space) => space.id === agent.space)

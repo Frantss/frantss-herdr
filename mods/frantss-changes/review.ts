@@ -100,7 +100,7 @@ export function withComposer(rows: DiffRow[], target: Target | null) {
   return shown;
 }
 
-// The frantss tab bar's thread title (a mod can't import another's code): what a program says it is
+// The frantss rail's thread title (a mod can't import another's code): what a program says it is
 // doing in its terminal title, spinner glyphs gone; null for paths, user@host or its own name.
 function threadTitle(title: string, program: Program) {
   const live = (title ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
@@ -113,7 +113,7 @@ function threadTitle(title: string, program: Program) {
   return telling ? live : null;
 }
 
-// An agent goes by its tab's name as the tab bar shows it: the name given, else its thread, else
+// An agent goes by its tab's name as the rail shows it: the name given, else its thread, else
 // its program, in lower case.
 export function agentName(
   agent: { title: string; program: Program },
