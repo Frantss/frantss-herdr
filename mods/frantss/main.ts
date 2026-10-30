@@ -43,6 +43,8 @@ type RailRow = {
   current?: boolean;
   lit?: boolean;
   dim?: boolean;
+  strong?: boolean;
+  small?: boolean;
   indent?: number;
   lead?: Element | false;
   text: string;
@@ -441,11 +443,27 @@ export default class Frantss extends View {
   // One rail row: "❯ label ······ value" with a `value`, else "❯ label" with an optional `end` beside it.
   // The ❯ is a separate marker that glides between rows. `lead`: the icon column, false for none.
   // `lit`: bright without being current (a group holding the current space); `dim`: faint (a workspace
-  // with nothing open). `collapsed`: a chevron in the first column, pointing the way what is under the
-  // row is (true closed, false open); none when undefined.
+  // with nothing open). `strong`: medium weight (a workspace); `small`: smaller text (a tab), so each
+  // level of the tree reads apart. `collapsed`: a chevron in the first column, pointing the way what is
+  // under the row is (true closed, false open); none when undefined.
   row(
     t: Theme,
-    { id, current, lit, dim, indent, lead, text, value, end, onClick, onMenu, collapsed }: RailRow,
+    {
+      id,
+      current,
+      lit,
+      dim,
+      strong,
+      small,
+      indent,
+      lead,
+      text,
+      value,
+      end,
+      onClick,
+      onMenu,
+      collapsed,
+    }: RailRow,
   ) {
     return (
       h_flex()
@@ -456,7 +474,8 @@ export default class Frantss extends View {
         .px(12)
         .gap(8)
         .items_center()
-        .text_size(12)
+        .text_size(small ? 11 : 12)
+        .when(Boolean(strong), (e) => e.font_medium())
         .text_color(current || lit ? t.foreground : dim ? t.dim : t.muted)
         .hover((s) => s.text_color(t.foreground))
         .on_click(onClick)
@@ -473,14 +492,16 @@ export default class Frantss extends View {
         .when(value === undefined, (e) => e.child(div().flex_1().min_w(0).truncate().child(text)))
         .when(value !== undefined, (e) =>
           e
-            .child(div().flex_none().max_w(110).truncate().child(text))
+            // The label takes the room it needs; the leader fills what is left, at least 12.
+            .child(div().flex_initial().min_w(0).truncate().child(text))
             .child(
               div()
                 .flex_1()
                 .min_w(12)
                 .overflow_hidden()
                 .whitespace_nowrap()
-                .text_color(t.input)
+                .text_color(t.dim)
+                .opacity(0.6)
                 .child(DOTS),
             )
             .child(
@@ -633,6 +654,8 @@ export default class Frantss extends View {
             id: `tab-${tab.id}`,
             current: s.active && tab.active,
             indent: 28,
+            dim: true,
+            small: true,
             lead: false,
             end: dotEnd(tab.status),
             text: tabName(tab, snapshot.leadByTab.get(tab.id)),
@@ -676,6 +699,7 @@ export default class Frantss extends View {
       return {
         id: `group-${g.key}`,
         lit: g.spaces.some((s) => s.active),
+        strong: true,
         lead: false,
         text: saved?.name ?? g.name,
         collapsed: workspaceClosed(g),
@@ -705,6 +729,7 @@ export default class Frantss extends View {
     const closedRow = (w: NamedWorkspace): RailRow => ({
       id: `group-${w.key}`,
       dim: true,
+      strong: true,
       lead: false,
       text: w.name,
       end: h_flex()
@@ -738,23 +763,26 @@ export default class Frantss extends View {
         action: this.plus(t, "add-workspace", "Add workspace", (_e, cx) => this.addWorkspace(cx)),
         rows: workspaceRows,
       },
-      ...groups.map((g) => ({
-        id: g.status,
-        title: g.label,
-        status: g.status,
-        rows: g.agents.map((a) => ({
-          id: `agent-${a.address}`,
-          current: a.focused,
-          lead: icon(t, a.program),
-          agent: true,
-          text: named.has(a.tab)
-            ? a.tab_name
-            : (threadTitle(a.title, a.program) ?? a.program.name).toLowerCase(),
-          value: a.space_name,
-          onClick: () => run("agent.focus", { terminal: a.address }),
-          onMenu: () => menu("pane", { pane: a.pane, terminal: a.address }),
+      // An agent group shows only while it has agents; the top bar counts every status.
+      ...groups
+        .filter((g) => g.agents.length)
+        .map((g) => ({
+          id: g.status,
+          title: g.label,
+          status: g.status,
+          rows: g.agents.map((a) => ({
+            id: `agent-${a.address}`,
+            current: a.focused,
+            lead: icon(t, a.program),
+            agent: true,
+            text: named.has(a.tab)
+              ? a.tab_name
+              : (threadTitle(a.title, a.program) ?? a.program.name).toLowerCase(),
+            value: a.space_name,
+            onClick: () => run("agent.focus", { terminal: a.address }),
+            onMenu: () => menu("pane", { pane: a.pane, terminal: a.address }),
+          })),
         })),
-      })),
     ];
 
     const items = [];
