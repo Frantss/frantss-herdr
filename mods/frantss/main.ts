@@ -104,14 +104,13 @@ const icon = (t: Theme, program: Program, size = 14) =>
     : (program.tint ? svg(program.icon).text_color(t.muted) : image(program.icon))
         .size(size)
         .flex_none();
-// Working pulses like the site's live dot; blocked pulses faster.
+// Only blocked pulses: a loop redraws the whole window every frame, and agents work for long stretches.
 const dot = (t: Theme, status: string) =>
   div()
     .size(6)
     .rounded(3)
     .flex_none()
     .bg(t[status] ?? t.dim)
-    .when(status === "working", (e) => e.loop("opacity", { from: 0.35, to: 1, period: 2400 }))
     .when(status === "blocked", (e) => e.loop("opacity", { from: 0.35, to: 1, period: 900 }));
 
 // Opens the right-click menu with the props Herdr gives it: `tab` names which menu, `target` what it acts on.
