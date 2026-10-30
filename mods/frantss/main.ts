@@ -1,4 +1,4 @@
-import type { Context, AsyncContext, Element, ClickEvent, MouseButtonEvent } from "gpui-kit";
+import type { Context, AsyncContext, Element, ClickEvent, MouseButtonEvent, Task } from "gpui-kit";
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import {
@@ -269,6 +269,7 @@ export default class Frantss extends View {
   declare terminalsKey: string;
   // The local agents shown since the rail last recorded them, by address.
   declare seenAgents: Map<string, AgentInfo>;
+  declare settling: Task;
   init(_p: unknown, _cx: AsyncContext) {
     // The rail and the breadcrumb both name workspaces by repo.
     if (props()?.role !== "rail" && props()?.role !== "top") return;
@@ -308,14 +309,11 @@ export default class Frantss extends View {
     const key = JSON.stringify(shown);
     if (key === this.terminalsKey) return;
     this.terminalsKey = key;
-    const live = new Set(local.map((a) => a.address));
-    // A closed tab's terminals take a moment to finish, so it asks again while a recorded agent
-    // that is gone from the window is still live.
-    const gone = (terminal: CoreTerminal) =>
-      terminal.state === "live" &&
-      !shown.includes(terminal.address) &&
-      agentRecords().some((record) => record.address === terminal.address);
-    cx.spawn(async (cx) => {
+    const live = new Set(local.map((a) => a.address)),
+      shownSet = new Set(shown);
+    // A newer window replaces the last question, so quick changes don't stack loops.
+    this.settling?.cancel();
+    this.settling = cx.spawn(async (cx) => {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const result = await hc(["ls", "--all", "--json"]);
@@ -327,10 +325,18 @@ export default class Frantss extends View {
             program: a.program,
             title: threadTitle(a.title, a.program),
           }));
-          saveRecords(settleAgents(recordAgents(agentRecords(), seen), terminals, Date.now()));
+          const records = settleAgents(recordAgents(agentRecords(), seen), terminals, Date.now());
+          saveRecords(records);
           // Gone agents are recorded now; keeping them would bring back one that settling dropped.
           for (const address of this.seenAgents.keys())
             if (!live.has(address)) this.seenAgents.delete(address);
+          // A closed tab's terminals take a moment to finish, so it asks again while a recorded
+          // agent that is gone from the window is still live.
+          const recorded = new Set(records.map((record) => record.address));
+          const gone = (terminal: CoreTerminal) =>
+            terminal.state === "live" &&
+            !shownSet.has(terminal.address) &&
+            recorded.has(terminal.address);
           if (!terminals.some(gone)) return;
         } catch {
           return;

@@ -81,6 +81,7 @@ async function harness(role = "rail") {
     calls: { spaces: 0, panes: 0, paneVisits: 0 },
     tasks: [] as ((cx: unknown) => Promise<void>)[],
     terminals: [] as { address: string; state: string; cwd?: string }[],
+    cancelled: [] as unknown[],
   };
   function element(kind = "div", source?) {
     const node: any = {
@@ -190,7 +191,13 @@ async function harness(role = "rail") {
     [key("/closed")]: null,
   };
   view.checkouts = { [key(worktree)]: "linked", [key("/project/live")]: "main" };
-  const cx = { spawn: (task) => state.tasks.push(task), stop_propagation() {} };
+  const cx = {
+    spawn: (task) => {
+      state.tasks.push(task);
+      return { cancel: () => state.cancelled.push(task) };
+    },
+    stop_propagation() {},
+  };
   return { state, view, cx, render: () => view.render(cx) };
 }
 
@@ -506,6 +513,7 @@ test("the rail records local agents and lists closed ones with history, resume, 
   h.state.terminals[2].state = "finished";
   h.render();
   assert.equal(h.state.tasks.length, 2);
+  assert.deepEqual(h.state.cancelled, [h.state.tasks[0]]);
   await settle();
   assert.equal(records().find((r) => r.address === "t9").title, "Fix rail");
   assert.ok(records().find((r) => r.address === "t9").closed);
