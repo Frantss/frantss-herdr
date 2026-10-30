@@ -5,3 +5,4 @@ node_modules/
 **/herdr.d.ts
 **/jsconfig.json
 dist/
+.claude/worktrees/
