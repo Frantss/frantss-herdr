@@ -1016,9 +1016,10 @@ export default class Frantss extends View {
       .child(icon(t, pane?.program, 13) ?? div())
       .child(
         div()
-          .flex_none()
+          .min_w(0)
+          .truncate()
           .text_color(pane?.focused ? t.foreground : t.muted)
-          .child(pane?.program?.name ?? "Terminal"),
+          .child(paneName(pane)),
       )
       .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(where))
       .when(Boolean(pane?.status), (e) => e.child(dot(t, pane.status)))

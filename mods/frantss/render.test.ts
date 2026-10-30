@@ -393,8 +393,8 @@ test("pane headers retain their single pane lookup without workspace indexing", 
   const h = await harness("pane");
   Object.assign(h.state.panes[2], { status: "blocked" });
   const tree = h.render();
-  assert.match(text(tree), /Claude Code/);
-  assert.doesNotMatch(text(tree), /NEEDS YOU/);
+  assert.match(text(tree), /fix api/);
+  assert.doesNotMatch(text(tree), /Claude Code|NEEDS YOU/);
   assert.match(text(tree), /main · agent/);
   assert.deepEqual(h.state.calls, { spaces: 0, panes: 1, paneVisits: 0 });
   // One props read for the role and one for the pane, not one per pane searched.
