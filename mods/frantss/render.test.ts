@@ -75,6 +75,7 @@ async function harness(role = "rail") {
     shared: new Map<string, unknown>([
       ["frantss.workspaces", [{ folder: "/project" }, { folder: "/closed" }]],
     ]),
+    agents: [] as any[],
     overlays: [] as any[],
     commands: [] as any[],
     calls: { spaces: 0, panes: 0, paneVisits: 0 },
@@ -137,7 +138,7 @@ async function harness(role = "rail") {
           },
         });
       },
-      agents: () => [],
+      agents: () => state.agents,
       props: () => ({ role: state.role, pane: state.pane }),
       theme: () => ({}),
       shared: (name) => state.shared.get(name) ?? null,
@@ -148,13 +149,20 @@ async function harness(role = "rail") {
       exec: unused,
       pickFolder: unused,
       knownAgents: unused,
+      hc: unused,
     },
   };
   const module = new vm.SourceTextModule(
     stripTypeScriptTypes(await readFile(new URL("main.ts", import.meta.url), "utf8")),
     { context },
   );
-  await module.link((name) => {
+  // main.ts's own modules (closed.ts) import nothing at run time.
+  await module.link(async (name) => {
+    if (name.startsWith("./"))
+      return new vm.SourceTextModule(
+        stripTypeScriptTypes(await readFile(new URL(name, import.meta.url), "utf8")),
+        { context },
+      );
     const values = natives[name];
     return new vm.SyntheticModule(
       Object.keys(values),
@@ -421,4 +429,64 @@ test("workspace membership key reads stay linear as saved and open workspaces gr
     keyReads <= 20 * (savedCount + unsavedCount),
     `Expected linear key reads, received ${keyReads}`,
   );
+});
+
+test("the rail records local agents and lists closed ones with history, resume, and forget", async () => {
+  const h = await harness();
+  h.state.agents = [
+    { address: "t9", space: "primary", app: "claude-code", program: agent, title: "✳ Fix API" },
+    { address: "build/t1", space: "build/remote", app: "claude-code", program: agent, title: "x" },
+  ];
+  h.state.shared.set("frantss.closedAgents", [
+    {
+      address: "t7",
+      app: "codex",
+      program: agent,
+      title: "Old task",
+      cwd: "/elsewhere",
+      closed: 1,
+    },
+    {
+      address: "t8",
+      app: "claude-code",
+      program: agent,
+      title: "Fix tabs",
+      cwd: "/project/live",
+      closed: Date.now() - 5 * 60_000,
+    },
+  ]);
+  const tree = h.render();
+  const records = () => h.state.shared.get("frantss.closedAgents") as any[];
+  assert.deepEqual(plain(records().map((r) => r.address)), ["t7", "t8", "t9"]);
+  assert.equal(records()[2].title, "Fix API");
+  assert.equal(h.state.tasks.length, 1);
+  h.render();
+  assert.equal(h.state.tasks.length, 1);
+
+  const ids = descendants(tree)
+    .map((node) => node?.elementId)
+    .filter((id) => id?.startsWith("closed-"));
+  assert.deepEqual(ids, ["closed-t8", "closed-t7"]);
+  assert.match(text(byId(tree, "header-closed")), /RECENTLY CLOSED/);
+  assert.equal(text(byId(tree, "closed-t8")), "fix tabs5m");
+
+  byId(tree, "closed-t8").handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands.slice(-2)), [
+    ["space.select", { id: "primary" }],
+    [
+      "tab.new",
+      {
+        space: "primary",
+        folder: "/project/live",
+        argv: ["hc", "read", "t8", "--lines", "100000"],
+        name: "fix tabs history",
+      },
+    ],
+  ]);
+  byId(tree, "resume-t7").handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands.at(-1)), [
+    "space.new",
+    { folder: "/elsewhere", argv: ["codex", "resume"] },
+  ]);
+  assert.ok(byId(tree, "forget-t8"));
 });

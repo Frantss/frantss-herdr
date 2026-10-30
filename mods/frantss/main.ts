@@ -15,9 +15,20 @@ import {
   setShared,
   pickFolder,
   knownAgents,
+  hc,
 } from "herdr";
 
 import type { AgentInfo, SpaceInfo, TabInfo, PaneInfo, Program } from "herdr";
+import {
+  age,
+  closedAgents,
+  historyArgv,
+  recordAgents,
+  resumeArgv,
+  settleAgents,
+  type AgentRecord,
+  type CoreTerminal,
+} from "./closed.ts";
 
 type Theme = Record<string, `#${string}`>;
 type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
@@ -203,6 +214,13 @@ const toggleCollapsed = (id: string) =>
       ? collapsedIds().filter((other) => other !== id)
       : [...collapsedIds(), id],
   );
+// The local agents the rail has seen, kept in shared state (persisted) so the rail lists them after
+// their tab closes (see closed.ts).
+const CLOSED_AGENTS = "frantss.closedAgents";
+const agentRecords = () => (shared(CLOSED_AGENTS) as AgentRecord[] | null) ?? [];
+const saveRecords = (records: AgentRecord[]) => {
+  if (JSON.stringify(records) !== JSON.stringify(agentRecords())) setShared(CLOSED_AGENTS, records);
+};
 const chevron = (t: Theme, collapsed: boolean) =>
   svg(`mods/frantss-files/chevron-${collapsed ? "right" : "down"}.svg`)
     .size(10)
@@ -253,6 +271,7 @@ export default class Frantss extends View {
   declare repos: Record<string, string | null>;
   declare checkouts: Record<string, "main" | "linked" | null>;
   declare marks: Record<string, number>;
+  declare terminalsKey: string;
   init(_p: unknown, _cx: AsyncContext) {
     // The rail and the breadcrumb both name workspaces by repo.
     if (props()?.role !== "rail" && props()?.role !== "top") return;
@@ -275,6 +294,106 @@ export default class Frantss extends View {
     ];
     for (const key of keys) if (!(key in this.repos)) this.lookUp(key, cx);
     if (role === "rail") this.publishWorkspaces(snapshot);
+  }
+
+  // Records the local agents, and asks the core which terminals finished whenever an agent or a pane
+  // goes (a closed tab takes both).
+  trackAgents(cx: Context, list: AgentInfo[], snapshot: WorkspaceSnapshot) {
+    const remote = new Set(snapshot.spaces.filter((s) => s.machine).map((s) => s.id));
+    const local = list.filter((a) => !remote.has(a.space));
+    saveRecords(
+      recordAgents(
+        agentRecords(),
+        local.map((a) => ({
+          address: a.address,
+          app: a.app,
+          program: a.program,
+          title: threadTitle(a.title, a.program),
+        })),
+      ),
+    );
+    const shown = [
+      ...local.map((a) => a.address),
+      ...[...snapshot.panesByTab.values()].flat().map((pane) => pane.terminal),
+    ];
+    const key = JSON.stringify(shown);
+    if (key === this.terminalsKey) return;
+    this.terminalsKey = key;
+    // A closed tab's terminals take a moment to finish, so it asks again while a recorded agent
+    // that is gone from the window is still live.
+    const gone = (terminal: CoreTerminal) =>
+      terminal.state === "live" &&
+      !shown.includes(terminal.address) &&
+      agentRecords().some((record) => record.address === terminal.address);
+    cx.spawn(async (cx) => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const result = await hc(["ls", "--all", "--json"]);
+          if (result.code !== 0) return;
+          const terminals: CoreTerminal[] = JSON.parse(result.stdout).terminals;
+          saveRecords(settleAgents(agentRecords(), terminals, Date.now()));
+          if (!terminals.some(gone)) return;
+        } catch {
+          return;
+        }
+        await cx.sleep(1000);
+      }
+    });
+  }
+
+  // Opens a tab running `argv` in `folder`'s space, else in a new space there.
+  openIn(snapshot: WorkspaceSnapshot, folder: string, argv: string[], name?: string) {
+    const space = snapshot.spaces.find(
+      (s) => !s.machine && snapshot.cwdBySpace.get(s.id) === folder,
+    );
+    if (!space) return run("space.new", { folder, argv, ...(name ? { tab: name } : {}) });
+    run("space.select", { id: space.id });
+    run("tab.new", { space: space.id, folder, argv, ...(name ? { name } : {}) });
+  }
+
+  // A closed agent: clicking shows its history in a new tab; its controls resume its agent's session
+  // picker in its folder, or forget it (the core removes its terminal).
+  closedRow(t: Theme, record: AgentRecord, snapshot: WorkspaceSnapshot, now: number): RailRow {
+    const text = (record.title ?? record.program?.name ?? "agent").toLowerCase();
+    const resume = resumeArgv(record.app);
+    const forget = (cx: Context) =>
+      cx.spawn(async () => {
+        const result = await hc(["rm", record.address]).catch((): null => null);
+        if (result?.code === 0)
+          saveRecords(agentRecords().filter((other) => other.address !== record.address));
+      });
+    return {
+      id: `closed-${record.address}`,
+      dim: true,
+      lead: icon(t, record.program),
+      text,
+      value: age(now - record.closed),
+      end: h_flex()
+        .gap(4)
+        .items_center()
+        .when(Boolean(resume), (e) =>
+          e.child(
+            this.control(
+              t,
+              `resume-${record.address}`,
+              "Resume",
+              svg("mods/frantss/resume.svg").size(10),
+              () => this.openIn(snapshot, record.cwd, resume),
+            ),
+          ),
+        )
+        .child(
+          this.control(
+            t,
+            `forget-${record.address}`,
+            "Forget",
+            svg("mods/pane/close.svg").size(10),
+            (_e, cx) => forget(cx),
+          ),
+        ),
+      onClick: () =>
+        this.openIn(snapshot, record.cwd, historyArgv(record.address), `${text} history`),
+    };
   }
 
   // A space's workspace: its repo on its machine, else its place.
@@ -773,6 +892,8 @@ export default class Frantss extends View {
       }),
       ...unsaved.flatMap((g) => groupRows(g, null)),
     ];
+    const closed = closedAgents(agentRecords()),
+      now = Date.now();
     const sections: RailSection[] = [
       {
         id: "spaces",
@@ -801,6 +922,15 @@ export default class Frantss extends View {
             onMenu: () => menu("pane", { pane: a.pane, terminal: a.address }),
           })),
         })),
+      ...(closed.length
+        ? [
+            {
+              id: "closed",
+              title: "RECENTLY CLOSED",
+              rows: closed.map((record) => this.closedRow(t, record, snapshot, now)),
+            },
+          ]
+        : []),
     ];
 
     const items = [];
@@ -895,6 +1025,7 @@ export default class Frantss extends View {
     this.track(cx, snapshot, role);
     const list = agents();
     if (role === "top") return this.top(t, list, snapshot);
+    this.trackAgents(cx, list, snapshot);
     return this.rail(t, list, snapshot);
   }
 }

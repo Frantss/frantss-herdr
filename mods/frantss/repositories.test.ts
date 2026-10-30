@@ -43,6 +43,7 @@ async function harness() {
       setShared: unused,
       pickFolder: unused,
       knownAgents: unused,
+      hc: unused,
       exec: async (
         command: string,
         args: string[],
@@ -65,7 +66,13 @@ async function harness() {
   };
   async function generation() {
     const module = new vm.SourceTextModule(source, { context });
-    await module.link((name) => {
+    // main.ts's own modules (closed.ts) import nothing at run time.
+    await module.link(async (name) => {
+      if (name.startsWith("./"))
+        return new vm.SourceTextModule(
+          stripTypeScriptTypes(await readFile(new URL(name, import.meta.url), "utf8")),
+          { context },
+        );
       const values = natives[name];
       return new vm.SyntheticModule(
         Object.keys(values),
