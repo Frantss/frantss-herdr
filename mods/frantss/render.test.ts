@@ -217,10 +217,8 @@ test("rail keeps workspace order, global-first cwd, tab names, worktree marks, a
     `group-${remoteGroup}`,
     `group-${key("/outside")}`,
   ]);
-  assert.equal(text(byId(tree, "tab-t-agent")), "fix api");
   assert.equal(text(byId(tree, "tab-t-named")), "Keep CASE");
   assert.equal(text(byId(tree, "tab-t-empty")), "terminal");
-  assert.equal(text(byId(tree, "tab-t-mod")), "canvas");
   assert.equal(text(byId(tree, "tab-t-program")), "neovim");
   assert.equal(text(byId(tree, "tab-t-cwd")), "path");
   assert.equal(text(byId(tree, "space-build/remote")), "Remote CASE");
@@ -244,11 +242,11 @@ test("rail keeps workspace order, global-first cwd, tab names, worktree marks, a
   });
   byId(tree, "space-worktree").handlers.on_mouse_down({}, h.cx);
   assert.equal(h.state.overlays.at(-1).props.target.checkout, "linked");
-  byId(tree, "tab-t-agent").handlers.on_mouse_down({}, h.cx);
+  byId(tree, "tab-t-named").handlers.on_mouse_down({}, h.cx);
   assert.deepEqual(plain(h.state.overlays.at(-1).props.target), {
-    id: "t-agent",
+    id: "t-named",
     space: "primary",
-    name: "fix api",
+    name: "Keep CASE",
   });
   byId(tree, `new-${remoteGroup}`).handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.overlays.at(-1).props), {
@@ -263,6 +261,43 @@ test("rail keeps workspace order, global-first cwd, tab names, worktree marks, a
     "build/remote": remoteGroup,
     outside: key("/outside"),
   });
+});
+
+test("rail shows a tab's panes in its place when it has more than one", async () => {
+  const h = await harness();
+  const tree = h.render();
+  const rows = descendants(tree)
+    .map((node) => node?.elementId)
+    .filter((id) => /^(tab|pane)-pane-t-(agent|mod)/.test(id) || /^tab-t-(agent|mod)$/.test(id));
+  assert.deepEqual(rows, [
+    "pane-pane-t-agent-Zsh",
+    "pane-pane-t-agent-✳ Fix API",
+    "pane-pane-t-agent-✳ Later agent",
+    "pane-pane-t-mod-Canvas",
+    "pane-pane-t-mod-/path",
+  ]);
+  assert.deepEqual(
+    rows.map((id) => text(byId(tree, id))),
+    ["zsh", "fix api", "later agent", "canvas", "path"],
+  );
+  byId(tree, "pane-pane-t-agent-✳ Fix API").handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands.at(-1)), [
+    "pane.focus",
+    { pane: "pane-t-agent-✳ Fix API" },
+  ]);
+  byId(tree, "pane-pane-t-agent-Zsh").handlers.on_mouse_down({}, h.cx);
+  assert.equal(h.state.overlays.at(-1).props.tab, "pane");
+  assert.equal(h.state.overlays.at(-1).props.target.pane, "pane-t-agent-Zsh");
+});
+
+test("a space whose only tab has several panes lists them instead of standing for the tab", async () => {
+  const h = await harness();
+  h.state.panes.push(pane("t-worktree", "/project/live", "Zsh", shell));
+  h.state.shared.set("frantss.collapsed", ["space:worktree:open"]);
+  const tree = h.render();
+  assert.equal(text(byId(tree, "space-worktree")), "main");
+  assert.ok(byId(tree, "pane-pane-t-worktree-✳ Feature"));
+  assert.ok(byId(tree, "pane-pane-t-worktree-Zsh"));
 });
 
 test("top breadcrumbs retain labels, checkout menus, local actions, and remote identity", async () => {
@@ -297,7 +332,7 @@ test("each new render uses current titles and cwds without retaining live-data m
   h.view.repos[key("/different")] = null;
   h.state.calls = { spaces: 0, panes: 0, paneVisits: 0 };
   const tree = h.render();
-  assert.equal(text(byId(tree, "tab-t-agent")), "updated task");
+  assert.equal(text(byId(tree, "pane-pane-t-agent-✳ Fix API")), "updated task");
   assert.ok(byId(tree, `group-${key("/different")}`));
   assert.deepEqual(h.state.calls, { spaces: 1, panes: 1, paneVisits: h.state.panes.length });
 });

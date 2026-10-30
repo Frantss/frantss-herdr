@@ -35,6 +35,7 @@ type SpaceGroup = {
 type WorkspaceSnapshot = {
   spaces: SpaceInfo[];
   leadByTab: Map<string, PaneInfo>;
+  panesByTab: Map<string, PaneInfo[]>;
   cwdBySpace: Map<string, string>;
   placeBySpace: Map<string, string>;
 };
@@ -214,11 +215,13 @@ function workspaceSnapshot(): WorkspaceSnapshot {
   const spaceByTab = new Map<string, string>();
   for (const space of all) for (const tab of space.tabs) spaceByTab.set(tab.id, space.id);
   const leadByTab = new Map<string, PaneInfo>();
+  const panesByTab = new Map<string, PaneInfo[]>();
   const cwdBySpace = new Map<string, string>();
   // Cwd follows the first pane in global order; tab names prefer the first agent pane.
   for (const pane of panes()) {
     const lead = leadByTab.get(pane.tab);
     if (!lead || (!lead.program?.agent && pane.program?.agent)) leadByTab.set(pane.tab, pane);
+    panesByTab.set(pane.tab, [...(panesByTab.get(pane.tab) ?? []), pane]);
     const space = spaceByTab.get(pane.tab);
     if (space !== undefined && pane.cwd && !cwdBySpace.has(space)) cwdBySpace.set(space, pane.cwd);
   }
@@ -227,19 +230,16 @@ function workspaceSnapshot(): WorkspaceSnapshot {
     if (!cwdBySpace.has(space.id)) cwdBySpace.set(space.id, space.folder);
     placeBySpace.set(space.id, JSON.stringify([space.machine ?? null, cwdBySpace.get(space.id)]));
   }
-  return { spaces: all, leadByTab, cwdBySpace, placeBySpace };
+  return { spaces: all, leadByTab, panesByTab, cwdBySpace, placeBySpace };
 }
 
-// An unnamed tab is called after its agent's thread, else its agent or first program, in lower case, as
-// the tab bar does.
-function tabName(tab: TabInfo, lead: PaneInfo | undefined) {
-  if (tab.named) return tab.name;
-  return (
-    threadTitle(lead?.title, lead?.program) ??
-    lead?.program?.name ??
-    "terminal"
-  ).toLowerCase();
-}
+// A pane is called after its agent's thread, else its program, in lower case.
+const paneName = (pane: PaneInfo | undefined) =>
+  (threadTitle(pane?.title, pane?.program) ?? pane?.program?.name ?? "terminal").toLowerCase();
+
+// An unnamed tab is called after its lead pane (its first agent, else its first pane), as the tab bar does.
+const tabName = (tab: TabInfo, lead: PaneInfo | undefined) =>
+  tab.named ? tab.name : paneName(lead);
 
 // "Personal herdr layout" -> "personal-herdr-layout", as the site's paths read.
 const slugify = (text: string) =>
@@ -598,9 +598,10 @@ export default class Frantss extends View {
     );
     // Each repo (or folder) is a row with its spaces under it, and each space with its tabs under it
     // until you close it; the current space is lit and the current tab marked. Rows here are bare names,
-    // a status dot after. A space with one tab stands for that tab: it shows its name, takes the marker
-    // and has nothing to close.
-    const standsForTab = (s: SpaceInfo) => s.tabs.length === 1;
+    // a status dot after. A tab with more than one pane shows its panes in its place. A space with one
+    // tab of one pane stands for that tab: it shows its name, takes the marker and has nothing to close.
+    const tabPanes = (tab: TabInfo) => snapshot.panesByTab.get(tab.id) ?? [];
+    const standsForTab = (s: SpaceInfo) => s.tabs.length === 1 && tabPanes(s.tabs[0]).length < 2;
     const collapsed = collapsedIds();
     const spaceClosed = (s: SpaceInfo) =>
       collapsed.includes(`space:${s.id}:closed`) ||
@@ -650,23 +651,37 @@ export default class Frantss extends View {
     const tabRows = (s: SpaceInfo): RailRow[] =>
       standsForTab(s) || spaceClosed(s)
         ? []
-        : s.tabs.map((tab) => ({
-            id: `tab-${tab.id}`,
-            current: s.active && tab.active,
-            indent: 28,
-            dim: true,
-            small: true,
-            lead: false,
-            end: dotEnd(tab.status),
-            text: tabName(tab, snapshot.leadByTab.get(tab.id)),
-            onClick: () => run("tab.select", { id: tab.id }),
-            onMenu: () =>
-              menu("tab", {
-                id: tab.id,
-                space: s.id,
-                name: tabName(tab, snapshot.leadByTab.get(tab.id)),
-              }),
-          }));
+        : s.tabs.flatMap((tab) => (tabPanes(tab).length > 1 ? paneRows(s, tab) : [tabRow(s, tab)]));
+    const tabRow = (s: SpaceInfo, tab: TabInfo): RailRow => ({
+      id: `tab-${tab.id}`,
+      current: s.active && tab.active,
+      indent: 28,
+      dim: true,
+      small: true,
+      lead: false,
+      end: dotEnd(tab.status),
+      text: tabName(tab, snapshot.leadByTab.get(tab.id)),
+      onClick: () => run("tab.select", { id: tab.id }),
+      onMenu: () =>
+        menu("tab", {
+          id: tab.id,
+          space: s.id,
+          name: tabName(tab, snapshot.leadByTab.get(tab.id)),
+        }),
+    });
+    const paneRows = (s: SpaceInfo, tab: TabInfo): RailRow[] =>
+      tabPanes(tab).map((pane) => ({
+        id: `pane-${pane.pane}`,
+        current: s.active && tab.active && pane.focused,
+        indent: 28,
+        dim: true,
+        small: true,
+        lead: false,
+        end: dotEnd(pane.status),
+        text: paneName(pane),
+        onClick: () => run("pane.focus", { pane: pane.pane }),
+        onMenu: () => menu("pane", { pane: pane.pane, terminal: pane.terminal }),
+      }));
     const withTabs = (s: SpaceInfo) => [spaceRow(s), ...tabRows(s)];
     // A group row is a workspace: its open spaces (its own checkout and worktrees) are under it, unless
     // you closed it. Clicking opens or closes it; its + starts a thread (frantss-thread) in its own
