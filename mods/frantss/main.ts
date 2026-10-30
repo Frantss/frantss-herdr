@@ -31,6 +31,12 @@ type SpaceGroup = {
   local: boolean;
   spaces: SpaceInfo[];
 };
+type WorkspaceSnapshot = {
+  spaces: SpaceInfo[];
+  leadByTab: Map<string, PaneInfo>;
+  cwdBySpace: Map<string, string>;
+  placeBySpace: Map<string, string>;
+};
 type RailRow = {
   id: string;
   current?: boolean;
@@ -169,21 +175,31 @@ const chevron = (t: Theme, collapsed: boolean) =>
     .size(10)
     .flex_none()
     .text_color(t.dim);
-// Where a space is now, as the spaces mod tells it: its first terminal's live folder, else where it was made.
-function place(s: SpaceInfo, ps: PaneInfo[]) {
-  const tabs = new Set(s.tabs.map((tab) => tab.id));
-  return JSON.stringify([
-    s.machine ?? null,
-    ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder,
-  ]);
+function workspaceSnapshot(): WorkspaceSnapshot {
+  const all = spaces();
+  const spaceByTab = new Map<string, string>();
+  for (const space of all) for (const tab of space.tabs) spaceByTab.set(tab.id, space.id);
+  const leadByTab = new Map<string, PaneInfo>();
+  const cwdBySpace = new Map<string, string>();
+  // Cwd follows the first pane in global order; tab names prefer the first agent pane.
+  for (const pane of panes()) {
+    const lead = leadByTab.get(pane.tab);
+    if (!lead || (!lead.program?.agent && pane.program?.agent)) leadByTab.set(pane.tab, pane);
+    const space = spaceByTab.get(pane.tab);
+    if (space !== undefined && pane.cwd && !cwdBySpace.has(space)) cwdBySpace.set(space, pane.cwd);
+  }
+  const placeBySpace = new Map<string, string>();
+  for (const space of all) {
+    if (!cwdBySpace.has(space.id)) cwdBySpace.set(space.id, space.folder);
+    placeBySpace.set(space.id, JSON.stringify([space.machine ?? null, cwdBySpace.get(space.id)]));
+  }
+  return { spaces: all, leadByTab, cwdBySpace, placeBySpace };
 }
 
 // An unnamed tab is called after its agent's thread, else its agent or first program, in lower case, as
 // the tab bar does.
-function tabName(tab: TabInfo, ps = panes()) {
+function tabName(tab: TabInfo, lead: PaneInfo | undefined) {
   if (tab.named) return tab.name;
-  const lead =
-    ps.find((p) => p.tab === tab.id && p.program?.agent) ?? ps.find((p) => p.tab === tab.id);
   return (
     threadTitle(lead?.title, lead?.program) ??
     lead?.program?.name ??
@@ -201,11 +217,6 @@ const slugify = (text: string) =>
 // A space you named shows that name; else its branch, else Herdr's name for it (its repo or folder).
 const spaceName = (s: SpaceInfo) => (s.named ? s.name : (s.branch ?? s.name));
 
-function activePlace() {
-  const space = spaces().find((s) => s.active);
-  return { space, tab: space?.tabs.find((t) => t.active) };
-}
-
 export default class Frantss extends View {
   declare repos: Record<string, string | null>;
   declare checkouts: Record<string, "main" | "linked" | null>;
@@ -213,8 +224,8 @@ export default class Frantss extends View {
   init(_p: unknown, _cx: AsyncContext) {
     // The rail and the breadcrumb both name workspaces by repo.
     if (props()?.role !== "rail" && props()?.role !== "top") return;
-    this.repos = {}; // place() -> its repo's git folder, null outside a repo; a folder's repo doesn't change
-    // place() -> "main" (a repo's own checkout), "linked" (a worktree) or null, once looked up: the space
+    this.repos = {}; // place key -> its repo's git folder, null outside a repo; a folder's repo doesn't change
+    // place key -> "main" (a repo's own checkout), "linked" (a worktree) or null, once looked up: the space
     // menu's worktree items, handed to it so it opens without asking git itself.
     this.checkouts = {};
     if (props()?.role === "rail")
@@ -224,25 +235,27 @@ export default class Frantss extends View {
 
   // Looks up places it hasn't seen. Render runs whenever spaces, panes or shared state change, so
   // no timer is needed.
-  track(cx: Context) {
+  track(cx: Context, snapshot: WorkspaceSnapshot, role: string) {
     if (!this.repos) return;
-    const ps = panes();
     const keys = [
-      ...spaces().map((s) => place(s, ps)),
+      ...snapshot.placeBySpace.values(),
       ...savedWorkspaces().map((w) => folderKey(w.folder)),
     ];
     for (const key of keys) if (!(key in this.repos)) this.lookUp(key, cx);
-    if (props()?.role === "rail") this.publishWorkspaces(ps);
+    if (role === "rail") this.publishWorkspaces(snapshot);
   }
 
   // A space's workspace: its repo on its machine, else its place.
-  workspaceKey(s: SpaceInfo, ps: PaneInfo[]) {
-    const repo = this.repos?.[place(s, ps)];
-    return repo ? JSON.stringify([s.machine ?? null, repo]) : place(s, ps);
+  workspaceKey(s: SpaceInfo, snapshot: WorkspaceSnapshot) {
+    const place = snapshot.placeBySpace.get(s.id);
+    const repo = this.repos?.[place];
+    return repo ? JSON.stringify([s.machine ?? null, repo]) : place;
   }
 
-  publishWorkspaces(ps: PaneInfo[]) {
-    const bySpace = Object.fromEntries(spaces().map((s) => [s.id, this.workspaceKey(s, ps)]));
+  publishWorkspaces(snapshot: WorkspaceSnapshot) {
+    const bySpace = Object.fromEntries(
+      snapshot.spaces.map((s) => [s.id, this.workspaceKey(s, snapshot)]),
+    );
     if (JSON.stringify(bySpace) !== JSON.stringify(shared(SPACE_WORKSPACES)))
       setShared(SPACE_WORKSPACES, bySpace);
   }
@@ -272,18 +285,17 @@ export default class Frantss extends View {
   }
 
   // Spaces in order, those of one repo (or, outside a repo, one folder) together where the first of them is.
-  spaceGroups(all: SpaceInfo[]) {
-    const ps = panes();
+  spaceGroups(snapshot: WorkspaceSnapshot) {
     const groups = new Map<string, SpaceGroup>();
-    for (const s of all) {
-      const repo = this.repos?.[place(s, ps)];
-      const key = this.workspaceKey(s, ps);
+    for (const s of snapshot.spaces) {
+      const repo = this.repos?.[snapshot.placeBySpace.get(s.id)];
+      const key = this.workspaceKey(s, snapshot);
       if (!groups.has(key))
         groups.set(key, {
           key,
           repo: Boolean(repo),
           name: repo ? repoName(repo) : s.name,
-          folder: repo ? repoRoot(repo) : JSON.parse(place(s, ps))[1],
+          folder: repo ? repoRoot(repo) : snapshot.cwdBySpace.get(s.id),
           local: !s.machine,
           spaces: [],
         });
@@ -303,12 +315,13 @@ export default class Frantss extends View {
     };
   }
 
-  top(t: Theme, list: AgentInfo[]) {
-    const { space, tab } = activePlace();
+  top(t: Theme, list: AgentInfo[], snapshot: WorkspaceSnapshot) {
+    const space = snapshot.spaces.find((s) => s.active),
+      tab = space?.tabs.find((t) => t.active);
     // Like the site's path line, faint crumbs joined by "/" with the current one accented, naming where
     // you stand in the rail: workspace / branch / tab. Each crumb opens what it names.
     const group =
-      space && this.spaceGroups(spaces()).find((g) => g.spaces.some((s) => s.id === space.id));
+      space && this.spaceGroups(snapshot).find((g) => g.spaces.some((s) => s.id === space.id));
     const saved =
       group &&
       savedWorkspaces()
@@ -341,13 +354,18 @@ export default class Frantss extends View {
             menu("space", {
               id: space.id,
               name: spaceName(space),
-              checkout: this.checkouts?.[place(space, panes())],
+              checkout: this.checkouts?.[snapshot.placeBySpace.get(space.id)],
             }),
         },
       tab && {
         id: "tab",
-        text: slugify(tabName(tab)),
-        onClick: () => menu("tab", { id: tab.id, space: space.id, name: tabName(tab) }),
+        text: slugify(tabName(tab, snapshot.leadByTab.get(tab.id))),
+        onClick: () =>
+          menu("tab", {
+            id: tab.id,
+            space: space.id,
+            name: tabName(tab, snapshot.leadByTab.get(tab.id)),
+          }),
       },
     ].filter((crumb) => crumb?.text);
     // The bar drags the window, so a crumb with an action keeps its press to itself.
@@ -531,8 +549,8 @@ export default class Frantss extends View {
       .transition("opacity", 150);
   }
 
-  rail(t: Theme, list: AgentInfo[]) {
-    const all = spaces();
+  rail(t: Theme, list: AgentInfo[], snapshot: WorkspaceSnapshot) {
+    const all = snapshot.spaces;
     const groups = GROUPS.map((g) => ({ ...g, agents: list.filter((a) => a.status === g.status) }));
     setAgentOrder(groups.flatMap((g) => g.agents.map((a) => a.address)));
     const named = new Set(
@@ -563,7 +581,7 @@ export default class Frantss extends View {
     // A worktree space has a branch icon left of its dot's column, as Codex marks worktree threads.
     const spaceEnd = (s: SpaceInfo) => {
       const dotted = dotEnd(s.status);
-      if (this.checkouts?.[place(s, ps)] !== "linked") return dotted;
+      if (this.checkouts?.[snapshot.placeBySpace.get(s.id)] !== "linked") return dotted;
       return h_flex()
         .gap(8)
         .items_center()
@@ -578,12 +596,17 @@ export default class Frantss extends View {
       lead: false,
       end: spaceEnd(s),
       collapsed: standsForTab(s) ? undefined : spaceClosed(s),
-      text: standsForTab(s) ? tabName(s.tabs[0], ps) : spaceName(s),
+      text: standsForTab(s)
+        ? tabName(s.tabs[0], snapshot.leadByTab.get(s.tabs[0].id))
+        : spaceName(s),
       onClick: () => (standsForTab(s) ? run("space.select", { id: s.id }) : toggleSpace(s)),
       onMenu: () =>
-        menu("space", { id: s.id, name: spaceName(s), checkout: this.checkouts?.[place(s, ps)] }),
+        menu("space", {
+          id: s.id,
+          name: spaceName(s),
+          checkout: this.checkouts?.[snapshot.placeBySpace.get(s.id)],
+        }),
     });
-    const ps = panes();
     const tabRows = (s: SpaceInfo): RailRow[] =>
       standsForTab(s) || spaceClosed(s)
         ? []
@@ -593,9 +616,14 @@ export default class Frantss extends View {
             indent: 28,
             lead: false,
             end: dotEnd(tab.status),
-            text: tabName(tab, ps),
+            text: tabName(tab, snapshot.leadByTab.get(tab.id)),
             onClick: () => run("tab.select", { id: tab.id }),
-            onMenu: () => menu("tab", { id: tab.id, space: s.id, name: tabName(tab, ps) }),
+            onMenu: () =>
+              menu("tab", {
+                id: tab.id,
+                space: s.id,
+                name: tabName(tab, snapshot.leadByTab.get(tab.id)),
+              }),
           }));
     const withTabs = (s: SpaceInfo) => [spaceRow(s), ...tabRows(s)];
     // A group row is a workspace: its open spaces (its own checkout and worktrees) are under it, unless
@@ -621,7 +649,7 @@ export default class Frantss extends View {
         props: { folder, saved },
       });
     const ownCheckout = (g: SpaceGroup) =>
-      g.spaces.find((s) => !JSON.parse(place(s, ps))[1]?.includes("/.herdr/worktrees/")) ??
+      g.spaces.find((s) => !snapshot.cwdBySpace.get(s.id)?.includes("/.herdr/worktrees/")) ??
       g.spaces[0];
     const workspaceClosed = (g: SpaceGroup) => collapsed.includes(`workspace:${g.key}`);
     const groupRow = (g: SpaceGroup, saved: NamedWorkspace): RailRow => {
@@ -644,7 +672,7 @@ export default class Frantss extends View {
           .child(
             newThread(g.key, {
               space: s.id,
-              folder: JSON.parse(place(s, ps))[1],
+              folder: snapshot.cwdBySpace.get(s.id),
               machine: s.machine,
               repo: g.repo,
             }),
@@ -668,7 +696,7 @@ export default class Frantss extends View {
       onClick: () => run("space.new", { folder: w.folder }),
       onMenu: () => workspaceMenu(w.folder, true),
     });
-    const open = this.spaceGroups(all);
+    const open = this.spaceGroups(snapshot);
     const saved = savedWorkspaces()
       .map((w) => this.workspace(w))
       .filter((w, i, list) => list.findIndex((o) => o.key === w.key) === i);
@@ -788,9 +816,10 @@ export default class Frantss extends View {
     const t = theme() as Record<string, `#${string}`>;
     const role = props()?.role;
     if (role === "pane") return this.pane(t);
-    this.track(cx);
+    const snapshot = workspaceSnapshot();
+    this.track(cx, snapshot, role);
     const list = agents();
-    if (role === "top") return this.top(t, list);
-    return this.rail(t, list);
+    if (role === "top") return this.top(t, list, snapshot);
+    return this.rail(t, list, snapshot);
   }
 }
