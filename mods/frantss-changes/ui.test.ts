@@ -184,13 +184,15 @@ async function harness(refresh = false) {
             ? args.includes("--cached")
               ? "cached"
               : "unstaged"
-            : "other";
+            : args.includes("--show-toplevel")
+              ? "root"
+              : "other";
       state.queryStarts.push(query);
       if (state.queryBlocks.has(query)) await state.queryBlocks.get(query);
+      if (state.error) throw new Error(state.error);
       if (args.includes("--show-toplevel")) {
         if (state.block) await state.block;
-        if (state.error) throw new Error(state.error);
-        return { code: 0, stdout: options.cwd, stderr: "" };
+        return { code: 0, stdout: `${options.cwd}\n${options.cwd}/.git\n`, stderr: "" };
       }
       if (args.includes("status")) return { code: 0, stdout: state.status, stderr: "" };
       if (args.includes("--verify"))
@@ -518,6 +520,24 @@ test("Changes notifies after a render during loading", async () => {
   await h.drain();
   assert.equal(h.changes.loading, false);
   assert.equal(h.state.notifications, 1);
+});
+
+test("Changes looks up a place's repository once and polls only what the watcher cannot see", async () => {
+  const h = await harness(true);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.changes.watched = "/repo";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.state.queryStarts.filter((query) => query === "root").length, 1);
+  const before = h.state.queryStarts.length;
+  h.changes.poll(h.cx);
+  await h.drain();
+  assert.equal(h.state.queryStarts.length, before);
+  h.changes.gitDir = "/main/.git/worktrees/repo";
+  h.changes.poll(h.cx);
+  await h.drain();
+  assert.ok(h.state.queryStarts.length > before);
 });
 
 test("an old Changes watcher rejection cannot clear a newer watcher for the same root", async () => {

@@ -71,6 +71,7 @@ interface ChangedFile extends FileStats {
 type Snapshot = Pick<
   Changes,
   | "root"
+  | "gitDir"
   | "on"
   | "hasHead"
   | "files"
@@ -109,6 +110,7 @@ const meaningful = (paths: string[]) =>
 // while git refreshes them; a few places are kept.
 const SNAPSHOT = [
   "root",
+  "gitDir",
   "on",
   "hasHead",
   "files",
@@ -212,6 +214,8 @@ export default class Changes extends View {
   declare on: string | null;
   declare watched: string | null;
   declare root: string | null;
+  // The repository's Git folder; with the root, looked up once per place.
+  declare gitDir: string | null;
   declare context: string;
   declare limited: boolean;
   declare loading: boolean;
@@ -255,7 +259,13 @@ export default class Changes extends View {
       this.reviewNote = this.noteInput.value();
     });
     this.refresh(cx);
-    cx.timer.every(10000, (cx) => this.refresh(cx));
+    cx.timer.every(10000, (cx) => this.poll(cx));
+  }
+
+  // The watcher reports changes in the repository. Without it (a remote place, a stopped watcher,
+  // no repository yet) or with a Git folder outside it (a worktree), the timer looks again.
+  poll(cx: Context) {
+    if (this.watched !== this.root || !this.gitDir?.startsWith(this.root + "/")) this.refresh(cx);
   }
 
   watch(root: string, cx: Context) {
@@ -292,18 +302,26 @@ export default class Changes extends View {
     this.loadingRendered = false;
     cx.spawn(async (cx) => {
       try {
-        const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
-        if (key() !== context) return;
-        if (top.code !== 0) {
-          this.root = null;
-          this.files = [];
-          this.setLines([]);
-          this.open = null;
-          this.error = "Not a git repository";
-          return;
+        let root = this.root,
+          gitDir = this.gitDir;
+        if (!root || !gitDir) {
+          const top = await exec("git", ["rev-parse", "--show-toplevel", "--absolute-git-dir"], {
+            cwd,
+            on,
+          });
+          if (key() !== context) return;
+          if (top.code !== 0) {
+            this.root = null;
+            this.gitDir = null;
+            this.files = [];
+            this.setLines([]);
+            this.open = null;
+            this.error = "Not a git repository";
+            return;
+          }
+          [root, gitDir] = top.stdout.trim().split(/\r?\n/);
         }
-        const root = top.stdout.trim(),
-          git = (args: string[]) => exec("git", args, { cwd: root, on });
+        const git = (args: string[]) => exec("git", args, { cwd: root, on });
         const [status, head] = await Promise.all([
           git([
             "--no-optional-locks",
@@ -353,6 +371,7 @@ export default class Changes extends View {
         }
         if (key() !== context) return;
         this.root = root;
+        this.gitDir = gitDir;
         this.on = on;
         this.hasHead = head.code === 0;
         this.files = files;
@@ -418,6 +437,7 @@ export default class Changes extends View {
     if (kept) Object.assign(this, kept);
     else {
       this.root = null;
+      this.gitDir = null;
       this.files = [];
       this.open = null;
       this.setLines([]);
