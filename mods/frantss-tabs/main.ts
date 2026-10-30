@@ -215,20 +215,20 @@ export default class Tabs extends View {
         ps.find((p) => p.tab === c.id && p.program?.agent) ?? ps.find((p) => p.tab === c.id)
       )?.program;
       const name = tabName(c, ps);
-      // Like a rail row: the current tab is marked with ❯ and bright text rather than a raised box.
+      // Like a rail row: the current tab is marked with ❯ and bright text rather than a raised
+      // box. Hover tints the background, so a hovered tab never looks current.
       return (
         h_flex()
           .id(`tab-${c.id}`)
-          .h(24)
+          .h_full()
           .px(8)
           .gap(6)
-          .rounded(3)
           .items_center()
           .flex_none()
           .text_size(12)
           .cursor_pointer()
           .text_color(c.active ? t.foreground : t.muted)
-          .hover((s) => s.text_color(t.foreground))
+          .hover((s) => s.bg(t.hover))
           .child(
             div()
               .w(10)
@@ -312,48 +312,53 @@ export default class Tabs extends View {
       this.countChanges(cx);
     const panelButton = (id: PanelId, label: string, icon: string, count = 0) => {
       const on = panel && !panel.hidden && panel.active === id;
-      return h_flex()
-        .id(`panel-${id}`)
-        .h(24)
-        .px(8)
-        .gap(6)
-        .flex_none()
-        .items_center()
-        .rounded(3)
-        .text_size(12)
-        .cursor_pointer()
-        .when(on, (el) => el.bg(t.selected))
-        .text_color(on ? t.foreground : t.muted)
-        .hover((s) => s.text_color(t.foreground))
-        .on_mouse_down("left", stop)
-        .tooltip(`⌥-click opens ${label} beside the pane`)
-        .on_click((event: ClickEvent) => {
-          if (event.modifiers.alt)
-            run("pane.split", { direction: "right", mod: PANEL_MODS[id], props: { pane: true } });
-          else if (on) run("layout.hide", { id: "panel" });
-          else {
-            run("layout.select", { stack: "panel", child: id });
-            run("layout.show", { id: "panel" });
-          }
-        })
-        .child(svg(icon).size(14))
-        .child(label)
-        .when(count > 0, (el) =>
-          el.child(
-            div()
-              .h(14)
-              .min_w(14)
-              .px(3)
-              .flex()
-              .items_center()
-              .justify_center()
-              .rounded(3)
-              .text_size(9)
-              .bg(t.accent)
-              .text_color(t.accent_foreground)
-              .child(String(count)),
-          ),
-        );
+      return (
+        h_flex()
+          .id(`panel-${id}`)
+          .h_full()
+          .px(8)
+          .gap(6)
+          .flex_none()
+          .items_center()
+          .text_size(12)
+          .cursor_pointer()
+          .text_color(on ? t.foreground : t.muted)
+          .hover((s) => s.bg(t.hover))
+          .on_mouse_down("left", stop)
+          .tooltip(`⌥-click opens ${label} beside the pane`)
+          .on_click((event: ClickEvent) => {
+            if (event.modifiers.alt)
+              run("pane.split", { direction: "right", mod: PANEL_MODS[id], props: { pane: true } });
+            else if (on) run("layout.hide", { id: "panel" });
+            else {
+              run("layout.select", { stack: "panel", child: id });
+              run("layout.show", { id: "panel" });
+            }
+          })
+          // Herdr draws its bundled fonts at one weight, so the open panel's icon takes the accent instead.
+          .child(
+            svg(icon)
+              .size(14)
+              .when(on, (el) => el.text_color(t.accent)),
+          )
+          .child(label)
+          .when(count > 0, (el) =>
+            el.child(
+              div()
+                .h(14)
+                .min_w(14)
+                .px(3)
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(3)
+                .text_size(9)
+                .bg(t.accent)
+                .text_color(t.accent_foreground)
+                .child(String(count)),
+            ),
+          )
+      );
     };
     // No fill: the layout's dot texture shows through, as behind the rail and top bar.
     return (
@@ -361,7 +366,6 @@ export default class Tabs extends View {
         .size_full()
         .min_w(0)
         .px(10)
-        .gap(3)
         .items_center()
         .border_b(1)
         .border_color(t.border)
@@ -371,7 +375,8 @@ export default class Tabs extends View {
         .on_scroll_wheel((e) => {
           if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next");
         })
-        // + sits in the scrolling strip, right after the last tab. A 1px rule divides one tab from the next.
+        // + sits in the scrolling strip, right after the last tab. A 1px rule follows each tab;
+        // tabs fill the bar's height and meet the rules, so hover tints the whole space between them.
         .child(
           h_flex()
             .id("tab-scroll")
@@ -379,19 +384,18 @@ export default class Tabs extends View {
             .min_w(0)
             .h_full()
             .items_center()
-            .gap(3)
             .overflow_x_scrollbar()
             .children(
-              shown.flatMap((c, i) =>
-                i === 0 ? [item(c, i)] : [div().w(1).h(14).flex_none().bg(t.border), item(c, i)],
-              ),
+              shown.flatMap((c, i) => [item(c, i), div().w(1).h_full().flex_none().bg(t.border)]),
             )
             .child(
               button("tab-new", "+", "New tab", () =>
                 openOverlay({ mod: "frantss-new-menu", kind: "popup", width: 250, height: 512 }),
-              ),
+              ).ml(3),
             ),
         )
+        // A rule divides the tabs from the panel buttons, which look alike but act differently.
+        .child(div().w(1).h_full().flex_none().bg(t.border))
         .when(enabled.includes("files"), (el) =>
           el.child(panelButton("files", "Files", "mods/files/file.svg")),
         )
@@ -413,7 +417,7 @@ export default class Tabs extends View {
         )
         .when(window()?.buttons, (el) =>
           el
-            .child(button("minimize", "−", "Minimize", () => run("window.minimize")))
+            .child(button("minimize", "−", "Minimize", () => run("window.minimize")).ml(3))
             .child(button("maximize", "□", "Maximize", () => run("window.maximize")))
             .child(
               button("close-window", svg("mods/pane/close.svg").size(13), "Close window", () =>
