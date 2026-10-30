@@ -10,6 +10,9 @@ export interface DiffRow {
   spans?: Span[];
   // Unchanged lines hidden above a hunk header.
   gap?: number;
+  // A comment row's index in the review, and whether its line changed since.
+  comment?: number;
+  outdated?: boolean;
 }
 
 // The ansi theme uses only the 16 terminal colors, so the Herdr theme resolves them; tabs stay

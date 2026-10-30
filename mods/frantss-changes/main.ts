@@ -1,5 +1,24 @@
-import { View, div, type Context, type AsyncContext, type Color } from "gpui-kit";
-import { v_flex, h_flex, Scrollbar, v_virtual_list, v_resizable, resizable_panel } from "gpui-base";
+import {
+  View,
+  div,
+  svg,
+  image,
+  type Context,
+  type AsyncContext,
+  type Color,
+  type FocusHandle,
+} from "gpui-kit";
+import {
+  v_flex,
+  h_flex,
+  InputState,
+  Input,
+  Scrollbar,
+  v_virtual_list,
+  v_resizable,
+  resizable_panel,
+  Button,
+} from "gpui-base";
 import {
   spaces,
   panes,
@@ -10,9 +29,24 @@ import {
   theme,
   settings,
   layout,
+  agents,
+  type AgentInfo,
+  hc,
 } from "herdr";
 import { LINE_LIMIT, trackedPreview, untrackedPreview } from "./preview.ts";
 import { expandGaps, fileLines } from "./gaps.ts";
+import {
+  DEFAULT_NOTE,
+  lineSide,
+  pickAgent,
+  agentChoices,
+  agentName,
+  reviewMessage,
+  withComments,
+  withComposer,
+  type ReviewComment,
+  type Target,
+} from "./review.ts";
 import {
   colorRows,
   parseAnsi,
@@ -70,9 +104,17 @@ type Snapshot = Pick<
   | "oldSpans"
   | "newSpans"
   | "expanded"
+  | "comments"
+  | "reviewNote"
+  | "agentAddress"
 >;
 
 const key = () => JSON.stringify(location());
+const TRASH = "mods/frantss-changes/trash.svg",
+  CHEVRON = "mods/workspace-chrome/chevron-down.svg";
+// Diff rows indent their text past the line number and the hover "+".
+const GUTTER = 62,
+  COMPOSER = 48;
 const zoom = () => (settings().zoom as number | undefined) ?? 1;
 
 function find(node: LayoutNode | null, id: string): LayoutNode | null {
@@ -111,6 +153,9 @@ const SNAPSHOT = [
   "oldSpans",
   "newSpans",
   "expanded",
+  "comments",
+  "reviewNote",
+  "agentAddress",
 ] as const;
 const KEPT_PLACES = 20;
 // Numbers each diff line once, so a frame only draws the rows on screen.
@@ -167,7 +212,23 @@ export default class Changes extends View {
   declare newSpans: Span[][];
   declare expanded: ReadonlySet<number>;
   declare diffWidth: number;
+  declare handle: FocusHandle;
   declare kept: Map<string, Snapshot>;
+  declare commentInput: InputState;
+  declare noteInput: InputState;
+  // The input holding the keyboard.
+  declare typing: "comment" | "note" | null;
+  // The review: comments wait here until one send gives them all to the agent.
+  declare comments: ReviewComment[];
+  declare reviewNote: string;
+  // The line being commented on, or the comment being edited (its index).
+  declare target: Target | null;
+  // Where the last press in the diff landed, since a row click reports only the row.
+  declare pressX: number;
+  declare sending: boolean;
+  // The agent picked for the review; null sends to this space's latest one.
+  declare agentAddress: string | null;
+  declare choosingAgent: boolean;
   declare on: string | null;
   declare watched: string | null;
   declare root: string | null;
@@ -185,8 +246,32 @@ export default class Changes extends View {
 
   init(_props: unknown, cx: AsyncContext) {
     this.files = [];
+    this.comments = [];
+    this.reviewNote = DEFAULT_NOTE;
+    this.target = null;
+    this.agentAddress = null;
     this.setLines([]);
+    this.handle = cx.focus_handle();
     this.kept = new Map();
+    const field = (name: Changes["typing"], placeholder: string) => {
+      const input = InputState.new({ placeholder });
+      input.on("focus", (_e, cx) => {
+        this.typing = name;
+        cx.notify();
+      });
+      input.on("blur", (_e, cx) => {
+        if (this.typing === name) this.typing = null;
+        cx.notify();
+      });
+      return input;
+    };
+    this.commentInput = field("comment", "Comment");
+    this.commentInput.on("submit", (_e, cx) => this.saveComment(cx));
+    this.noteInput = field("note", "Overall note (optional)");
+    this.noteInput.set_value(this.reviewNote);
+    this.noteInput.on("change", (_e) => {
+      this.reviewNote = this.noteInput.value();
+    });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
   }
@@ -334,6 +419,7 @@ export default class Changes extends View {
 
   // Keeps what this place shows and shows what the next one showed last, or nothing yet.
   switchTo(context: string) {
+    this.closeComment();
     if (this.context) {
       this.kept.delete(this.context);
       this.kept.set(
@@ -355,7 +441,12 @@ export default class Changes extends View {
       this.error = null;
       this.closed = false;
       this.limited = false;
+      this.comments = [];
+      this.reviewNote = DEFAULT_NOTE;
+      this.agentAddress = null;
     }
+    this.choosingAgent = false;
+    this.noteInput.set_value(this.reviewNote);
   }
 
   async load(path: string, context: string, cx: Context) {
@@ -450,10 +541,17 @@ export default class Changes extends View {
   }
 
   show() {
-    this.rows = colorRows(
-      expandGaps(this.plainRows, this.fileLines, this.expanded),
-      this.oldSpans,
-      this.newSpans,
+    this.rows = withComposer(
+      withComments(
+        colorRows(
+          expandGaps(this.plainRows, this.fileLines, this.expanded),
+          this.oldSpans,
+          this.newSpans,
+        ),
+        this.comments,
+        this.open,
+      ),
+      this.target,
     );
     this.diffWidth = this.rows.reduce(
       (width, row) => Math.max(width, row.text.length * 7 + 57),
@@ -461,16 +559,98 @@ export default class Changes extends View {
     );
   }
 
-  expand(index: number, cx: Context) {
+  // A gap row expands, a comment row opens for editing, a line opens a new comment, and the
+  // comment box's trash deletes the comment it edits.
+  clickRow(index: number, cx: Context) {
     const row = this.rows[index];
-    if (row?.kind !== "@" || !row.gap) return;
-    this.expanded = new Set(this.expanded).add(row.number);
+    if (!row || !this.open) return;
+    if (row.kind === "compose") {
+      if (this.target?.index !== null && this.pressX < GUTTER * zoom()) this.removeComment(cx);
+      return;
+    }
+    if (row.kind === "@") {
+      if (!row.gap) return;
+      this.expanded = new Set(this.expanded).add(row.number);
+    } else if (row.kind === "#") {
+      const { text, ...line } = this.comments[row.comment];
+      this.target = { ...line, index: row.comment };
+      this.commentInput.set_value(text);
+      this.commentInput.focus();
+    } else {
+      const side = lineSide(row);
+      if (!side) return;
+      this.target = { path: this.open, side, number: row.number, quote: row.text, index: null };
+      this.commentInput.set_value("");
+      this.commentInput.focus();
+    }
     this.show();
+    cx.notify();
+  }
+
+  closeComment() {
+    this.target = null;
+    this.commentInput.set_value("");
+    this.show();
+  }
+
+  // An emptied comment is removed.
+  saveComment(cx: Context) {
+    if (!this.target) return;
+    const { index, ...line } = this.target,
+      text = this.commentInput.value().trim(),
+      comments = [...this.comments];
+    if (index === null) {
+      if (text) comments.push({ ...line, text });
+    } else if (text) comments[index] = { ...comments[index], text };
+    else comments.splice(index, 1);
+    this.comments = comments;
+    this.closeComment();
+    this.handle.focus();
+    cx.notify();
+  }
+
+  removeComment(cx: Context) {
+    this.commentInput.set_value("");
+    this.saveComment(cx);
+  }
+
+  discardReview(cx: Context) {
+    this.comments = [];
+    this.reviewNote = DEFAULT_NOTE;
+    this.noteInput.set_value(DEFAULT_NOTE);
+    this.closeComment();
+    cx.notify();
+  }
+
+  sendReview(cx: Context) {
+    const agent = pickAgent(agents(), focused()?.space, this.agentAddress);
+    if (!agent || !this.comments.length || this.sending) return;
+    const message = reviewMessage(this.comments, this.reviewNote),
+      context = this.context;
+    this.sending = true;
+    this.note = null;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await hc(["send", agent.address, message]);
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
+        if (key() === context) this.discardReview(cx);
+        else {
+          const kept = this.kept.get(context);
+          if (kept) Object.assign(kept, { comments: [], reviewNote: DEFAULT_NOTE });
+        }
+      } catch (e) {
+        if (key() === context) this.note = `Send failed: ${e}`;
+      } finally {
+        this.sending = false;
+        cx.notify();
+      }
+    });
     cx.notify();
   }
 
   pick(path: string, cx: Context) {
     this.open = this.open === path ? null : path;
+    this.closeComment();
     this.setLines([]);
     this.note = null;
     this.closed = !this.open;
@@ -488,7 +668,60 @@ export default class Changes extends View {
     cx.notify();
   }
 
-  diffRow({ kind, number, text, spans, gap }: DiffRow, t: Theme) {
+  targets(row: DiffRow) {
+    const target = this.target;
+    if (!target) return false;
+    if (row.kind === "#") return row.comment === target.index;
+    return (
+      target.index === null &&
+      target.path === this.open &&
+      target.number === row.number &&
+      target.side === lineSide(row)
+    );
+  }
+
+  diffRow(row: DiffRow, index: number, t: Theme) {
+    const { kind, number, text, spans, gap } = row;
+    if (kind === "compose")
+      return h_flex()
+        .w_full()
+        .h(COMPOSER)
+        .flex_none()
+        .items_center()
+        .pr(12)
+        .bg(t.raised)
+        .child(
+          div()
+            .w(GUTTER)
+            .h_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(this.target?.index !== null, (e) =>
+              e
+                .cursor_pointer()
+                .text_color(t.muted)
+                .hover((s) => s.text_color(t.foreground))
+                .child(svg(TRASH).size(14)),
+            ),
+        )
+        .child(this.field("comment-text", this.commentInput, "comment", t));
+    if (kind === "#") {
+      const comment = this.comments[row.comment];
+      return div()
+        .w_full()
+        .h(20)
+        .flex_none()
+        .pl(GUTTER)
+        .pr(12)
+        .truncate()
+        .cursor_pointer()
+        .bg(this.targets(row) ? t.selected : ((t.accent + "22") as Color))
+        .text_color(row.outdated ? t.muted : t.foreground)
+        .hover((s) => s.bg(t.hover))
+        .child(row.outdated ? `Outdated · line ${comment.number} · ${text}` : `▸ ${text}`);
+    }
     if (kind === "@")
       return div()
         .w_full()
@@ -508,30 +741,63 @@ export default class Changes extends View {
                 .join(" · ")
             : text,
         );
-    return h_flex()
-      .w_full()
-      .h(20)
-      .flex_none()
-      .gap(10)
-      .when(kind === "+", (e) => e.bg((t.ansi2 + "18") as Color))
-      .when(kind === "-", (e) => e.bg((t.ansi1 + "18") as Color))
-      .child(
-        div()
-          .w(30)
-          .flex_none()
-          .text_right()
-          .text_color(t.dim)
-          .child(number === undefined ? "" : String(number)),
-      )
-      .child(
-        spans
-          ? h_flex()
-              .flex_1()
-              .min_w(0)
-              .overflow_hidden()
-              .children(spans.map((span) => this.span(span, t)))
-          : div().flex_1().min_w(0).truncate().child(text),
-      );
+    const commentable = lineSide(row) !== null;
+    return (
+      h_flex()
+        .relative()
+        .w_full()
+        .h(20)
+        .flex_none()
+        .pl(22)
+        .gap(10)
+        .when(commentable, (e) => e.cursor_pointer())
+        .when(kind === "+", (e) => e.bg((t.ansi2 + "18") as Color))
+        .when(kind === "-", (e) => e.bg((t.ansi1 + "18") as Color))
+        .when(this.targets(row), (e) => e.bg(t.selected))
+        // The "+" shows on hover: an overlay over the row, since a row cannot style its children.
+        .when(commentable, (e) =>
+          e.child(
+            div()
+              .id(`diff-add-${index}`)
+              .absolute()
+              .inset_0()
+              .opacity(0)
+              .hover((s) => s.opacity(1))
+              .child(
+                div()
+                  .absolute()
+                  .left(3)
+                  .top(2)
+                  .size(16)
+                  .flex()
+                  .items_center()
+                  .justify_center()
+                  .rounded(3)
+                  .bg(t.accent)
+                  .text_color(t.accent_foreground)
+                  .font_bold()
+                  .child("+"),
+              ),
+          ),
+        )
+        .child(
+          div()
+            .w(30)
+            .flex_none()
+            .text_right()
+            .text_color(t.dim)
+            .child(number === undefined ? "" : String(number)),
+        )
+        .child(
+          spans
+            ? h_flex()
+                .flex_1()
+                .min_w(0)
+                .overflow_hidden()
+                .children(spans.map((span) => this.span(span, t)))
+            : div().flex_1().min_w(0).truncate().child(text),
+        )
+    );
   }
 
   span({ text, color }: Span, t: Theme) {
@@ -544,7 +810,8 @@ export default class Changes extends View {
 
   fileRow(f: ChangedFile, t: Theme) {
     const parts = f.path.split("/"),
-      name = parts.pop();
+      name = parts.pop(),
+      comments = this.comments.filter((comment) => comment.path === f.path).length;
     return h_flex()
       .id(`change-${f.path}`)
       .h(24)
@@ -585,7 +852,10 @@ export default class Changes extends View {
           .child(div().max_w(260).min_w(0).truncate().child(name)),
       )
       .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
-      .when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
+      .when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)))
+      .when(comments > 0, (e) =>
+        e.child(div().text_size(11).text_color(t.accent).child(`✎ ${comments}`)),
+      );
   }
 
   render(cx: Context) {
@@ -609,6 +879,20 @@ export default class Changes extends View {
       .border_color(t.border)
       .text_color(t.foreground)
       .text_size(12)
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => {
+        if (e.key === "escape" && this.choosingAgent) {
+          this.choosingAgent = false;
+          cx.stop_propagation();
+          cx.notify();
+        } else if (e.key === "escape" && this.typing) {
+          if (this.typing === "comment") this.closeComment();
+          this.typing = null;
+          this.handle.focus();
+          cx.stop_propagation();
+          cx.notify();
+        }
+      })
       .child(
         h_flex()
           .h(28)
@@ -621,6 +905,16 @@ export default class Changes extends View {
           .border_color(t.border)
           .child(div().child("Changes"))
           .child(div().text_size(10).text_color(t.muted).child(`${this.files.length} files`))
+          .when(this.comments.length > 0, (e) =>
+            e.child(
+              div()
+                .text_size(10)
+                .text_color(t.accent)
+                .child(
+                  `${this.comments.length} ${this.comments.length === 1 ? "comment" : "comments"}`,
+                ),
+            ),
+          )
           .child(div().flex_1())
           .child(div().text_size(11).text_color(t.ansi2).child(`+${add}`))
           .child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)),
@@ -715,15 +1009,22 @@ export default class Changes extends View {
                             v_virtual_list(
                               "changes-diff",
                               this.rows.length,
-                              20 * zoom(),
+                              this.target
+                                ? this.rows.map(
+                                    (row) => (row.kind === "compose" ? COMPOSER : 20) * zoom(),
+                                  )
+                                : 20 * zoom(),
                               (i) => String(i),
                               (range) =>
                                 this.rows
                                   .slice(range.start, range.end)
-                                  .map((row) => this.diffRow(row, t)),
+                                  .map((row, i) => this.diffRow(row, range.start + i, t)),
                             )
                               .size_full()
-                              .on_item_click((index, cx) => this.expand(Number(index), cx)),
+                              .on_mouse_down("left", (e) => {
+                                this.pressX = e.local_position?.x ?? Infinity;
+                              })
+                              .on_item_click((index, cx) => this.clickRow(Number(index), cx)),
                           ),
                         ),
                     ),
@@ -746,6 +1047,189 @@ export default class Changes extends View {
       )
       .when(Boolean(this.note), (e) =>
         e.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)),
+      )
+      .when(this.comments.length > 0, (e) => e.child(this.reviewBar(t)));
+  }
+
+  field(id: string, input: InputState, name: Changes["typing"], t: Theme) {
+    return div()
+      .id(id)
+      .flex_1()
+      .min_w(0)
+      .h(34)
+      .px(10)
+      .flex()
+      .items_center()
+      .rounded(3)
+      .border_1()
+      .border_color(this.typing === name ? t.accent : t.input)
+      .bg(t.background)
+      .cursor_text()
+      .child(Input.new(input).h_full().text_size(12).text_color(t.foreground));
+  }
+
+  iconButton(id: string, label: string, enabled: boolean, action: (cx: Context) => void, t: Theme) {
+    return Button.new(id)
+      .size(34)
+      .flex()
+      .flex_none()
+      .items_center()
+      .justify_center()
+      .rounded(3)
+      .text_color(enabled ? t.muted : t.dim)
+      .disabled(!enabled)
+      .when(enabled, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)))
+      .tooltip(label)
+      .accessibility_label(label)
+      .on_click((_e, cx) => action(cx))
+      .child(svg(TRASH).size(14));
+  }
+
+  chooseAgent(address: string, cx: Context) {
+    this.agentAddress = address;
+    this.choosingAgent = false;
+    cx.notify();
+  }
+
+  reviewBar(t: Theme) {
+    const space = focused()?.space,
+      live = agents(),
+      agent = pickAgent(live, space, this.agentAddress),
+      count = this.comments.length,
+      enabled = Boolean(agent) && !this.sending;
+    return h_flex()
+      .relative()
+      .flex_none()
+      .p(10)
+      .gap(8)
+      .border_t(1)
+      .border_color(t.border)
+      .child(
+        this.field("review-note", this.noteInput, "note", t).on_mouse_down("left", (_e, cx) =>
+          cx.stop_propagation(),
+        ),
+      )
+      .child(
+        this.iconButton(
+          "review-discard",
+          "Discard review",
+          !this.sending,
+          (cx) => this.discardReview(cx),
+          t,
+        ),
+      )
+      .child(
+        div()
+          .id("review-agent")
+          .h(34)
+          .max_w(200)
+          .px(10)
+          .flex()
+          .flex_none()
+          .items_center()
+          .gap(6)
+          .rounded(3)
+          .border_1()
+          .border_color(this.choosingAgent ? t.accent : t.input)
+          .text_size(12)
+          .text_color(live.length ? t.foreground : t.muted)
+          .when(live.length > 0, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover)))
+          .on_click((_e, cx) => {
+            if (!live.length) return;
+            this.choosingAgent = true;
+            cx.notify();
+          })
+          .when(Boolean(agent), (e) => e.child(this.agentIcon(agent, t)))
+          .child(
+            div()
+              .min_w(0)
+              .truncate()
+              .child(agent ? this.agentName(agent) : "No agent here"),
+          )
+          .child(svg(CHEVRON).size(12).flex_none().text_color(t.dim)),
+      )
+      .child(
+        div()
+          .id("review-send")
+          .h(34)
+          .px(12)
+          .flex()
+          .flex_none()
+          .items_center()
+          .rounded(3)
+          .bg(enabled ? t.accent : t.border)
+          .text_color(enabled ? t.accent_foreground : t.muted)
+          .text_size(12)
+          .when(enabled, (e) => e.font_bold().cursor_pointer())
+          .on_click((_e, cx) => this.sendReview(cx))
+          .child(this.sending ? "Sending…" : `Send ${count}`),
+      )
+      .when(this.choosingAgent, (e) => e.child(this.agentMenu(live, space, agent, t)));
+  }
+
+  // Agents go by their tab's name, as the tab bar shows it.
+  agentName(agent: AgentInfo) {
+    const tab = spaces()
+      .find((space) => space.id === agent.space)
+      ?.tabs.find((tab) => tab.id === agent.tab);
+    return agentName(agent, tab);
+  }
+
+  agentIcon({ program }: AgentInfo, t: Theme) {
+    const icon = program.icon;
+    if (!icon) return div().size(14).flex_none();
+    return (program.tint ? svg(icon).text_color(t.muted) : image(icon)).size(14).flex_none();
+  }
+
+  agentMenu(live: AgentInfo[], space: string | undefined, agent: AgentInfo | null, t: Theme) {
+    return v_flex()
+      .id("review-agents")
+      .absolute()
+      .bottom(54)
+      .right(10)
+      .w(300)
+      .max_h(260)
+      .overflow_y_scroll()
+      .p(4)
+      .rounded(3)
+      .border_1()
+      .border_color(t.border)
+      .bg(t.raised)
+      .on_mouse_down_out((_e, cx) => {
+        this.choosingAgent = false;
+        cx.notify();
+      })
+      .children(
+        agentChoices(live, space).map((choice) =>
+          h_flex()
+            .id(`review-agent-${choice.address}`)
+            .h(28)
+            .flex_none()
+            .px(8)
+            .gap(8)
+            .items_center()
+            .rounded(3)
+            .cursor_pointer()
+            .when(choice.address === agent?.address, (e) => e.bg(t.selected))
+            .hover((s) => s.bg(t.hover))
+            .on_click((_e, cx) => this.chooseAgent(choice.address, cx))
+            .child(this.agentIcon(choice, t))
+            .child(div().min_w(0).truncate().child(this.agentName(choice)))
+            .child(
+              div()
+                .flex_1()
+                .min_w(0)
+                .truncate()
+                .text_right()
+                .text_size(11)
+                .text_color(t.dim)
+                .child(
+                  [choice.space === space ? null : choice.space_name, choice.status]
+                    .filter(Boolean)
+                    .join(" · "),
+                ),
+            ),
+        ),
       );
   }
 }

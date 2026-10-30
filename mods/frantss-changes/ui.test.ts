@@ -23,6 +23,17 @@ async function harness(refresh = false) {
     layout: null,
     elements: 0,
     highlights: [],
+    sent: [],
+  };
+  const input = () => {
+    let value = "";
+    return {
+      value: () => value,
+      set_value(next) {
+        value = next;
+      },
+      focus() {},
+    };
   };
   const cx: any = {
     spawn(callback) {
@@ -84,6 +95,7 @@ async function harness(refresh = false) {
       v_flex: element,
       h_flex: element,
       v_resizable: element,
+      Button: { new: element },
       resizable_panel: element,
       Scrollbar: { vertical: element },
       InputState: {},
@@ -111,9 +123,17 @@ async function harness(refresh = false) {
           throw new Error(`Unexpected host call ${name}`);
         },
       ]),
-      ["spaces", () => []],
+      ["spaces", () => state.spaces ?? []],
+      ["agents", () => state.agents ?? []],
+      [
+        "hc",
+        async (args) => {
+          state.sent.push(args);
+          return state.hcResult ?? { code: 0, stdout: "", stderr: "" };
+        },
+      ],
       ["panes", () => []],
-      ["focused", () => ({ cwd: state.cwd, pane: null })],
+      ["focused", () => ({ cwd: state.cwd, pane: null, space: "s1" })],
       ["layout", () => state.layout],
       ["window", () => ({ platform: "macos" })],
       ["settings", () => ({ zoom: state.zoom })],
@@ -203,6 +223,14 @@ async function harness(refresh = false) {
     limited: false,
     open: null,
     kept: new Map(),
+    commentInput: input(),
+    noteInput: input(),
+    comments: [],
+    reviewNote: "",
+    target: null,
+    agentAddress: null,
+    choosingAgent: false,
+    handle: { focus() {} },
     context: JSON.stringify({ cwd: "/repo", on: null }),
   });
   const watch = changes.watch.bind(changes);
@@ -532,9 +560,10 @@ test("colored diff rows draw one theme-colored element per span", async () => {
   const h = await harness();
   const row = h.changes.diffRow(
     { kind: "+", number: 1, text: "let a", spans: [{ text: "let", color: 2 }, { text: " a" }] },
+    0,
     { ansi2: "#00ff00", dim: "#555555" },
   );
-  const [, cell] = row.childNodes;
+  const cell = row.childNodes.at(-1);
   assert.deepEqual(
     cell.childNodes.map((span) => [
       span.childNodes[0],
@@ -576,8 +605,6 @@ test("clicking a gap shows its unchanged lines and keeps them through unchanged 
     ["+", 3, "c"],
     ["@", 5, ""],
   ]);
-  list.node.handlers.on_item_click("2", h.cx);
-  assert.equal(h.state.notifications, 1);
   const rows = h.changes.rows;
   h.changes.refresh(h.cx);
   await h.drain();
@@ -596,4 +623,193 @@ test("a hunk without new lines names the line after the one git gives", async ()
     ["-", 3, null],
     ["@", 3, 1],
   ]);
+});
+
+async function reviewing() {
+  const h = await harness(true);
+  h.state.diff = "@@ -1 +1 @@\n-old\n+new\n";
+  h.state.untracked = "new\n";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.render();
+  const click = (index: number) =>
+    h.state.lists
+      .findLast((list) => list.id === "changes-diff")
+      .node.handlers.on_item_click(String(index), h.cx);
+  const comment = (index: number, value: string) => {
+    click(index);
+    h.changes.commentInput.set_value(value);
+    h.changes.saveComment(h.cx);
+    h.render();
+  };
+  return { h, click, comment };
+}
+
+test("comments collect under their lines until the review is sent", async () => {
+  const { h, click, comment } = await reviewing();
+  click(2);
+  assert.deepEqual(plain(h.changes.target), {
+    path: "file.ts",
+    side: "new",
+    number: 1,
+    quote: "new",
+    index: null,
+  });
+  assert.deepEqual(plain(h.changes.rows.map((row) => row.kind)), ["@", "-", "+", "compose"]);
+  h.render();
+  const list = h.state.lists.findLast((list) => list.id === "changes-diff");
+  assert.deepEqual(
+    plain(list.extent),
+    [20, 20, 20, 48].map((size) => size * h.state.zoom),
+  );
+  h.changes.pressX = 10;
+  click(3);
+  assert.equal(h.changes.target.index, null);
+  h.changes.commentInput.set_value("  Rename it. ");
+  h.changes.saveComment(h.cx);
+  assert.equal(h.changes.target, null);
+  comment(1, "Why remove?");
+  assert.deepEqual(plain(h.changes.rows.map((row) => [row.kind, row.text, row.comment ?? null])), [
+    ["@", "@@ -1 +1 @@", null],
+    ["-", "old", null],
+    ["#", "Why remove?", 1],
+    ["+", "new", null],
+    ["#", "Rename it.", 0],
+  ]);
+  const tree = text(h.render());
+  assert.ok(tree.includes("2 comments"));
+  assert.ok(tree.includes("No agent here"));
+  assert.equal(h.state.sent.length, 0);
+});
+
+test("clicking a comment edits it, and emptying it removes it", async () => {
+  const { h, click, comment } = await reviewing();
+  comment(2, "First");
+  click(3);
+  assert.equal(h.changes.target.index, 0);
+  assert.equal(h.changes.commentInput.value(), "First");
+  h.changes.commentInput.set_value("Second");
+  h.changes.saveComment(h.cx);
+  assert.equal(h.changes.comments[0].text, "Second");
+  click(3);
+  h.changes.pressX = 200;
+  click(3);
+  assert.equal(h.changes.comments.length, 1);
+  h.changes.pressX = 10;
+  click(3);
+  assert.equal(h.changes.comments.length, 0);
+  assert.equal(h.changes.target, null);
+  assert.ok(h.changes.rows.every((row) => row.kind !== "#"));
+});
+
+test("sending gives the agent one quoted message with the note and clears the review", async () => {
+  const { h, comment } = await reviewing();
+  h.state.agents = [
+    { address: "t1", space: "s1", seq: 1, program: { name: "Codex" } },
+    { address: "t2", space: "s1", seq: 4, program: { name: "Claude Code" } },
+    { address: "t3", space: "s2", seq: 9, program: { name: "Pi" } },
+  ];
+  comment(2, "Rename it.");
+  h.changes.noteInput.set_value("Close.");
+  h.changes.reviewNote = "Close.";
+  const bar = text(h.render());
+  assert.ok(bar.includes("claude code") && bar.includes("Send 1"));
+  h.state.hcResult = { code: 1, stdout: "", stderr: "terminal gone" };
+  h.changes.sendReview(h.cx);
+  await h.drain();
+  assert.equal(h.changes.note, "Send failed: Error: terminal gone");
+  assert.equal(h.changes.comments.length, 1);
+  h.state.hcResult = null;
+  h.changes.sendReview(h.cx);
+  await h.drain();
+  assert.deepEqual(plain(h.state.sent.at(-1)), [
+    "send",
+    "t2",
+    "Review comments:\n\nfile.ts:1\n> new\nRename it.\n\nClose.",
+  ]);
+  assert.equal(h.changes.comments.length, 0);
+  assert.equal(h.changes.noteInput.value(), "Address all comments above.");
+  assert.equal(h.changes.reviewNote, "Address all comments above.");
+  assert.ok(h.changes.rows.every((row) => row.kind !== "#"));
+});
+
+test("a comment whose line changed is kept as outdated", async () => {
+  const { h, comment } = await reviewing();
+  comment(2, "Rename it.");
+  h.state.diff = "@@ -1 +1 @@\n-old\n+newer\n";
+  h.state.untracked = "newer\n";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.rows.at(-1).outdated, true);
+  assert.ok(
+    text(h.changes.diffRow(h.changes.rows.at(-1), 0, {})).includes(
+      "Outdated · line 1 · Rename it.",
+    ),
+  );
+});
+
+test("commentable lines carry a hidden " + " that shows on hover", async () => {
+  const h = await harness();
+  const overlay = (row) => h.changes.diffRow(row, 7, { accent: "#0000ff" }).childNodes[0];
+  const add = overlay({ kind: "+", number: 1, text: "a" });
+  assert.ok(add.styles.some(([key, value]) => key === "id" && value === "diff-add-7"));
+  assert.ok(add.styles.some(([key, value]) => key === "opacity" && value === 0));
+  assert.ok(add.styles.some(([key]) => key === "hover"));
+  assert.equal(text(add), "+");
+  assert.notEqual(text(overlay({ kind: "", text: "\\ No newline at end of file" })), "+");
+});
+
+test("the agent menu names agents by tab, shows their icons, and sends to the one picked", async () => {
+  const { h, comment } = await reviewing();
+  h.state.agents = [
+    {
+      address: "t1",
+      space: "s1",
+      tab: "tb1",
+      seq: 1,
+      program: { name: "Codex", icon: "icons/codex.svg", tint: false },
+      title: "✳ Fix flaky tests",
+      status: "idle",
+    },
+    {
+      address: "t2",
+      space: "s2",
+      tab: "tb2",
+      space_name: "other",
+      seq: 9,
+      program: { name: "Pi", icon: "icons/pi.svg", tint: true },
+      title: "pi",
+      status: "working",
+    },
+  ];
+  h.state.spaces = [
+    { id: "s1", tabs: [{ id: "tb1", name: "1", named: false }] },
+    { id: "s2", tabs: [{ id: "tb2", name: "docs", named: true }] },
+  ];
+  comment(2, "Rename it.");
+  function find(node, id) {
+    if (node?.styles?.some(([key, value]) => key === "id" && value === id)) return node;
+    return (node?.childNodes ?? []).map((child) => find(child, id)).find(Boolean);
+  }
+  find(h.render(), "review-agent").handlers.on_click({}, h.cx);
+  const menu = find(h.render(), "review-agents");
+  const row = (address) => find(menu, `review-agent-${address}`);
+  assert.equal(text(row("t1")).trim(), "fix flaky tests idle");
+  assert.equal(text(row("t2")).trim(), "docs other · working");
+  assert.ok(
+    row("t2").childNodes[0].styles.some(
+      ([key, value]) => key === "text_color" && value === "#aaaaaa",
+    ),
+  );
+  find(menu, "review-agent-t2").handlers.on_click({}, h.cx);
+  assert.equal(h.changes.choosingAgent, false);
+  assert.ok(text(find(h.render(), "review-agent")).includes("docs"));
+  h.changes.sendReview(h.cx);
+  await h.drain();
+  assert.equal(h.state.sent.at(-1)[1], "t2");
+  comment(2, "Again.");
+  h.state.agents = h.state.agents.slice(0, 1);
+  h.changes.sendReview(h.cx);
+  await h.drain();
+  assert.equal(h.state.sent.at(-1)[1], "t1");
 });
