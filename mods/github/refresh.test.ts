@@ -40,6 +40,7 @@ async function harness() {
     writes: [] as { key: string; value: string }[],
     writeAttempts: 0,
     storageFailure: false,
+    shared: new Map<string, unknown>(),
   };
   const cx = {
     notify() {
@@ -131,8 +132,10 @@ async function harness() {
       theme: () => ({}),
       settings: () => ({ dark: true }),
       layout: () => state.layout,
-      agents: unused,
-      terminals: unused,
+      agents: () => [],
+      terminals: () => [],
+      shared: (key: string) => state.shared.get(key) ?? null,
+      setShared: (key: string, value: unknown) => state.shared.set(key, value),
       home: unused,
       notify: unused,
     },
@@ -485,4 +488,60 @@ test("GitHub reuses inbox models until repository data or agent assignments chan
   h.view.body({});
   assert.equal(h.view.groups[2].items.length, 1);
   assert.ok(reads > assignedReads);
+});
+
+test("a hidden GitHub panel refreshes every five minutes instead of every minute", async () => {
+  const h = await harness();
+  h.state.explicit = false;
+  h.state.layout = {
+    children: [{ id: "panel", hidden: true, active: "files" }],
+  };
+  h.view.init(undefined, h.cx);
+  const [[interval, tick]] = h.state.timers as [number, (cx: unknown) => void][];
+  assert.equal(interval, 60000);
+  tick(h.cx);
+  await h.drain();
+  const requests = h.requests().length;
+  assert.ok(requests > 0);
+  h.view.polledAt = Date.now() - 4 * 60000;
+  tick(h.cx);
+  await h.drain();
+  assert.equal(h.requests().length, requests);
+  h.view.polledAt = Date.now() - 5 * 60000;
+  tick(h.cx);
+  await h.drain();
+  assert.ok(h.requests().length > requests);
+});
+
+test("GitHub publishes the inbox count where it looks, without ready or assigned items", async () => {
+  const h = await harness();
+  await h.refresh();
+  h.state.explicit = false;
+  h.state.layout = {
+    children: [{ id: "panel", hidden: true, active: "files" }],
+  };
+  const pr = (number: number, fields: object) => ({
+    number,
+    author: "ana",
+    requested: [],
+    draft: false,
+    decision: null,
+    threads: [],
+    checks: { state: "SUCCESS", failed: [] },
+    ...fields,
+  });
+  h.view.cache.set(h.view.repo, {
+    repo: "owner/repo",
+    viewer: "me",
+    prs: [
+      pr(1, { checks: { state: "FAILURE", failed: [{ name: "lint" }] }, requested: ["me"] }),
+      pr(2, { threads: [{ author: "bo" }] }),
+      pr(3, { decision: "APPROVED" }),
+    ],
+  });
+  h.view.render(h.cx);
+  assert.equal(h.state.shared.get("github-inbox-count"), 3);
+  h.view.linkedAgents = () => [{ number: 1, kinds: ["fix-ci"] }];
+  h.view.render(h.cx);
+  assert.equal(h.state.shared.get("github-inbox-count"), 2);
 });

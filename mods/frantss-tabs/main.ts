@@ -397,7 +397,15 @@ export default class Tabs extends View {
         )
         .child(panelButton("agent-graph", "Agents", "mods/agent-graph/graph.svg"))
         .child(panelButton("git-history", "History", "mods/git-history/history.svg"))
-        .child(panelButton("github", "GitHub", "mods/github/github.svg"))
+        .child(
+          panelButton(
+            "github",
+            "GitHub",
+            "mods/github/github.svg",
+            // The GitHub mod publishes it.
+            (shared("github-inbox-count") as number | null) ?? 0,
+          ),
+        )
         .when(window()?.buttons, (el) =>
           el
             .child(button("minimize", "−", "Minimize", () => run("window.minimize")))

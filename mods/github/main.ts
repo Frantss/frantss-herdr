@@ -18,6 +18,8 @@ import {
   knownAgents,
   home,
   notify,
+  shared,
+  setShared,
 } from "herdr";
 import { button } from "./button.ts";
 import { ACTIONS, buildInbox, findCheckout, loadPullRequests, squash, taskFor } from "./github.ts";
@@ -30,6 +32,10 @@ interface Location {
 type Theme = Record<string, Color>;
 
 const POLL_MS = 60000;
+// While the panel is hidden, results refresh less often: only the GitHub button's count shows them.
+const HIDDEN_POLL_MS = 5 * 60000;
+// The number of inbox items that ask for work where the panel looks, for the GitHub button.
+const INBOX_COUNT = "github-inbox-count";
 // Agents commit only; set to true to let them push to the pull request branch.
 const PUSH = false;
 // Starting more agents than this at once asks for a second click.
@@ -107,12 +113,14 @@ export default class GitHub extends View {
   declare refreshingAll: boolean;
   declare inboxSource: PullRequests | null;
   declare inboxBusy: Set<string>;
+  declare polledAt: number;
 
   init(_props, cx: AsyncContext) {
     this.pendingInitialRefresh = true;
     this.refreshingAll = false;
     this.inboxSource = null;
     this.inboxBusy = new Set();
+    this.polledAt = 0;
     this.groups = [];
     this.selected = new Set();
     this.starting = new Set();
@@ -136,7 +144,7 @@ export default class GitHub extends View {
       this.collapsed = new Set();
     }
     cx.timer.every(POLL_MS, (cx) => {
-      if (this.visible()) this.refreshAll(cx);
+      if (this.visible() || Date.now() - this.polledAt >= HIDDEN_POLL_MS) this.refreshAll(cx);
     });
     if (this.visible()) this.refreshAll(cx);
   }
@@ -257,6 +265,7 @@ export default class GitHub extends View {
   refreshAll(cx: Context) {
     this.pendingInitialRefresh = false;
     if (this.refreshingAll) return;
+    this.polledAt = Date.now();
     this.refresh(cx, false, false);
     const places = [
       this.place,
@@ -300,9 +309,9 @@ export default class GitHub extends View {
   }
 
   // Live terminals that were started for this repository's pull requests.
-  linkedAgents() {
-    if (!this.data) return [];
-    const prefix = `${this.data.repo}#`,
+  linkedAgents(data = this.data) {
+    if (!data) return [];
+    const prefix = `${data.repo}#`,
       live = new Map(agents().map((agent) => [agent.address, agent]));
     return terminals()
       .filter((t) => t.state === "live" && t.labels?.[PR_LABEL]?.startsWith(prefix))
@@ -784,6 +793,35 @@ export default class GitHub extends View {
       );
   }
 
+  // The inbox's groups, without the items an agent already works on.
+  inbox(data: PullRequests) {
+    const busy = new Set(
+      this.linkedAgents(data).flatMap((a) => a.kinds.map((kind) => `${a.number}:${kind}`)),
+    );
+    if (
+      this.inboxSource !== data ||
+      this.inboxBusy.size !== busy.size ||
+      [...busy].some((id) => !this.inboxBusy.has(id))
+    ) {
+      this.groups = buildInbox(data, busy);
+      this.inboxSource = data;
+      this.inboxBusy = busy;
+    }
+    return this.groups;
+  }
+
+  // A pane opened on a folder of its own leaves the count to the panel.
+  publishInboxCount() {
+    if (props()?.cwd) return;
+    const data = this.cache.get(this.repos.get(contextKey(location())));
+    const count = data
+      ? this.inbox(data)
+          .filter((group) => group.key !== "ready")
+          .reduce((total, group) => total + group.items.length, 0)
+      : 0;
+    if (shared(INBOX_COUNT) !== count) setShared(INBOX_COUNT, count);
+  }
+
   body(t) {
     const data = this.data;
     if (!data) {
@@ -800,16 +838,7 @@ export default class GitHub extends View {
         .child(message);
     }
     const linked = this.linkedAgents();
-    const busy = new Set(linked.flatMap((a) => a.kinds.map((kind) => `${a.number}:${kind}`)));
-    if (
-      this.inboxSource !== data ||
-      this.inboxBusy.size !== busy.size ||
-      [...busy].some((id) => !this.inboxBusy.has(id))
-    ) {
-      this.groups = buildInbox(data, busy);
-      this.inboxSource = data;
-      this.inboxBusy = busy;
-    }
+    this.inbox(data);
     const colors = { ci: t.blocked, comments: t.accent, review: t.accent, ready: t.idle };
     const [ci, comments, review, ready] = this.groups;
     const section = (title, color, count, renderRows) =>
@@ -900,6 +929,7 @@ export default class GitHub extends View {
   }
 
   render(cx: Context) {
+    this.publishInboxCount();
     if (!this.visible()) return div();
     if (this.pendingInitialRefresh) this.refreshAll(cx);
     else if (contextKey(location()) !== this.context) this.refresh(cx, false);
