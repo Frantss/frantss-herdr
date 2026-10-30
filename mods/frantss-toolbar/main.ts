@@ -48,6 +48,14 @@ function tabName(c: TabInfo, ps = panes()) {
 const meaningful = (paths: string[]) =>
   paths.some((path) => !/\/\.git\/.*\.lock$|\/node_modules\//.test(path));
 
+// The welcome screen picks Files and Changes; custom panels stay available.
+const enabledPanels = () => [
+  ...((shared("workspace.panels") as string[] | null) ?? ["files", "changes"]),
+  "agent-graph",
+  "git-history",
+  "github",
+];
+
 // The frantss rail's space name: the name you gave it, else its branch, else Herdr's.
 const spaceName = (s: SpaceInfo) => (s.named ? s.name : (s.branch ?? s.name));
 
@@ -75,9 +83,17 @@ export default class Toolbar extends View {
   declare countedPlace: string | null;
   declare counting: boolean;
   declare watchedRoot: string | null;
+  // Each local place's work tree, asked of git once (null: none). `whole`: its git folder is inside
+  // it, so the watcher also sees commits and staging.
+  declare trees: Map<string, { root: string; whole: boolean } | null>;
   init(_props: unknown, cx: AsyncContext) {
     this.changeCount = null;
-    cx.timer.every(10000, (cx) => this.countChanges(cx));
+    this.trees = new Map();
+    // The watcher counts a whole local work tree when it changes; other places are counted on a timer.
+    cx.timer.every(10000, (cx) => {
+      if (enabledPanels().includes("changes") && !this.watchesFollowedPlace())
+        this.countChanges(cx);
+    });
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
     // "rename" (F2 in this layout, keys.json): rename the current tab; "rename-space" (shift-F2): its space.
     cx.spawn(async () => {
@@ -137,8 +153,10 @@ export default class Toolbar extends View {
     cx.spawn(async (cx) => {
       try {
         const git = (args: string[]) => exec("git", args, { cwd: place.cwd, on: place.on });
+        // Only a local place is watched, so only its work tree is asked for.
+        const known = place.on || this.trees.has(placeKey);
         const [top, status] = await Promise.all([
-          git(["rev-parse", "--show-toplevel"]),
+          known ? null : git(["rev-parse", "--show-toplevel", "--absolute-git-dir"]),
           git([
             "--no-optional-locks",
             "status",
@@ -148,13 +166,21 @@ export default class Toolbar extends View {
             "--untracked-files=all",
           ]),
         ]);
+        if (top) {
+          const [root, gitDir] = top.stdout.trim().split("\n");
+          this.trees.set(
+            placeKey,
+            top.code === 0 ? { root, whole: gitDir.startsWith(`${root}/`) } : null,
+          );
+        }
         if (JSON.stringify(followedPlace()) !== placeKey) return;
         const count = status.code === 0 ? status.stdout.split("\0").filter(Boolean).length : null;
         if (count !== this.changeCount) {
           this.changeCount = count;
           cx.notify();
         }
-        if (top.code === 0 && !place.on) this.watch(top.stdout.trim(), cx);
+        const tree = this.trees.get(placeKey);
+        if (tree) this.watch(tree.root, cx);
       } catch {
         // The count stays as it was; the next refresh tries again.
       } finally {
@@ -163,6 +189,11 @@ export default class Toolbar extends View {
         if (JSON.stringify(followedPlace()) !== placeKey) this.countChanges(cx);
       }
     });
+  }
+
+  watchesFollowedPlace() {
+    const tree = this.trees.get(JSON.stringify(followedPlace()));
+    return Boolean(tree?.whole) && this.watchedRoot === tree.root;
   }
 
   watch(root: string, cx: Context) {
@@ -193,16 +224,11 @@ export default class Toolbar extends View {
       action: (cx: Context) => unknown,
     ) => sharedButton(id, label, action, { variant: "quiet", square: true, tooltip });
     const panel = findNode(layout() as LayoutNode, "panel");
-    // The welcome screen picks Files and Changes; custom panels stay available.
-    const enabled = [
-      ...((shared("workspace.panels") as string[] | null) ?? ["files", "changes"]),
-      "agent-graph",
-      "git-history",
-      "github",
-    ];
+    const enabled = enabledPanels();
     this.syncPanel(space, panel, enabled);
-    if (enabled.includes("changes") && JSON.stringify(followedPlace()) !== this.countedPlace)
-      this.countChanges(cx);
+    // Uncounted while the button is off, so turning it on counts again.
+    if (!enabled.includes("changes")) this.countedPlace = null;
+    else if (JSON.stringify(followedPlace()) !== this.countedPlace) this.countChanges(cx);
     const panelButton = (id: PanelId, label: string, icon: string, count = 0) => {
       const on = panel && !panel.hidden && panel.active === id;
       return (
