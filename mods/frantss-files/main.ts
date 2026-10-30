@@ -1,4 +1,5 @@
-// A lazy file browser for the focused pane's folder. A click on a file opens it in Fresh (getfresh.dev).
+// A lazy file browser for the focused pane's folder. A click on a file previews it below the tree;
+// the preview's pen opens it in Fresh (getfresh.dev).
 import {
   View,
   div,
@@ -9,7 +10,18 @@ import {
   type Color,
   type Element,
 } from "gpui-kit";
-import { v_flex, h_flex, v_virtual_list, Scrollbar } from "gpui-base";
+import {
+  v_flex,
+  h_flex,
+  v_virtual_list,
+  Scrollbar,
+  v_resizable,
+  resizable_panel,
+  Button,
+  Editor,
+  EditorState,
+  TextView,
+} from "gpui-base";
 import {
   spaces,
   panes,
@@ -31,6 +43,7 @@ import {
 import { iconFile, type IconManifest } from "./icons.ts";
 import { statusMarks, type Mark } from "./status.ts";
 import { daemonName, daemonRunning, freshConfig, freshTheme, FRESH_THEME } from "./fresh.ts";
+import { editorLanguage, previewKind, previewText } from "./preview.ts";
 
 interface LayoutNode {
   id?: string;
@@ -108,6 +121,29 @@ async function writeFreshConfig(t: Theme): Promise<string> {
 const openEditorTab = (folder: string, argv: string[]) =>
   run("tab.new", { name: "editor", folder, argv });
 
+const PEN = "mods/workspace-chrome/square-pen.svg",
+  CLOSE = "mods/workspace-chrome/x.svg";
+
+function codeView(text: string, path: string) {
+  const t = theme() as Theme;
+  return EditorState.new({
+    language: editorLanguage(path),
+    readonly: true,
+    value: text,
+    font_family: settings().font_family as string | undefined,
+    font_size: 12,
+    syntax: {
+      keyword: t.ansi5,
+      string: t.ansi2,
+      comment: t.dim,
+      function: t.ansi4,
+      type: t.ansi3,
+      number: t.ansi1,
+      constant: t.ansi6,
+    },
+  });
+}
+
 const PER_FOLDER = 500,
   TOTAL = 5000,
   KEPT_PLACES = 20;
@@ -155,6 +191,12 @@ export default class Files extends View {
   declare invalidated: Set<string>;
   declare fullRefresh: boolean;
   declare kept: Map<string, FileSnapshot>;
+  // The previewed file: code, rendered markdown (or its source), or an image.
+  declare file: string | null;
+  declare fileText: string | null;
+  declare fileError: string | null;
+  declare code: EditorState | null;
+  declare source: boolean;
 
   init(_props: unknown, cx: AsyncContext) {
     this.entries = new Map();
@@ -166,6 +208,11 @@ export default class Files extends View {
     this.invalidated = new Set();
     this.fullRefresh = false;
     this.kept = new Map();
+    this.file = null;
+    this.fileText = null;
+    this.fileError = null;
+    this.code = null;
+    this.source = false;
     cx.spawn(async (cx) => {
       const text = await readTextFile(`${appHome()}/mods/frantss-files/material-icons.json`).catch(
         (): null => null,
@@ -187,7 +234,10 @@ export default class Files extends View {
           const paths = (await watchFolder(root)).filter(meaningful);
           if (!paths.length) continue;
           await cx.sleep(300);
-          if (generation === this.generation && this.watched === root) this.refresh(cx, paths);
+          if (generation !== this.generation || this.watched !== root) continue;
+          this.refresh(cx, paths);
+          if (this.file && paths.includes(`${root.replace(/\/+$/, "")}/${this.file}`))
+            this.show(this.file, cx);
         }
       } catch {
         if (generation === this.generation && this.watched === root) this.watched = null;
@@ -294,6 +344,7 @@ export default class Files extends View {
         if (this.kept.size > KEPT_PLACES) this.kept.delete(this.kept.keys().next().value);
       }
       this.generation = (this.generation ?? 0) + 1;
+      this.closePreview();
       this.loading = false;
       this.invalidated = new Set();
       this.fullRefresh = true;
@@ -443,9 +494,59 @@ export default class Files extends View {
     cx.notify();
   }
 
+  // Shows a file below the tree, or reloads the one shown; unchanged text keeps the view as it is.
+  show(path: string, cx: Context) {
+    if (path !== this.file) {
+      this.closePreview();
+      this.file = path;
+    }
+    cx.notify();
+    if (previewKind(path) === "image") return;
+    const context = this.context,
+      generation = this.generation,
+      root = this.root,
+      on = this.on;
+    cx.spawn(async (cx) => {
+      const result = await readTextFile(`${root}/${path}`, { on }).then(previewText, () => ({
+        error: "Cannot preview this file (binary, too large, or unreadable)",
+      }));
+      if (this.file !== path || !this.current(context, generation)) return;
+      if ("error" in result) {
+        if (result.error === this.fileError) return;
+        this.setPreview(null, result.error);
+      } else if (result.text !== this.fileText) this.setPreview(result.text, null);
+      else return;
+      cx.notify();
+    });
+  }
+
+  setPreview(text: string | null, error: string | null) {
+    this.code?.release();
+    this.code = null;
+    this.fileText = text;
+    this.fileError = error;
+    if (text !== null && (previewKind(this.file) !== "markdown" || this.source))
+      this.code = codeView(text, this.file);
+  }
+
+  closePreview() {
+    this.code?.release();
+    this.code = null;
+    this.file = null;
+    this.fileText = null;
+    this.fileError = null;
+    this.source = false;
+  }
+
+  toggleSource(cx: Context) {
+    this.source = !this.source;
+    this.setPreview(this.fileText, this.fileError);
+    cx.notify();
+  }
+
   // A running daemon takes the file without a terminal; then its tab is shown, or a new tab attaches.
   // Without a daemon, open-file in a new tab starts one and stays attached.
-  open(path: string, cx: Context) {
+  openInFresh(path: string, cx: Context) {
     const root = this.root,
       on = this.on,
       file = `${root}/${path}`,
@@ -512,6 +613,7 @@ export default class Files extends View {
       .rounded(3)
       .cursor_pointer()
       .text_color(t.muted)
+      .when(path === this.file, (e) => e.bg(t.selected).text_color(t.foreground))
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .child(
         dir
@@ -557,6 +659,56 @@ export default class Files extends View {
     const t = theme() as Theme,
       rows = this.rows(),
       light = isLight(t.background);
+    const tree = v_flex()
+      .id("files-tree")
+      .flex_1()
+      .min_h(0)
+      .p(4)
+      .when(rows.length > 0, (el) =>
+        el.child(
+          div()
+            .relative()
+            .flex_1()
+            .min_h(0)
+            .child(
+              v_virtual_list(
+                "files-rows",
+                rows.length,
+                24 * ((settings().zoom as number | undefined) ?? 1),
+                (i) => rows[i].path,
+                (range) => rows.slice(range.start, range.end).map((row) => this.row(row, t, light)),
+              )
+                .size_full()
+                .on_item_click((path, cx) => {
+                  const row = rows.find((row) => row.path === path);
+                  if (row?.dir) this.toggle(path, cx);
+                  else if (row) this.show(path, cx);
+                }),
+            )
+            .child(Scrollbar.vertical("files-rows").viewport_from_layout().absolute().inset_0()),
+        ),
+      )
+      .when(Boolean(this.error) || !this.entries.get("")?.length, (el) =>
+        el.child(
+          div()
+            .p(8)
+            .text_size(12)
+            .text_color(t.dim)
+            .child(
+              this.error ||
+                (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"),
+            ),
+        ),
+      )
+      .when(this.limited, (el) =>
+        el.child(
+          div()
+            .p(8)
+            .text_size(11)
+            .text_color(t.dim)
+            .child("File list limited to 500 entries per folder and 5,000 total"),
+        ),
+      );
     return v_flex()
       .id("files")
       .size_full()
@@ -589,59 +741,136 @@ export default class Files extends View {
           ),
       )
       .child(
-        v_flex()
-          .id("files-tree")
-          .flex_1()
-          .min_h(0)
-          .p(4)
-          .when(rows.length > 0, (el) =>
-            el.child(
-              div()
-                .relative()
-                .flex_1()
-                .min_h(0)
-                .child(
-                  v_virtual_list(
-                    "files-rows",
-                    rows.length,
-                    24 * ((settings().zoom as number | undefined) ?? 1),
-                    (i) => rows[i].path,
-                    (range) =>
-                      rows.slice(range.start, range.end).map((row) => this.row(row, t, light)),
-                  )
-                    .size_full()
-                    .on_item_click((path, cx) => {
-                      const row = rows.find((row) => row.path === path);
-                      if (row?.dir) this.toggle(path, cx);
-                      else if (row) this.open(path, cx);
-                    }),
-                )
-                .child(
-                  Scrollbar.vertical("files-rows").viewport_from_layout().absolute().inset_0(),
-                ),
+        this.file
+          ? v_resizable("files-split")
+              .flex_1()
+              .min_h(0)
+              .child(
+                resizable_panel().size(240).size_range(80).child(v_flex().size_full().child(tree)),
+              )
+              .child(resizable_panel().child(this.preview(t)))
+          : tree,
+      );
+  }
+
+  iconButton(id: string, label: string, icon: string, action: (cx: Context) => void, t: Theme) {
+    return Button.new(id)
+      .size(22)
+      .flex()
+      .flex_none()
+      .items_center()
+      .justify_center()
+      .rounded(3)
+      .cursor_pointer()
+      .text_color(t.muted)
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip(label)
+      .accessibility_label(label)
+      .on_click((_e, cx) => action(cx))
+      .child(svg(icon).size(14));
+  }
+
+  preview(t: Theme) {
+    const path = this.file,
+      kind = previewKind(path),
+      slash = path.lastIndexOf("/");
+    return v_flex()
+      .size_full()
+      .border_t(1)
+      .border_color(t.border)
+      .child(
+        h_flex()
+          .h(30)
+          .flex_none()
+          .pl(10)
+          .pr(4)
+          .gap(4)
+          .items_center()
+          .text_size(11)
+          .border_b(1)
+          .border_color(t.border)
+          .child(
+            h_flex()
+              .flex_1()
+              .min_w(0)
+              .overflow_hidden()
+              .child(
+                div()
+                  .min_w(0)
+                  .truncate()
+                  .text_color(t.dim)
+                  .child(path.slice(0, slash + 1)),
+              )
+              .child(
+                div()
+                  .flex_none()
+                  .child(path.slice(slash + 1)),
+              ),
+          )
+          .when(kind === "markdown" && this.fileText !== null, (e) =>
+            e.child(
+              Button.new("files-source")
+                .h(22)
+                .px(6)
+                .flex()
+                .flex_none()
+                .items_center()
+                .rounded(3)
+                .cursor_pointer()
+                .text_color(t.muted)
+                .hover((s) => s.bg(t.hover).text_color(t.foreground))
+                .on_click((_e, cx) => this.toggleSource(cx))
+                .child(this.source ? "Rendered" : "Source"),
             ),
           )
-          .when(Boolean(this.error) || !this.entries.get("")?.length, (el) =>
-            el.child(
-              div()
-                .p(8)
-                .text_size(12)
-                .text_color(t.dim)
-                .child(
-                  this.error ||
-                    (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"),
-                ),
+          .child(
+            this.iconButton(
+              "files-fresh",
+              "Open in Fresh",
+              PEN,
+              (cx) => this.openInFresh(path, cx),
+              t,
             ),
           )
-          .when(this.limited, (el) =>
-            el.child(
-              div()
-                .p(8)
-                .text_size(11)
-                .text_color(t.dim)
-                .child("File list limited to 500 entries per folder and 5,000 total"),
+          .child(
+            this.iconButton(
+              "files-close",
+              "Close preview",
+              CLOSE,
+              (cx) => {
+                this.closePreview();
+                cx.notify();
+              },
+              t,
             ),
           ),
-      );
+      )
+      .child(this.previewBody(path, kind, t));
+  }
+
+  previewBody(path: string, kind: ReturnType<typeof previewKind>, t: Theme) {
+    const message = (text: string) => div().p(12).text_size(12).text_color(t.dim).child(text);
+    if (kind === "image")
+      return this.on
+        ? message("Images on another machine cannot be previewed")
+        : div()
+            .flex_1()
+            .min_h(0)
+            .p(12)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(image(`${this.root}/${path}`).max_w_full().max_h_full());
+    if (this.fileError) return message(this.fileError);
+    if (this.code) return Editor.new(this.code).flex_1().min_h(0);
+    if (kind === "markdown" && this.fileText !== null)
+      return TextView.markdown("files-markdown", this.fileText)
+        .selectable(true)
+        .scrollable(true)
+        .flex_1()
+        .min_h(0)
+        .px(14)
+        .py(10);
+    return message("Loading file…");
   }
 }

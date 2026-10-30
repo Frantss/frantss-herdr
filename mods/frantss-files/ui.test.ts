@@ -10,6 +10,8 @@ async function harness(refresh = false) {
     lists: [],
     rows: [],
     calls: [],
+    editors: [],
+    texts: {},
     zoom: 0.8,
     cwd: "/repo",
     on: null,
@@ -71,11 +73,44 @@ async function harness(refresh = false) {
   const context = vm.createContext({});
   const palette = { background: "#111111", muted: "#aaaaaa", dim: "#555555" };
   const natives = {
-    "gpui-kit": { View: class {}, div: element, svg: element, image: element },
+    "gpui-kit": {
+      View: class {},
+      div: element,
+      svg: element,
+      image(path) {
+        const node = element();
+        node.src = path;
+        return node;
+      },
+    },
     "gpui-base": {
       v_flex: element,
       h_flex: element,
       Scrollbar: { vertical: element },
+      v_resizable: element,
+      resizable_panel: element,
+      Button: { new: (id) => element().id(id) },
+      Editor: { new: element },
+      EditorState: {
+        new(options) {
+          const code = {
+            options,
+            released: false,
+            release() {
+              code.released = true;
+            },
+          };
+          state.editors.push(code);
+          return code;
+        },
+      },
+      TextView: {
+        markdown(_id, markdown) {
+          const node = element();
+          node.markdown = markdown;
+          return node;
+        },
+      },
       v_virtual_list(id, count, extent, key, render) {
         const node = element();
         state.lists.push({ id, count, extent, key, render, node });
@@ -110,6 +145,10 @@ async function harness(refresh = false) {
       ["settings", () => ({ zoom: state.zoom })],
       ["theme", () => palette],
     ]),
+  };
+  natives.herdr.readTextFile = async (path) => {
+    if (!(path in state.texts)) throw new Error(`Unexpected read ${path}`);
+    return state.texts[path];
   };
   if (refresh)
     natives.herdr.exec = async (command, args, options) => {
@@ -178,6 +217,11 @@ async function harness(refresh = false) {
     fullRefresh: false,
     pending: new Set(),
     kept: new Map(),
+    file: null,
+    fileText: null,
+    fileError: null,
+    code: null,
+    source: false,
     root: "/repo",
     context: JSON.stringify({ cwd: "/repo", on: null }),
   });
@@ -185,7 +229,7 @@ async function harness(refresh = false) {
   if (refresh) files.watch = () => {};
   else {
     files.toggle = (path) => state.calls.push(["toggle", path]);
-    files.open = (path) => state.calls.push(["open", path]);
+    files.openInFresh = (path) => state.calls.push(["fresh", path]);
   }
   return {
     files,
@@ -270,8 +314,9 @@ test("Files constructs only the requested viewport and dispatches clicks by stab
   assert.equal(h.state.rows.length, 10);
   h.files.entries.get("").reverse();
   h.render();
-  h.state.lists.at(-1).node.handlers.on_item_click("dir-0/file-300.ts", {});
-  assert.deepEqual(h.state.calls, [["open", "dir-0/file-300.ts"]]);
+  h.state.lists.at(-1).node.handlers.on_item_click("dir-0/file-300.ts", h.cx);
+  assert.equal(h.files.file, "dir-0/file-300.ts");
+  assert.deepEqual(h.state.calls, []);
 });
 
 test("Files keeps expanded directory order, depth, ignored inheritance, and directory clicks", async () => {
@@ -793,4 +838,90 @@ test("applying Files directory results does not rescan Map entries for its budge
   h.files.applyFolder("src", fileEntries(200), h.files.context, h.files.generation);
   assert.equal(scans, 0);
   assert.equal(h.files.entryCount, 201);
+});
+
+function findNode(node, matches) {
+  if (node?.styles?.some(matches)) return node;
+  return (node?.childNodes ?? []).map((child) => findNode(child, matches)).find(Boolean);
+}
+const byId =
+  (id) =>
+  ([key, value]) =>
+    key === "id" && value === id;
+const textOf = (node) =>
+  typeof node === "string" ? node : (node?.childNodes ?? []).map(textOf).join("");
+
+test("a clicked file previews below the tree as code, with Fresh behind the pen", async () => {
+  const h = await harness();
+  h.state.texts["/repo/src/main.ts"] = "const a = 1;\n";
+  assert.equal(findNode(h.render(), byId("files-fresh")), undefined);
+  h.files.show("src/main.ts", h.cx);
+  await h.drain();
+  const [code] = h.state.editors;
+  assert.equal(code.options.language, "js");
+  assert.equal(code.options.value, "const a = 1;\n");
+  assert.equal(code.options.readonly, true);
+  const tree = h.render();
+  assert.ok(textOf(tree).includes("src/main.ts"));
+  findNode(tree, byId("files-fresh")).handlers.on_click({}, h.cx);
+  assert.deepEqual(h.state.calls, [["fresh", "src/main.ts"]]);
+  findNode(tree, byId("files-close")).handlers.on_click({}, h.cx);
+  assert.equal(h.files.file, null);
+  assert.equal(code.released, true);
+});
+
+test("a changed file reloads its preview, and unchanged text keeps the view", async () => {
+  const h = await harness();
+  h.state.texts["/repo/a.ts"] = "one";
+  h.files.show("a.ts", h.cx);
+  await h.drain();
+  const first = h.files.code;
+  h.files.show("a.ts", h.cx);
+  await h.drain();
+  assert.equal(h.files.code, first);
+  h.state.texts["/repo/a.ts"] = "two";
+  h.files.show("a.ts", h.cx);
+  await h.drain();
+  assert.equal(first.released, true);
+  assert.equal(h.files.code.options.value, "two");
+});
+
+test("markdown renders by default and switches to its source", async () => {
+  const h = await harness();
+  h.state.texts["/repo/README.md"] = "# Title\n";
+  h.files.show("README.md", h.cx);
+  await h.drain();
+  assert.equal(h.files.code, null);
+  let tree = h.render();
+  const rendered = (node) =>
+    typeof node === "object" && "markdown" in node
+      ? node.markdown
+      : (node?.childNodes ?? []).map(rendered).find((value) => value !== undefined);
+  assert.equal(rendered(tree), "# Title\n");
+  const source = findNode(tree, byId("files-source"));
+  assert.equal(textOf(source), "Source");
+  source.handlers.on_click({}, h.cx);
+  assert.equal(h.files.code.options.language, "markdown");
+  tree = h.render();
+  assert.equal(rendered(tree), undefined);
+  assert.equal(textOf(findNode(tree, byId("files-source"))), "Rendered");
+  findNode(tree, byId("files-source")).handlers.on_click({}, h.cx);
+  assert.equal(h.files.code, null);
+});
+
+test("binary files explain themselves, and images show without reading text", async () => {
+  const h = await harness();
+  h.state.texts["/repo/app.bin"] = "a\0b";
+  h.files.show("app.bin", h.cx);
+  await h.drain();
+  assert.ok(textOf(h.render()).includes("Binary file · no text preview"));
+  h.files.show("logo.png", h.cx);
+  await h.drain();
+  const source = (node) =>
+    typeof node === "object" && "src" in node
+      ? node.src
+      : (node?.childNodes ?? []).map(source).find((value) => value !== undefined);
+  assert.equal(source(h.render()), "/repo/logo.png");
+  h.files.on = "server";
+  assert.ok(textOf(h.render()).includes("Images on another machine cannot be previewed"));
 });

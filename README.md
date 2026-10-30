@@ -55,7 +55,7 @@ Keep Herdr's shipped mods installed. This layout uses their menus and dialogs
 and icons from `workspace-chrome`, `files`, `changes` and `pane`.
 Git panels require `git`; the GitHub panel also requires authenticated `gh`.
 The changes panel colors code with [bat](https://github.com/sharkdp/bat) (`brew install bat`).
-The files panel opens files in [Fresh](https://getfresh.dev/) (`fresh` on PATH), in one
+The files panel previews a clicked file; its pen button opens the file in [Fresh](https://getfresh.dev/) (`fresh` on PATH), in one
 Fresh daemon per project folder. The daemons keep running after their tabs close;
 `fresh --cmd daemon list` shows them as `herdr-<folder>-<hash>`, and
 `fresh --cmd daemon kill <name>` stops one. A new daemon takes the active Herdr theme,
