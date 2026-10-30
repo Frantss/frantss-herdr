@@ -1424,10 +1424,19 @@ export default class Changes extends View {
                   .p(4)
                   .when(this.files.length > 0, (el) =>
                     el.child(
+                      // A virtual list takes no pointer handlers, so its wrapper hears where a press lands.
                       div()
+                        .id("changes-files-area")
                         .relative()
                         .flex_1()
                         .min_h(0)
+                        .on_mouse_down("left", (e) => {
+                          this.pressRight =
+                            e.local_position && e.bounds
+                              ? e.bounds.width - e.local_position.x
+                              : Infinity;
+                          this.pressCount = e.click_count;
+                        })
                         .child(
                           v_virtual_list(
                             "changes-files",
@@ -1452,13 +1461,6 @@ export default class Changes extends View {
                               ),
                           )
                             .size_full()
-                            .on_mouse_down("left", (e) => {
-                              this.pressRight =
-                                e.local_position && e.bounds
-                                  ? e.bounds.width - e.local_position.x
-                                  : Infinity;
-                              this.pressCount = e.click_count;
-                            })
                             .on_item_click((key, cx) => this.clickListRow(key, cx)),
                         )
                         .child(
@@ -1521,6 +1523,10 @@ export default class Changes extends View {
                             .w_full()
                             .min_w(this.diffWidth)
                             .h_full()
+                            .id("changes-diff-rows")
+                            .on_mouse_down("left", (e) => {
+                              this.pressX = e.local_position?.x ?? Infinity;
+                            })
                             .when(this.rows.length > 0, (el) =>
                               el.child(
                                 v_virtual_list(
@@ -1538,9 +1544,6 @@ export default class Changes extends View {
                                       .map((row, i) => this.diffRow(row, range.start + i, t)),
                                 )
                                   .size_full()
-                                  .on_mouse_down("left", (e) => {
-                                    this.pressX = e.local_position?.x ?? Infinity;
-                                  })
                                   .on_item_click((index, cx) => this.clickRow(Number(index), cx)),
                               ),
                             ),

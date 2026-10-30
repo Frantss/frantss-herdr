@@ -65,6 +65,8 @@ async function harness(refresh = false) {
         if (name === "then") return undefined;
         return (...args) => {
           if (String(name).startsWith("on_")) {
+            if (target.virtual && !String(name).startsWith("on_item_"))
+              assert.fail(`A virtual list's ${String(name)} never reaches GPUI`);
             assert.notEqual(phase, "layout", "Handlers must be registered outside list layout");
             node.handlers[name] = args.at(-1);
           } else if (name === "when") {
@@ -112,6 +114,7 @@ async function harness(refresh = false) {
       Textarea: { new: element },
       v_virtual_list(id, count, extent, key, render) {
         const node = element();
+        node.virtual = true;
         state.lists.push({ id, count, extent, key, render, node });
         return node;
       },
@@ -688,7 +691,7 @@ test("a press on a row's right end stages or unstages what the row holds", async
   h.render();
   const list = h.state.lists.findLast((list) => list.id === "changes-files"),
     press = (right: number, key: string) => {
-      list.node.handlers.on_mouse_down({
+      byId(h.render(), "changes-files-area").handlers.on_mouse_down({
         local_position: { x: 300 - (BUTTONS_RIGHT + right) * h.state.zoom, y: 0 },
         bounds: { width: 300, height: 400 },
       });
@@ -778,7 +781,7 @@ test("discard asks for a second press, then trashes untracked files and restores
   h.render();
   const list = () => h.state.lists.findLast((list) => list.id === "changes-files"),
     press = (right: number, key: string, count = 1) => {
-      list().node.handlers.on_mouse_down({
+      byId(h.render(), "changes-files-area").handlers.on_mouse_down({
         local_position: { x: 300 - (BUTTONS_RIGHT + right) * h.state.zoom, y: 0 },
         bounds: { width: 300, height: 400 },
         click_count: count,
@@ -1130,7 +1133,8 @@ test("comments collect under their lines until the review is sent", async () => 
     plain(list.extent),
     [20, 20, 20, 48].map((size) => size * h.state.zoom),
   );
-  h.changes.pressX = 10;
+  byId(h.render(), "changes-diff-rows").handlers.on_mouse_down({ local_position: { x: 10, y: 0 } });
+  assert.equal(h.changes.pressX, 10);
   click(3);
   assert.equal(h.changes.target.index, null);
   h.changes.commentInput.set_value("  Rename it. ");
