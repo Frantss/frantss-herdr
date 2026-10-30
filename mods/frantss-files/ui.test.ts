@@ -1210,6 +1210,74 @@ test("rename and new entries take their name in the tree and refuse clashes", as
   assert.equal(h.files.editing, null);
 });
 
+for (const zoom of [0.8, 1, 1.5]) {
+  for (const placement of ["right", "left", "bottom"]) {
+    test(`Open in app clicks survive outside capture at ${zoom} zoom, opening ${placement}`, async () => {
+      const { h, press } = await menuHarness();
+      h.state.zoom = zoom;
+      h.state.shared["frantss.apps"] = ["finder", "zed"];
+      h.state.run = (_command, args) => ({
+        code: args[1] === "Finder" || args[1] === "Zed" ? 0 : 1,
+        stdout: "",
+        stderr: "",
+      });
+      press(
+        "src/main.ts",
+        (placement === "left" ? 860 : 40) * zoom,
+        (placement === "bottom" ? 110 : 30) * zoom,
+        900 * zoom,
+        (placement === "bottom" ? 120 : 600) * zoom,
+      );
+      await h.drain();
+      findNode(h.render(), byId("files-menu-open-in")).handlers.on_hover(true, h.cx);
+      const menu = findNode(h.render(), byId("files-menu")),
+        apps = findNode(menu, byId("files-menu-apps")),
+        left = apps.styles.find(([key]) => key === "left")[1],
+        top = apps.styles.find(([key]) => key === "top")[1],
+        width = apps.styles.find(([key]) => key === "w")[1],
+        point = { x: (left + width / 2) * zoom, y: (top + 40) * zoom };
+      assert.equal(left < 0, placement === "left");
+      if (placement === "bottom") assert.ok(top < 100, "Submenu must be clamped upwards");
+      // Native capture runs before the app row's click because the submenu sits outside its parent.
+      menu.handlers.on_mouse_down_out({ button: "left", local_position: point }, h.cx);
+      assert.ok(h.files.menu, "A press inside the submenu must keep its app rows mounted");
+      findNode(h.render(), byId("files-app-zed")).handlers.on_click({}, h.cx);
+      assert.deepEqual(h.state.commands.at(-1), ["open", "-a", "Zed", "/repo/src/main.ts", null]);
+      assert.equal(h.files.menu, null);
+    });
+  }
+}
+
+test("Open in still dismisses for presses outside both menus or beside a hidden submenu", async () => {
+  const { h, press } = await menuHarness();
+  h.state.shared["frantss.apps"] = ["zed"];
+  press("src/main.ts");
+  await h.drain();
+  findNode(h.render(), byId("files-menu-open-in")).handlers.on_hover(true, h.cx);
+  const menu = findNode(h.render(), byId("files-menu")),
+    apps = findNode(menu, byId("files-menu-apps")),
+    left = apps.styles.find(([key]) => key === "left")[1],
+    top = apps.styles.find(([key]) => key === "top")[1],
+    width = apps.styles.find(([key]) => key === "w")[1];
+  const outside = {
+    button: "left",
+    local_position: { x: (left + width + 1) * h.state.zoom, y: top * h.state.zoom },
+  };
+  menu.handlers.on_mouse_down_out({ ...outside, button: "right" }, h.cx);
+  assert.ok(h.files.menu);
+  menu.handlers.on_mouse_down_out(outside, h.cx);
+  assert.equal(h.files.menu, null);
+  press("src/main.ts");
+  findNode(h.render(), byId("files-menu")).handlers.on_mouse_down_out(
+    {
+      button: "left",
+      local_position: { x: (left + width / 2) * h.state.zoom, y: (top + 12) * h.state.zoom },
+    },
+    h.cx,
+  );
+  assert.equal(h.files.menu, null);
+});
+
 test("Open in shows the installed apps beside the menu and opens files as each app takes them", async () => {
   const { h, press } = await menuHarness();
   h.state.shared["frantss.apps"] = ["zed"];

@@ -1169,6 +1169,19 @@ export default class Files extends View {
         // A right press reopens or closes the menu through the panel's own handler.
         .on_mouse_down_out((e, cx) => {
           if (e.button === "right") return;
+          // Outside capture also sees presses in the submenu, which extends beyond this frame.
+          if (row && sub && e.local_position) {
+            const scale = zoom(),
+              localX = e.local_position.x / scale,
+              localY = e.local_position.y / scale;
+            if (
+              localX >= subLeft &&
+              localX < subLeft + MENU_WIDTH &&
+              localY >= subTop &&
+              localY < subTop + subHeight
+            )
+              return;
+          }
           this.menu = null;
           cx.notify();
         })
