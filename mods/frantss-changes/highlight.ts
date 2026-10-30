@@ -4,9 +4,12 @@ export interface Span {
 }
 export interface DiffRow {
   kind: string;
+  // A hunk header's is the new file's line its hunk starts at.
   number?: number;
   text: string;
   spans?: Span[];
+  // Unchanged lines hidden above a hunk header.
+  gap?: number;
 }
 
 // The ansi theme uses only the 16 terminal colors, so the Herdr theme resolves them; tabs stay

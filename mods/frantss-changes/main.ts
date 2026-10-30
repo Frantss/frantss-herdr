@@ -1,5 +1,14 @@
 import { View, div, type Context, type AsyncContext, type Color, type FocusHandle } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
+import {
+  v_flex,
+  h_flex,
+  InputState,
+  Input,
+  Scrollbar,
+  v_virtual_list,
+  v_resizable,
+  resizable_panel,
+} from "gpui-base";
 import {
   spaces,
   panes,
@@ -11,7 +20,8 @@ import {
   settings,
   layout,
 } from "herdr";
-import { trackedPreview, untrackedPreview } from "./preview.ts";
+import { LINE_LIMIT, trackedPreview, untrackedPreview } from "./preview.ts";
+import { expandGaps, fileLines } from "./gaps.ts";
 import {
   colorRows,
   parseAnsi,
@@ -64,6 +74,11 @@ type Snapshot = Pick<
   | "closed"
   | "rows"
   | "diffWidth"
+  | "plainRows"
+  | "fileLines"
+  | "oldSpans"
+  | "newSpans"
+  | "expanded"
 >;
 
 const key = () => JSON.stringify(location());
@@ -100,6 +115,11 @@ const SNAPSHOT = [
   "closed",
   "rows",
   "diffWidth",
+  "plainRows",
+  "fileLines",
+  "oldSpans",
+  "newSpans",
+  "expanded",
 ] as const;
 const KEPT_PLACES = 20;
 // Numbers each diff line once, so a frame only draws the rows on screen.
@@ -107,11 +127,12 @@ function diffRows(lines: string[]): DiffRow[] {
   let old = 0,
     next = 0;
   return lines.map((line) => {
-    const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line);
+    const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,(\d+))?/.exec(line);
     if (match) {
       old = +match[1];
       next = +match[2];
-      return { kind: "@", text: line };
+      // A hunk with no new lines names the line before it.
+      return { kind: "@", number: next + Number(match[3] === "0"), text: line };
     }
     const kind = line[0];
     if (kind === "-") return { kind, number: old++, text: line.slice(1) || " " };
@@ -146,7 +167,14 @@ const sameRows = (left: DiffRow[], right: DiffRow[]) =>
 
 export default class Changes extends View {
   declare files: ChangedFile[];
+  // Shown rows: the diff's plain rows with expanded gaps and colors.
   declare rows: DiffRow[];
+  declare plainRows: DiffRow[];
+  // The new file's lines, for expanding gaps; null where gaps cannot expand.
+  declare fileLines: string[] | null;
+  declare oldSpans: Span[][];
+  declare newSpans: Span[][];
+  declare expanded: ReadonlySet<number>;
   declare diffWidth: number;
   declare message: string;
   declare handle: FocusHandle;
@@ -171,8 +199,7 @@ export default class Changes extends View {
 
   init(_props: unknown, cx: AsyncContext) {
     this.files = [];
-    this.rows = [];
-    this.diffWidth = 0;
+    this.setLines([]);
     this.message = "";
     this.handle = cx.focus_handle();
     this.kept = new Map();
@@ -369,7 +396,8 @@ export default class Changes extends View {
       on = this.on;
     if (!file) return;
     const fresh = file.fresh || (!this.hasHead && file.status === "A");
-    let lines: string[];
+    let lines: string[],
+      text: string | null = null;
     if (fresh) {
       const text = await readTextFile(`${root}/${path}`, { on }).catch((): null => null);
       if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
@@ -379,27 +407,38 @@ export default class Changes extends View {
         lines = preview.lines;
       }
     } else {
-      const r = await exec(
-        "git",
-        [
-          "diff",
-          ...(this.hasHead ? ["HEAD"] : []),
-          "--no-ext-diff",
-          "--no-textconv",
-          "--no-color",
-          "--",
-          path,
-        ],
-        { cwd: root, on },
-      );
+      const [r, current] = await Promise.all([
+        exec(
+          "git",
+          [
+            "diff",
+            ...(this.hasHead ? ["HEAD"] : []),
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--",
+            path,
+          ],
+          { cwd: root, on },
+        ),
+        file.status === "D" || file.binary
+          ? null
+          : readTextFile(`${root}/${path}`, { on }).catch((): null => null),
+      ]);
       if (r.code !== 0) throw new Error(r.stderr);
       lines = trackedPreview(r.stdout, Boolean(file.binary));
+      text = current;
     }
     if (key() !== context || this.open !== path) return;
     const rows = diffRows(lines);
-    // An unchanged diff keeps its colors without running bat again.
-    if (sameRows(this.rows, rows)) return;
-    this.setLines(lines, rows);
+    // An unchanged diff keeps its expanded gaps and colors without running bat again.
+    if (sameRows(this.plainRows, rows)) return;
+    this.plainRows = rows;
+    // A diff cut short would show its missing changes as unchanged lines.
+    this.fileLines = text === null || lines.length >= LINE_LIMIT ? null : fileLines(text);
+    this.oldSpans = [];
+    this.newSpans = [];
+    this.show();
     if (!file.binary && rows.some((row) => row.number !== undefined))
       this.highlight(path, fresh, rows, cx);
   }
@@ -416,7 +455,7 @@ export default class Changes extends View {
         fresh ? null : source(OLD_SOURCE, this.hasHead ? "HEAD:" : ":"),
         source(NEW_SOURCE),
       ]);
-      if (key() !== context || this.open !== path || this.rows !== rows) return;
+      if (key() !== context || this.open !== path || this.plainRows !== rows) return;
       if (old?.code === 127 || next?.code === 127) {
         if (!this.note) {
           this.note = "Install bat for syntax colors";
@@ -424,17 +463,42 @@ export default class Changes extends View {
         }
         return;
       }
-      const lines = (r: typeof old) => (r?.code === 0 ? parseAnsi(r.stdout) : []);
-      const colored = colorRows(rows, lines(old), lines(next));
-      if (colored === rows) return;
-      this.rows = colored;
+      const spans = (r: typeof old) => (r?.code === 0 ? parseAnsi(r.stdout) : []);
+      this.oldSpans = spans(old);
+      this.newSpans = spans(next);
+      if (!this.oldSpans.length && !this.newSpans.length) return;
+      this.show();
       cx.notify();
     });
   }
 
-  setLines(lines: string[], rows = diffRows(lines)) {
-    this.rows = rows;
-    this.diffWidth = Math.max(300, ...lines.map((line) => line.length * 7 + 50));
+  setLines(lines: string[]) {
+    this.plainRows = diffRows(lines);
+    this.fileLines = null;
+    this.oldSpans = [];
+    this.newSpans = [];
+    this.expanded = new Set();
+    this.show();
+  }
+
+  show() {
+    this.rows = colorRows(
+      expandGaps(this.plainRows, this.fileLines, this.expanded),
+      this.oldSpans,
+      this.newSpans,
+    );
+    this.diffWidth = this.rows.reduce(
+      (width, row) => Math.max(width, row.text.length * 7 + 57),
+      300,
+    );
+  }
+
+  expand(index: number, cx: Context) {
+    const row = this.rows[index];
+    if (row?.kind !== "@" || !row.gap) return;
+    this.expanded = new Set(this.expanded).add(row.number);
+    this.show();
+    cx.notify();
   }
 
   pick(path: string, cx: Context) {
@@ -489,7 +553,7 @@ export default class Changes extends View {
     cx.notify();
   }
 
-  diffRow({ kind, number, text, spans }: DiffRow, t: Theme) {
+  diffRow({ kind, number, text, spans, gap }: DiffRow, t: Theme) {
     if (kind === "@")
       return div()
         .w_full()
@@ -499,7 +563,16 @@ export default class Changes extends View {
         .truncate()
         .bg(t.raised)
         .text_color(t.dim)
-        .child(text);
+        .when(Boolean(gap), (e) =>
+          e.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)),
+        )
+        .child(
+          gap
+            ? [`↕ ${gap} unchanged ${gap === 1 ? "line" : "lines"}`, text]
+                .filter(Boolean)
+                .join(" · ")
+            : text,
+        );
     return h_flex()
       .w_full()
       .h(20)
@@ -628,106 +701,121 @@ export default class Changes extends View {
           .child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)),
       )
       .child(
-        v_flex()
-          .id("changes-list")
-          .flex_none()
-          .h(Math.min(200, Math.max(44, this.files.length * 26 + 8)))
-          .p(4)
-          .border_b(1)
-          .border_color(t.border)
-          .when(this.files.length > 0, (el) =>
-            el.child(
-              div()
-                .relative()
-                .flex_1()
-                .min_h(0)
-                .child(
-                  v_virtual_list(
-                    "changes-files",
-                    this.files.length,
-                    26 * zoom(),
-                    (i) => this.files[i].path,
-                    (range) =>
-                      this.files
-                        .slice(range.start, range.end)
-                        .map((file) => v_flex().h(26).child(this.fileRow(file, t))),
-                  )
-                    .size_full()
-                    .on_item_click((path, cx) => this.pick(path, cx)),
-                )
-                .child(
-                  Scrollbar.vertical("changes-files").viewport_from_layout().absolute().inset_0(),
-                ),
-            ),
-          )
-          .when(!this.files.length, (e) =>
-            e.child(
-              div()
-                .p(8)
-                .text_color(t.dim)
-                .child(
-                  this.error ||
-                    (this.loading
-                      ? "Loading changes…"
-                      : this.root
-                        ? "No uncommitted changes"
-                        : "No folder"),
-                ),
-            ),
-          ),
-      )
-      .when(this.limited, (el) =>
-        el.child(
-          div()
-            .px(12)
-            .py(4)
-            .text_size(11)
-            .text_color(t.dim)
-            .child("Showing the first 1,000 changed files"),
-        ),
-      )
-      .child(
-        div()
+        v_resizable("changes-split")
           .flex_1()
           .min_h(0)
-          .relative()
-          .font_family((settings().font_family as string | undefined) ?? "JetBrains Mono")
-          .text_size(11)
           .child(
-            div()
-              .id("changes-diff-x")
-              .size_full()
-              .overflow_x_scrollbar()
+            resizable_panel()
+              .size(200)
+              .size_range(44)
               .child(
-                div()
-                  .w_full()
-                  .min_w(this.diffWidth)
-                  .h_full()
-                  .when(this.rows.length > 0, (el) =>
+                v_flex()
+                  .id("changes-list")
+                  .size_full()
+                  .p(4)
+                  .when(this.files.length > 0, (el) =>
                     el.child(
-                      v_virtual_list(
-                        "changes-diff",
-                        this.rows.length,
-                        20 * zoom(),
-                        (i) => String(i),
-                        (range) =>
-                          this.rows
-                            .slice(range.start, range.end)
-                            .map((row) => this.diffRow(row, t)),
-                      ).size_full(),
+                      div()
+                        .relative()
+                        .flex_1()
+                        .min_h(0)
+                        .child(
+                          v_virtual_list(
+                            "changes-files",
+                            this.files.length,
+                            26 * zoom(),
+                            (i) => this.files[i].path,
+                            (range) =>
+                              this.files
+                                .slice(range.start, range.end)
+                                .map((file) => v_flex().h(26).child(this.fileRow(file, t))),
+                          )
+                            .size_full()
+                            .on_item_click((path, cx) => this.pick(path, cx)),
+                        )
+                        .child(
+                          Scrollbar.vertical("changes-files")
+                            .viewport_from_layout()
+                            .absolute()
+                            .inset_0(),
+                        ),
+                    ),
+                  )
+                  .when(!this.files.length, (e) =>
+                    e.child(
+                      div()
+                        .p(8)
+                        .text_color(t.dim)
+                        .child(
+                          this.error ||
+                            (this.loading
+                              ? "Loading changes…"
+                              : this.root
+                                ? "No uncommitted changes"
+                                : "No folder"),
+                        ),
+                    ),
+                  )
+                  .when(this.limited, (el) =>
+                    el.child(
+                      div()
+                        .px(8)
+                        .py(4)
+                        .text_size(11)
+                        .text_color(t.dim)
+                        .child("Showing the first 1,000 changed files"),
                     ),
                   ),
               ),
           )
-          .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
-          .when(!this.open && this.files.length > 0, (e) =>
-            e.child(
+          .child(
+            resizable_panel().child(
               div()
-                .absolute()
-                .top(6)
-                .px(12)
-                .text_color(t.dim)
-                .child("Select a file to view its changes"),
+                .size_full()
+                .relative()
+                .font_family((settings().font_family as string | undefined) ?? "JetBrains Mono")
+                .text_size(11)
+                .child(
+                  div()
+                    .id("changes-diff-x")
+                    .size_full()
+                    .overflow_x_scrollbar()
+                    .child(
+                      div()
+                        .w_full()
+                        .min_w(this.diffWidth)
+                        .h_full()
+                        .when(this.rows.length > 0, (el) =>
+                          el.child(
+                            v_virtual_list(
+                              "changes-diff",
+                              this.rows.length,
+                              20 * zoom(),
+                              (i) => String(i),
+                              (range) =>
+                                this.rows
+                                  .slice(range.start, range.end)
+                                  .map((row) => this.diffRow(row, t)),
+                            )
+                              .size_full()
+                              .on_item_click((index, cx) => this.expand(Number(index), cx)),
+                          ),
+                        ),
+                    ),
+                )
+                .child(
+                  Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0(),
+                )
+                .when(!this.open && this.files.length > 0, (e) =>
+                  e.child(
+                    div()
+                      .absolute()
+                      .top(6)
+                      .px(12)
+                      .text_color(t.dim)
+                      .child("Select a file to view its changes"),
+                  ),
+                ),
             ),
           ),
       )

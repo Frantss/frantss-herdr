@@ -1,6 +1,7 @@
-const LINE_LIMIT = 1500;
-const LINE_LENGTH = 4000;
+export const LINE_LIMIT = 1500;
+export const LINE_LENGTH = 4000;
 const FILE_PREFIX = 400000;
+export const TRUNCATED = "… (line truncated)";
 
 function previewLines(text: string, start: number, end: number, limit: number, prefix = "") {
   const stop = end - Number(end > start && text[end - 1] === "\n");
@@ -10,7 +11,7 @@ function previewLines(text: string, start: number, end: number, limit: number, p
     const lineEnd = newline < 0 || newline > stop ? stop : newline;
     const length = lineEnd - start + prefix.length;
     const line = prefix + text.slice(start, Math.min(lineEnd, start + LINE_LENGTH - prefix.length));
-    lines.push(length > LINE_LENGTH ? line + "… (line truncated)" : line);
+    lines.push(length > LINE_LENGTH ? line + TRUNCATED : line);
     if (lineEnd === stop) break;
     start = lineEnd + 1;
   }

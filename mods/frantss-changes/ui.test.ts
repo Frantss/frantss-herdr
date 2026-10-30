@@ -83,6 +83,8 @@ async function harness(refresh = false) {
     "gpui-base": {
       v_flex: element,
       h_flex: element,
+      v_resizable: element,
+      resizable_panel: element,
       Scrollbar: { vertical: element },
       InputState: {},
       Input: { new: element },
@@ -186,6 +188,11 @@ async function harness(refresh = false) {
   Object.assign(changes, {
     files: [],
     rows: [],
+    plainRows: [],
+    fileLines: null,
+    oldSpans: [],
+    newSpans: [],
+    expanded: new Set(),
     diffWidth: 0,
     message: "",
     root: "/repo",
@@ -282,7 +289,7 @@ test("Changes constructs only requested file rows and selects by stable path aft
   assert.deepEqual(h.state.calls, [["pick", "src/file-300.ts"]]);
 });
 
-test("Changes keeps the file viewport capped and preserves empty and error messages", async () => {
+test("Changes starts the resizable file list at 200 and preserves empty and error messages", async () => {
   const h = await harness();
   const empty = h.render();
   assert.equal(h.state.lists.length, 0);
@@ -291,11 +298,12 @@ test("Changes keeps the file viewport capped and preserves empty and error messa
   assert.ok(text(h.render()).includes("Cannot read changes"));
   h.changes.files = Array.from({ length: 1000 }, (_, i) => file(`file-${i}.ts`));
   const tree = h.render();
-  function find(node, id) {
-    if (node?.styles?.some(([key, value]) => key === "id" && value === id)) return node;
-    return (node?.childNodes ?? []).map((child) => find(child, id)).find(Boolean);
+  function find(node, matches) {
+    if (node?.styles?.some(matches)) return node;
+    return (node?.childNodes ?? []).map((child) => find(child, matches)).find(Boolean);
   }
-  assert.ok(find(tree, "changes-list").styles.some(([key, value]) => key === "h" && value === 200));
+  const panel = find(tree, ([key, value]) => key === "size" && value === 200);
+  assert.ok(find(panel, ([key, value]) => key === "id" && value === "changes-list"));
 });
 
 const deferred = () => {
@@ -455,15 +463,6 @@ test("Changes overlaps unborn repository statistics and sums staged and unstaged
   assert.equal(h.changes.files[0].del, 10);
 });
 
-test("Changes lays diff rows out at their zoomed height", async () => {
-  const h = await harness(true);
-  h.changes.refresh(h.cx);
-  await h.drain();
-  h.render();
-  const list = h.state.lists.find((list) => list.id === "changes-diff");
-  assert.equal(list.extent, 20 * h.state.zoom);
-});
-
 // Values built inside the module's VM realm compare by structure once copied here.
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const colored = (word: string) => ({ code: 0, stdout: `\x1b[35m${word}\x1b[0m\n`, stderr: "" });
@@ -471,6 +470,7 @@ const colored = (word: string) => ({ code: 0, stdout: `\x1b[35m${word}\x1b[0m\n`
 test("Changes shows plain diff rows first and colors them once from bat", async () => {
   const h = await harness(true);
   h.state.bat = { old: colored("old"), new: colored("new") };
+  h.state.untracked = "new\n";
   const block = deferred();
   h.state.batBlock = block.promise;
   h.changes.refresh(h.cx);
@@ -547,4 +547,55 @@ test("colored diff rows draw one theme-colored element per span", async () => {
       [" a", undefined],
     ],
   );
+});
+
+test("Changes lays diff rows out at their zoomed height", async () => {
+  const h = await harness(true);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.render();
+  const list = h.state.lists.find((list) => list.id === "changes-diff");
+  assert.equal(list.extent, 20 * h.state.zoom);
+});
+
+test("clicking a gap shows its unchanged lines and keeps them through unchanged refreshes", async () => {
+  const h = await harness(true);
+  h.state.untracked = "a\nb\nc\nd\n";
+  h.state.diff = "@@ -3 +3 @@\n-old\n+c\n";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.rows[0].gap, 2);
+  h.render();
+  const list = h.state.lists.find((list) => list.id === "changes-diff");
+  assert.ok(text(h.range(list, 0, 1)[0]).includes("↕ 2 unchanged lines · @@ -3 +3 @@"));
+  h.state.notifications = 0;
+  list.node.handlers.on_item_click("0", h.cx);
+  assert.equal(h.state.notifications, 1);
+  assert.deepEqual(plain(h.changes.rows.map((row) => [row.kind, row.number, row.text])), [
+    [" ", 1, "a"],
+    [" ", 2, "b"],
+    ["-", 3, "old"],
+    ["+", 3, "c"],
+    ["@", 5, ""],
+  ]);
+  list.node.handlers.on_item_click("2", h.cx);
+  assert.equal(h.state.notifications, 1);
+  const rows = h.changes.rows;
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.rows, rows);
+});
+
+test("a hunk without new lines names the line after the one git gives", async () => {
+  const h = await harness(true);
+  h.state.untracked = "a\nb\n";
+  h.state.diff = "@@ -2,2 +1,0 @@\n-x\n-y\n";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.deepEqual(plain(h.changes.rows.map((row) => [row.kind, row.number, row.gap ?? null])), [
+    ["@", 2, 1],
+    ["-", 2, null],
+    ["-", 3, null],
+    ["@", 3, 1],
+  ]);
 });
