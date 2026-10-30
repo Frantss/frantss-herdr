@@ -3,6 +3,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { button as sharedButton } from "./button.ts";
 import { findNode, followedPlace, PANEL_MODS, type LayoutNode, type PanelId } from "./panel.ts";
+import { closeTab } from "./close-tab.ts";
 import {
   spaces,
   panes,
@@ -98,6 +99,7 @@ export default class Tabs extends View {
           tab = space?.tabs.find((c) => c.active);
         if (command === "rename" && tab) rename("tab", tab.id, tabName(tab));
         if (command === "rename-space" && space) rename("space", space.id, spaceName(space));
+        if (command === "close-tab" && tab) closeTab(tab.id, tabName(tab));
       }
     });
   }
@@ -285,7 +287,7 @@ export default class Tabs extends View {
                   .on_mouse_down("left", stop)
                   .on_click((_e, cx) => {
                     cx.stop_propagation();
-                    run("tab.close", { id: c.id });
+                    closeTab(c.id, name);
                   })
                   .child(svg("mods/pane/close.svg").size(12))
               : div().size(12).flex_none(),

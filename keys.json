@@ -1,6 +1,7 @@
 {
   "layout:frantss": {
     "f2": "frantss-tabs.rename",
-    "shift-f2": "frantss-tabs.rename-space"
+    "shift-f2": "frantss-tabs.rename-space",
+    "cmd-w": "frantss-tabs.close-tab"
   }
 }

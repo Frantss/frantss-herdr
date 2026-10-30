@@ -19,6 +19,7 @@ import {
   panes,
   exec,
 } from "herdr";
+import { closeTab } from "./close-tab.ts";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s: import("herdr").SpaceInfo) {
@@ -206,6 +207,7 @@ export default class Menu extends View {
           command: { name: `${it[2].what}.rename`, args: { id: it[2].id } },
         },
       });
+    else if (it[1] === "tab.close") closeTab(it[2].id, props().target.name ?? "tab");
     else run(it[1], it[2]);
   }
 

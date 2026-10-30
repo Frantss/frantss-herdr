@@ -44,9 +44,9 @@ herdr-app do layout.switch '{"name":"frantss"}'
 ```
 
 Merge the `layout:frantss` bindings from this repo's `keys.json` into Herdr's
-`keys.json` for F2 tab rename and Shift+F2 space rename. The link command leaves
-keys, session data, saved workspaces, settings and layout click state in Herdr's
-config folder. On this machine those bindings are already installed.
+`keys.json` for F2 tab rename, Shift+F2 space rename and Cmd+W tab close with a
+confirmation. The link command leaves keys, session data, saved workspaces,
+settings and layout click state in Herdr's config folder.
 
 ## Dependencies and checks
 
