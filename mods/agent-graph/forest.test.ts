@@ -7,7 +7,7 @@ import type AgentGraph from "./main.ts";
 
 type Terminal = Parameters<AgentGraph["forest"]>[0][number];
 
-async function graph() {
+async function load() {
   const context = vm.createContext({});
   const empty = () => {};
   const nativeModules = {
@@ -52,7 +52,11 @@ async function graph() {
     );
   });
   await module.evaluate();
-  const Graph = (module.namespace as { default: new () => AgentGraph }).default;
+  return module.namespace as typeof import("./main.ts");
+}
+
+async function graph() {
+  const Graph = (await load()).default;
   const result = new Graph();
   result.folded = new Set();
   result.scope = "all";
@@ -156,4 +160,27 @@ test("building a thousand-node forest reads parent relationships only a bounded 
     parentReads <= all.length * 4,
     `${parentReads} parent reads for ${all.length} terminals`,
   );
+});
+
+test("scope counts hold the live agents in each scope, sub-agents included", async () => {
+  const { scopeCounts } = await load();
+  const labels = (space: string, tab: string) => ({ "herdr.space": space, "herdr.tab": tab });
+  const live = [
+    record("a", { labels: labels("space-a", "tab-a") }),
+    record("a-kid", { parent: "a", labels: labels("space-a", "tab-a") }),
+    record("b", { labels: labels("space-b", "tab-b") }),
+    record("c", { labels: labels("space-c", "tab-c") }),
+    record("shell", { labels: labels("space-a", "tab-a") }),
+    record("gone", { state: "exited", labels: labels("space-a", "tab-a") }),
+  ];
+  const listed = new Map(
+    ["a", "a-kid", "b", "c", "gone"].map((address) => [address, "working" as const]),
+  );
+  const here = { space: "space-a", tab: "tab-a" } as Parameters<AgentGraph["forest"]>[2];
+  assert.deepEqual(JSON.parse(JSON.stringify(scopeCounts(live, listed, here))), {
+    workspace: 3,
+    space: 2,
+    tab: 2,
+    all: 4,
+  });
 });

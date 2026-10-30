@@ -89,6 +89,20 @@ const labelOf = (k: TerminalRecord, key: string) =>
 const spaceOf = (k: TerminalRecord) => labelOf(k, "herdr.space");
 const tabOf = (k: TerminalRecord) => labelOf(k, "herdr.tab");
 
+// Whether a terminal belongs to a scope, seen from the focused place.
+function scopeTest(scope: string, here: ReturnType<typeof focused>) {
+  const workspaces = (shared(SPACE_WORKSPACES) ?? {}) as Record<string, string>;
+  const workspaceOf = (id: string | null) => workspaces[id] ?? id;
+  return (
+    {
+      workspace: (k: TerminalRecord) => workspaceOf(spaceOf(k)) === workspaceOf(here?.space),
+      space: (k: TerminalRecord) => spaceOf(k) === here?.space,
+      tab: (k: TerminalRecord) => tabOf(k) === here?.tab,
+      all: () => true,
+    }[scope] ?? (() => true)
+  );
+}
+
 // Error counts as blocked. A sub-agent is never done: it reports to its parent.
 function statusOf(k: TerminalRecord, listed: Statuses): AgentStatus | null {
   if (k.state !== "live") return "finished";
@@ -152,6 +166,18 @@ function flatten(root: AgentNode): AgentNode[] {
     for (let index = node.kids.length - 1; index >= 0; index--) pending.push(node.kids[index]);
   }
   return nodes;
+}
+
+// The live agents in each scope, sub-agents included.
+export function scopeCounts(
+  live: TerminalRecord[],
+  listed: Statuses,
+  here: ReturnType<typeof focused>,
+): Record<string, number> {
+  const agentTerminals = live.filter((k) => k.state === "live" && listed.has(k.address));
+  return Object.fromEntries(
+    SCOPES.map((s) => [s.id, agentTerminals.filter(scopeTest(s.id, here)).length]),
+  );
 }
 
 export default class AgentGraph extends View {
@@ -261,15 +287,7 @@ export default class AgentGraph extends View {
   // under their parent for a while after they finish, in the order they started.
   forest(all: TerminalRecord[], listed: Statuses, here: ReturnType<typeof focused>): AgentNode[] {
     const byAddress = new Map(all.map((k) => [k.address, k]));
-    const workspaces = (shared(SPACE_WORKSPACES) ?? {}) as Record<string, string>;
-    const workspaceOf = (id: string | null) => workspaces[id] ?? id;
-    const inScope =
-      {
-        workspace: (k: TerminalRecord) => workspaceOf(spaceOf(k)) === workspaceOf(here?.space),
-        space: (k: TerminalRecord) => spaceOf(k) === here?.space,
-        tab: (k: TerminalRecord) => tabOf(k) === here?.tab,
-        all: () => true,
-      }[this.scope] ?? (() => true);
+    const inScope = scopeTest(this.scope, here);
     const children = new Map<string | undefined, TerminalRecord[]>();
     for (const k of all) {
       const parent = k.parent,
@@ -482,7 +500,7 @@ export default class AgentGraph extends View {
       );
   }
 
-  header(t: Theme, roots: AgentNode[]) {
+  header(t: Theme, roots: AgentNode[], counts: Record<string, number>) {
     const nodes = roots.flatMap(flatten);
     const working = nodes.filter((n) => n.status === "working").length;
     const blocked = nodes.filter((n) => n.status === "blocked").length;
@@ -510,6 +528,7 @@ export default class AgentGraph extends View {
             .h(20)
             .px(6)
             .flex()
+            .gap(4)
             .items_center()
             .rounded(3)
             .text_color(this.scope === s.id ? t.foreground : t.muted)
@@ -521,7 +540,10 @@ export default class AgentGraph extends View {
               this.setScope(s.id);
               cx.notify();
             })
-            .child(s.label),
+            .child(s.label)
+            .when(counts[s.id] > 0, (el) =>
+              el.child(div().text_size(10).text_color(t.dim).child(String(counts[s.id]))),
+            ),
         ),
       );
   }
@@ -542,7 +564,9 @@ export default class AgentGraph extends View {
       (k) => !liveAddresses.has(k.address) && now - (k.finished_ms ?? 0) < FINISHED_FOR_MS,
     );
     const all = [...live, ...recent];
-    const roots = this.forest(all, listed, focused());
+    const here = focused(),
+      roots = this.forest(all, listed, here),
+      counts = scopeCounts(live, listed, here);
     this.outline = this.size.width < OUTLINE_BELOW;
     let total = 0;
     if (!this.outline) {
@@ -591,7 +615,7 @@ export default class AgentGraph extends View {
           this.size = { width: size.width / zoom, height: size.height / zoom };
           cx.notify();
         })
-        .child(this.header(t, roots))
+        .child(this.header(t, roots, counts))
         .when(roots.length === 0, (el) =>
           el.child(
             div()
