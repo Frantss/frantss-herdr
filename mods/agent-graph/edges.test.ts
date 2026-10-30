@@ -232,3 +232,31 @@ test("deep graph cards retain depth-first order and hide descendants when folded
     cards.slice(0, 251).map((node) => node.id),
   );
 });
+
+for (const width of [719, 720]) {
+  test(`graph measures tree widths only when the panel can show a tree at width ${width}`, async () => {
+    const h = await harness(width, 0);
+    const forest = h.graph.forest.bind(h.graph);
+    let widthWrites = 0;
+    h.graph.forest = (...args) => {
+      const roots = forest(...args);
+      for (const root of roots) {
+        let value;
+        Object.defineProperty(root, "width", {
+          get: () => value,
+          set(width) {
+            widthWrites++;
+            value = width;
+          },
+        });
+      }
+      return roots;
+    };
+    const tree = h.render();
+    assert.equal(widthWrites, width < 720 ? 0 : 1);
+    assert.equal(h.graph.outline, width < 720);
+    const card = byId(tree, "card-parent");
+    assert.equal(style(card, "left"), width < 720 ? 16 : (width - 196) / 2);
+    assert.equal(style(card, "w"), width < 720 ? width - 32 : 196);
+  });
+}

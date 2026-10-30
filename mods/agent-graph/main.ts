@@ -523,9 +523,13 @@ export default class AgentGraph extends View {
     );
     const all = [...live, ...recent];
     const roots = this.forest(all, listed, focused());
-    roots.forEach(measure);
-    const total = roots.reduce((w, r) => w + r.width, 0) + TREE_GAP * Math.max(0, roots.length - 1);
-    this.outline = this.size.width < OUTLINE_BELOW || total + 2 * PAD > this.size.width;
+    this.outline = this.size.width < OUTLINE_BELOW;
+    let total = 0;
+    if (!this.outline) {
+      roots.forEach(measure);
+      total = roots.reduce((w, r) => w + r.width, 0) + TREE_GAP * Math.max(0, roots.length - 1);
+      this.outline = total + 2 * PAD > this.size.width;
+    }
     if (this.outline) {
       let y = PAD;
       for (const root of roots)
