@@ -1004,7 +1004,8 @@ export default class Frantss extends View {
       );
   }
 
-  // A pane's header; a pane that shares its tab can be closed from it (a lone one closes with its tab).
+  // A pane's header; it splits its pane. A pane that shares its tab can also be zoomed and closed
+  // from it (a lone one fills its tab and closes with it).
   pane(t: Theme) {
     const all = panes(),
       id = props().pane;
@@ -1038,12 +1039,43 @@ export default class Frantss extends View {
             ),
           ),
       )
-      .when(withOthers, (e) =>
-        e.child(
-          this.control(t, "close-pane", "Close pane", svg("mods/pane/close.svg").size(10), () =>
-            run("pane.close", { pane: pane.pane }),
+      .when(Boolean(pane), (e) =>
+        e
+          .child(
+            this.control(
+              t,
+              "split-right",
+              "Split right",
+              svg("mods/pane/split-right.svg").size(12),
+              () => run("pane.split", { direction: "right", pane: pane.pane }),
+            ),
+          )
+          .child(
+            this.control(
+              t,
+              "split-down",
+              "Split down",
+              svg("mods/pane/split-down.svg").size(12),
+              () => run("pane.split", { direction: "down", pane: pane.pane }),
+            ),
           ),
-        ),
+      )
+      .when(withOthers, (e) =>
+        e
+          .child(
+            this.control(
+              t,
+              "zoom-pane",
+              pane.zoomed ? "Unzoom pane" : "Zoom pane",
+              svg(`mods/pane/${pane.zoomed ? "unzoom" : "zoom"}.svg`).size(12),
+              () => run("pane.zoom", { pane: pane.pane }),
+            ),
+          )
+          .child(
+            this.control(t, "close-pane", "Close pane", svg("mods/pane/close.svg").size(10), () =>
+              run("pane.close", { pane: pane.pane }),
+            ),
+          ),
       );
   }
 

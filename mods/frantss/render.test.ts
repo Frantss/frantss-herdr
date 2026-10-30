@@ -397,13 +397,21 @@ test("pane headers retain their single pane lookup without workspace indexing", 
   assert.deepEqual(h.state.calls, { spaces: 0, panes: 1, paneVisits: 0 });
   // One props read for the role and one for the pane, not one per pane searched.
   assert.equal(h.state.propsCalls, 2);
-  byId(tree, "close-pane").handlers.on_click({}, h.cx);
-  assert.deepEqual(plain(h.state.commands.at(-1)), [
-    "pane.close",
-    { pane: "pane-t-agent-✳ Fix API" },
+  for (const id of ["split-right", "split-down", "zoom-pane", "close-pane"])
+    byId(tree, id).handlers.on_click({}, h.cx);
+  const target = "pane-t-agent-✳ Fix API";
+  assert.deepEqual(plain(h.state.commands.slice(-4)), [
+    ["pane.split", { direction: "right", pane: target }],
+    ["pane.split", { direction: "down", pane: target }],
+    ["pane.zoom", { pane: target }],
+    ["pane.close", { pane: target }],
   ]);
+  // A lone pane splits but neither zooms nor closes on its own.
   h.state.pane = "pane-t-named-Ignored title";
-  assert.equal(byId(h.render(), "close-pane"), null);
+  const lone = h.render();
+  assert.ok(byId(lone, "split-right"));
+  assert.equal(byId(lone, "zoom-pane"), null);
+  assert.equal(byId(lone, "close-pane"), null);
 });
 
 test("the rail's footer opens the settings and adds a machine", async () => {
