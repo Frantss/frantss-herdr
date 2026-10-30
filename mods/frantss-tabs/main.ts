@@ -126,6 +126,7 @@ export default class Tabs extends View {
   }
 
   render() {
+    const ps = panes();
     const t = theme() as Record<string, `#${string}`>;
     const space = spaces().find((p) => p.active);
     const shown = space?.tabs ?? [];
@@ -154,10 +155,9 @@ export default class Tabs extends View {
         .child(label);
     const item = (c: TabInfo, i: number) => {
       const program = (
-        panes().find((p) => p.tab === c.id && p.program?.agent) ??
-        panes().find((p) => p.tab === c.id)
+        ps.find((p) => p.tab === c.id && p.program?.agent) ?? ps.find((p) => p.tab === c.id)
       )?.program;
-      const name = tabName(c);
+      const name = tabName(c, ps);
       // Like a rail row: the current tab is marked with ❯ and bright text rather than a raised box.
       return (
         h_flex()
