@@ -82,8 +82,7 @@ function shown() {
   return !panel || (!panel.hidden && body?.active === "files");
 }
 // Git's lock files come and go with every git command; refreshing on them alone never ends.
-const meaningful = (paths: string[]) =>
-  paths.some((path) => !/\/\.git\/.*\.lock$|\/node_modules\//.test(path));
+const meaningful = (path: string) => !/\/\.git\/.*\.lock$|\/node_modules\//.test(path);
 
 const isLight = (hex: string) => {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
@@ -148,12 +147,18 @@ export default class Files extends View {
   declare stale: boolean;
   declare error: string | null;
   declare icons: IconManifest | null;
+  declare generation: number;
+  declare invalidated: Set<string>;
+  declare fullRefresh: boolean;
 
   init(_props: unknown, cx: AsyncContext) {
     this.entries = new Map();
     this.folders = new Set();
     this.pending = new Set();
     this.marks = {};
+    this.generation = 0;
+    this.invalidated = new Set();
+    this.fullRefresh = false;
     cx.spawn(async (cx) => {
       const text = await readTextFile(`${appHome()}/mods/frantss-files/material-icons.json`).catch(
         (): null => null,
@@ -167,26 +172,60 @@ export default class Files extends View {
 
   watch(root: string, cx: Context) {
     if (this.on || this.watched === root) return;
+    const generation = this.generation;
     this.watched = root;
     cx.spawn(async (cx) => {
       try {
-        while (this.watched === root) {
-          if (!meaningful(await watchFolder(root))) continue;
-          // One refresh for a burst of saves.
+        while (generation === this.generation && this.watched === root) {
+          const paths = (await watchFolder(root)).filter(meaningful);
+          if (!paths.length) continue;
           await cx.sleep(300);
-          if (this.watched === root) this.refresh(cx);
+          if (generation === this.generation && this.watched === root) this.refresh(cx, paths);
         }
       } catch {
-        if (this.watched === root) this.watched = null;
+        if (generation === this.generation && this.watched === root) this.watched = null;
       }
     });
   }
 
-  async loadFolder(path: string, context: string) {
-    const on = this.on,
-      root = this.root;
+  affectedFolders(paths: string[]): Set<string> | null {
+    const root = this.root.replace(/\/+$/, ""),
+      prefix = root + "/",
+      folders = new Set<string>();
+    for (const absolute of paths) {
+      if (!absolute.startsWith(prefix)) return null;
+      const path = absolute.slice(prefix.length),
+        parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      if (
+        !path ||
+        path.endsWith("/") ||
+        path === ".git" ||
+        path.startsWith(".git/") ||
+        path.includes("\\") ||
+        path.split("/").some((part) => part === ".." || part === ".")
+      )
+        return null;
+      if (!this.entries.has(parent)) return null;
+      folders.add(parent);
+      if (this.folders.has(path)) folders.add(path);
+    }
+    return folders;
+  }
+
+  current(context: string, generation: number) {
+    return generation === this.generation && context === this.context && key() === context;
+  }
+
+  async loadFolder(
+    path: string,
+    context: string,
+    generation: number,
+    root: string,
+    on: string | null,
+  ) {
+    if (!this.current(context, generation) || (path && !this.folders.has(path))) return;
     const entries = await directory(path ? `${root}/${path}` : root, on);
-    if (key() !== context || (path && !this.folders.has(path))) return;
+    if (!this.current(context, generation) || (path && !this.folders.has(path))) return;
     const used = [...this.entries.entries()]
       .filter(([p]) => p !== path)
       .reduce((n, [, e]) => n + e.length, 0);
@@ -197,13 +236,28 @@ export default class Files extends View {
         .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name)),
     );
     if (entries.length > PER_FOLDER || used + entries.length > TOTAL) this.limited = true;
+    const directories = new Set(
+      this.entries
+        .get(path)
+        .filter((entry) => entry.dir)
+        .map((entry) => entry.name),
+    );
+    for (const folder of this.folders) {
+      const slash = folder.lastIndexOf("/"),
+        parent = slash < 0 ? "" : folder.slice(0, slash),
+        name = folder.slice(slash + 1);
+      if (parent === path && !directories.has(name)) this.closeFolder(folder);
+    }
   }
 
-  refresh(cx: Context) {
-    if (this.loading) return;
+  refresh(cx: Context, changedPaths?: string[]) {
     const { cwd, on } = location(),
-      context = key();
+      context = JSON.stringify({ cwd, on });
     if (context !== this.context) {
+      this.generation = (this.generation ?? 0) + 1;
+      this.loading = false;
+      this.invalidated = new Set();
+      this.fullRefresh = false;
       this.context = context;
       this.root = cwd;
       this.on = on;
@@ -216,18 +270,31 @@ export default class Files extends View {
       this.limited = false;
     }
     if (!cwd) return;
+    const affected = changedPaths ? this.affectedFolders(changedPaths) : null;
+    if (affected) for (const path of affected) this.invalidated.add(path);
+    else this.fullRefresh = true;
     if (!shown()) {
       this.stale = true;
       return;
     }
+    if (this.loading) return;
+    const generation = this.generation,
+      paths = this.fullRefresh ? ["", ...this.folders] : [...this.invalidated];
+    if (this.fullRefresh) this.limited = false;
+    this.fullRefresh = false;
+    this.invalidated.clear();
     this.loading = true;
-    this.limited = false;
     cx.spawn(async (cx) => {
       try {
-        for (const path of ["", ...this.folders]) await this.loadFolder(path, context);
+        for (const path of paths) {
+          if (!this.current(context, generation)) return;
+          await this.loadFolder(path, context, generation, cwd, on);
+        }
+        if (!this.current(context, generation)) return;
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(
           (): null => null,
         );
+        if (!this.current(context, generation)) return;
         let marks: Record<string, Mark> = {};
         if (top?.code === 0) {
           const status = await exec(
@@ -245,39 +312,50 @@ export default class Files extends View {
           ).catch((): null => null);
           if (status?.code === 0) marks = statusMarks(status.stdout, top.stdout.trim(), TOTAL);
         }
-        if (key() !== context) return;
+        if (!this.current(context, generation)) return;
         this.marks = marks;
         this.error = null;
         this.watch(cwd, cx);
       } catch (e) {
-        if (key() === context) this.error = String(e);
+        if (this.current(context, generation)) this.error = String(e);
       } finally {
-        this.loading = false;
-        cx.notify();
+        if (generation === this.generation) {
+          this.loading = false;
+          if (key() !== context) this.refresh(cx);
+          else if (this.fullRefresh || this.invalidated.size) this.refresh(cx, []);
+          cx.notify();
+        }
       }
     });
   }
 
+  closeFolder(path: string) {
+    for (const folder of this.folders)
+      if (folder === path || folder.startsWith(path + "/")) {
+        this.folders.delete(folder);
+        this.entries.delete(folder);
+      }
+  }
+
   toggle(path: string, cx: Context) {
-    if (this.folders.has(path)) {
-      for (const folder of this.folders)
-        if (folder === path || folder.startsWith(path + "/")) {
-          this.folders.delete(folder);
-          this.entries.delete(folder);
-        }
-    } else {
+    if (this.folders.has(path)) this.closeFolder(path);
+    else {
       this.folders.add(path);
       if (!this.entries.has(path) && !this.pending.has(path)) {
-        const context = this.context;
-        this.pending.add(path);
+        const context = this.context,
+          generation = this.generation,
+          root = this.root,
+          on = this.on,
+          pending = this.pending;
+        pending.add(path);
         cx.spawn(async (cx) => {
           try {
-            await this.loadFolder(path, context);
+            await this.loadFolder(path, context, generation, root, on);
           } catch (e) {
-            if (key() === context) this.error = String(e);
+            if (this.current(context, generation)) this.error = String(e);
           } finally {
-            this.pending.delete(path);
-            cx.notify();
+            pending.delete(path);
+            if (this.current(context, generation)) cx.notify();
           }
         });
       }
