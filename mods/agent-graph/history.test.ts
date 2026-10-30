@@ -65,6 +65,8 @@ async function harness(fetch: (args: string[]) => Promise<Result>) {
       },
       settings: empty,
       theme: empty,
+      props: () => null,
+      spaces: () => [],
       layout: () => ({
         children: [
           { id: "panel", hidden: state.hidden },
@@ -78,7 +80,12 @@ async function harness(fetch: (args: string[]) => Promise<Result>) {
     stripTypeScriptTypes(await readFile(new URL("main.ts", import.meta.url), "utf8")),
     { context },
   );
-  await module.link((name) => {
+  await module.link(async (name) => {
+    if (name.startsWith("./"))
+      return new vm.SourceTextModule(
+        stripTypeScriptTypes(await readFile(new URL(name, import.meta.url), "utf8")),
+        { context },
+      );
     const values = natives[name];
     return new vm.SyntheticModule(
       Object.keys(values),

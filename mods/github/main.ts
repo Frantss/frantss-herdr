@@ -13,7 +13,6 @@ import {
   hc,
   run,
   theme,
-  layout,
   agents,
   terminals,
   knownAgents,
@@ -22,13 +21,8 @@ import {
 } from "herdr";
 import { button } from "./button.ts";
 import { ACTIONS, buildInbox, findCheckout, loadPullRequests, squash, taskFor } from "./github.ts";
+import { followedPane, panelShown } from "./panel.ts";
 
-interface LayoutNode {
-  id?: string;
-  children?: LayoutNode[];
-  hidden?: boolean;
-  active?: string;
-}
 interface Location {
   cwd: string | null;
   on: string | null;
@@ -53,21 +47,12 @@ const CHEVRON_RIGHT = "mods/workspace-chrome/chevron-right.svg",
 const SPINNER = "mods/workspace-chrome/spinner.svg",
   REFRESH = "mods/github/refresh.svg";
 
-function find(node: LayoutNode | null, id: string): LayoutNode | null {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
-}
-
 function location(): Location {
   const explicit = props();
   if (explicit?.cwd) return { cwd: explicit.cwd, on: explicit.on ?? null };
   const space = spaces().find((s) => s.active),
     focus = focused();
-  const pane = focus?.pane ? panes().find((p) => p.pane === focus.pane) : null;
+  const pane = followedPane(focus);
   return {
     cwd: pane?.cwd || focus?.cwd || (space && spaceFolder(space)) || null,
     on: space?.machine ?? null,
@@ -158,10 +143,7 @@ export default class GitHub extends View {
 
   visible() {
     if (props()?.cwd) return true;
-    const tree = layout() as LayoutNode | null,
-      panel = find(tree, "panel"),
-      body = find(tree, "panel-body");
-    return !panel || (!panel.hidden && body?.active === "github");
+    return panelShown("github");
   }
 
   // Results are kept per repository, so a space shows its repository's last results at once.

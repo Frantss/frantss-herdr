@@ -13,14 +13,8 @@ import {
   type Color,
 } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, run, hc, settings, shared, theme, layout } from "herdr";
-
-interface LayoutNode {
-  id?: string;
-  children?: LayoutNode[];
-  hidden?: boolean;
-  active?: string;
-}
+import { agents, terminals, panes, focused, run, hc, settings, shared, theme } from "herdr";
+import { panelShown } from "./panel.ts";
 
 type AgentStatus = "working" | "blocked" | "idle" | "done" | "finished" | "error";
 interface TerminalRecord {
@@ -160,22 +154,6 @@ function flatten(root: AgentNode): AgentNode[] {
   return nodes;
 }
 
-function find(node: LayoutNode | null, id: string): LayoutNode | null {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
-}
-// A hidden copy keeps running, so it waits until the panel shows it.
-function shown() {
-  const tree = layout() as LayoutNode | null,
-    panel = find(tree, "panel"),
-    body = find(tree, "panel-body");
-  return !panel || (!panel.hidden && body?.active === "agent-graph");
-}
-
 export default class AgentGraph extends View {
   declare folded: Set<string>;
   declare scope: string;
@@ -200,7 +178,7 @@ export default class AgentGraph extends View {
     // for finished ones removed with hc rm; the 30 s tick also ages the durations.
     cx.timer.every(2000, (cx) => this.syncFinished(cx));
     cx.timer.every(30000, (cx) => {
-      if (!shown()) return;
+      if (!panelShown("agent-graph")) return;
       this.liveKey = null;
       this.syncFinished(cx);
       cx.notify();
@@ -214,7 +192,7 @@ export default class AgentGraph extends View {
       this.ended.delete(address);
       this.expired.add(address);
     }
-    if (!shown()) {
+    if (!panelShown("agent-graph")) {
       this.stale = true;
       return;
     }
@@ -549,7 +527,7 @@ export default class AgentGraph extends View {
   }
 
   render(cx: Context) {
-    if (!shown()) return div();
+    if (!panelShown("agent-graph")) return div();
     if (this.stale) {
       this.stale = false;
       this.liveKey = null;

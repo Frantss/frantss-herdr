@@ -155,6 +155,7 @@ async function harness(refresh = false) {
           return state.focus ?? { cwd: state.cwd, pane: null, space: "s1" };
         },
       ],
+      ["props", () => null],
       ["layout", () => state.layout],
       ["window", () => ({ platform: "macos" })],
       ["settings", () => ({ zoom: state.zoom })],

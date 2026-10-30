@@ -2,16 +2,10 @@ import type { Context, AsyncContext, Element, ClickEvent, MouseButtonEvent } fro
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { button as sharedButton } from "./button.ts";
+import { findNode, PANEL_MODS, type LayoutNode, type PanelId } from "./panel.ts";
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, nextCommand } from "herdr";
 
 import type { SpaceInfo, TabInfo, Program } from "herdr";
-
-interface LayoutNode {
-  id?: string;
-  children?: LayoutNode[];
-  active?: string;
-  hidden?: boolean;
-}
 
 // The frantss rail's status dot: working pulses like the site's live dot, blocked faster.
 const dot = (t: Record<string, `#${string}`>, status: string) =>
@@ -64,15 +58,6 @@ const rename = (what: string, id: string, name: string) =>
       command: { name: `${what}.rename`, args: { id } },
     },
   });
-
-function find(node: LayoutNode, id: string): LayoutNode | null {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
-}
 
 export default class Tabs extends View {
   declare pressed: number | null;
@@ -227,8 +212,8 @@ export default class Tabs extends View {
       );
     };
     const tree = layout() as LayoutNode,
-      panel = find(tree, "panel"),
-      body = find(tree, "panel-body");
+      panel = findNode(tree, "panel"),
+      body = findNode(tree, "panel-body");
     // The welcome screen picks Files and Changes; custom panels stay available.
     const enabled = [
       ...((shared("workspace.panels") as string[] | null) ?? ["files", "changes"]),
@@ -237,7 +222,7 @@ export default class Tabs extends View {
       "github",
     ];
     this.syncPanel(space, panel, body, enabled);
-    const panelButton = (id: string, label: string, icon: string) => {
+    const panelButton = (id: PanelId, label: string, icon: string) => {
       const on = panel && !panel.hidden && body?.active === id;
       return h_flex()
         .id(`panel-${id}`)
@@ -253,8 +238,11 @@ export default class Tabs extends View {
         .text_color(on ? t.foreground : t.muted)
         .hover((s) => s.text_color(t.foreground))
         .on_mouse_down("left", stop)
-        .on_click(() => {
-          if (on) run("layout.hide", { id: "panel" });
+        .tooltip(`⌥-click opens ${label} beside the pane`)
+        .on_click((event: ClickEvent) => {
+          if (event.modifiers.alt)
+            run("pane.split", { direction: "right", mod: PANEL_MODS[id], props: { pane: true } });
+          else if (on) run("layout.hide", { id: "panel" });
           else {
             run("layout.select", { stack: "panel-body", child: id });
             run("layout.show", { id: "panel" });

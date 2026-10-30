@@ -27,7 +27,6 @@ import {
 } from "gpui-base";
 import {
   spaces,
-  panes,
   focused,
   exec,
   readTextFile,
@@ -36,7 +35,6 @@ import {
   theme,
   settings,
   window,
-  layout,
   appHome,
   home,
   run,
@@ -51,18 +49,12 @@ import { daemonName, daemonRunning, freshConfig, freshTheme, FRESH_THEME } from 
 import { editorLanguage, previewKind, previewText } from "./preview.ts";
 import { checkName, menuItems, parentOf, type MenuItem } from "./menu.ts";
 import { appIcon, findApps, INSTALLED, knownApps, openArgs, type App } from "./apps.ts";
-
-interface LayoutNode {
-  id?: string;
-  children?: LayoutNode[];
-  hidden?: boolean;
-  active?: string;
-}
+import { followedPane, panelShown } from "./panel.ts";
 
 function location() {
   const space = spaces().find((s) => s.active),
     f = focused();
-  const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
+  const pane = followedPane(f);
   const on =
     f?.pane === null
       ? f.terminal?.includes("/")
@@ -89,21 +81,6 @@ type FileSnapshot = Pick<Files, "entries" | "folders" | "marks" | "error" | "lim
 
 const key = () => JSON.stringify(location());
 
-function find(node: LayoutNode | null, id: string): LayoutNode | null {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
-}
-// A hidden copy keeps running, so it waits until the panel shows it.
-function shown() {
-  const tree = layout() as LayoutNode | null,
-    panel = find(tree, "panel"),
-    body = find(tree, "panel-body");
-  return !panel || (!panel.hidden && body?.active === "files");
-}
 // Git's lock files come and go with every git command; refreshing on them alone never ends.
 const meaningful = (path: string) => !/\/\.git\/.*\.lock$|\/node_modules\//.test(path);
 
@@ -427,7 +404,7 @@ export default class Files extends View {
     const affected = changedPaths ? this.affectedFolders(changedPaths) : null;
     if (affected) for (const path of affected) this.invalidated.add(path);
     else this.fullRefresh = true;
-    if (!shown()) {
+    if (!panelShown("files")) {
       this.stale = true;
       return;
     }
@@ -947,7 +924,7 @@ export default class Files extends View {
   }
 
   render(cx: Context) {
-    if (!shown()) return div();
+    if (!panelShown("files")) return div();
     if (this.stale) {
       this.stale = false;
       this.refresh(cx);

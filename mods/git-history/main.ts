@@ -22,17 +22,12 @@ import {
   AccordionTrigger,
   AccordionPanel,
 } from "gpui-base";
-import { spaces, panes, focused, props, exec, theme, settings, layout } from "herdr";
+import { spaces, focused, props, exec, theme, settings } from "herdr";
 import { loadHistory, loadDetails, loadDiff, PAGE_SIZE } from "./git.ts";
 import { layoutGraph } from "./graph.ts";
 import { button } from "./button.ts";
+import { followedPane, panelShown } from "./panel.ts";
 
-interface LayoutNode {
-  id?: string;
-  children?: LayoutNode[];
-  hidden?: boolean;
-  active?: string;
-}
 interface Location {
   cwd: string | null;
   on: string | null;
@@ -62,21 +57,12 @@ const MAX_COMMITS = 2000;
 const ROW_HEIGHT = 42;
 const LANE_WIDTH = 14;
 
-function find(node: LayoutNode | null, id: string): LayoutNode | null {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
-}
-
 function location(): Location {
   const explicit = props();
   if (explicit?.cwd) return { cwd: explicit.cwd, on: explicit.on ?? null };
   const space = spaces().find((s) => s.active),
     focus = focused();
-  const pane = focus?.pane ? panes().find((p) => p.pane === focus.pane) : null;
+  const pane = followedPane(focus);
   const on =
     focus?.pane === null && focus.terminal
       ? focus.terminal.includes("/")
@@ -188,10 +174,7 @@ export default class GitHistory extends View {
 
   visible() {
     if (props()?.cwd) return true;
-    const tree = layout() as LayoutNode | null,
-      panel = find(tree, "panel"),
-      body = find(tree, "panel-body");
-    return !panel || (!panel.hidden && body?.active === "git-history");
+    return panelShown("git-history");
   }
 
   gitAt(place: Location): GitExecutor {

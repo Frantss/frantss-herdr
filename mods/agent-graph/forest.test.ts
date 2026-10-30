@@ -22,6 +22,8 @@ async function graph() {
       hc: empty,
       settings: empty,
       theme: empty,
+      props: () => null,
+      spaces: () => [],
       layout: empty,
       shared: () => ({
         "space-a": "workspace-a",
@@ -34,7 +36,12 @@ async function graph() {
     stripTypeScriptTypes(await readFile(new URL("main.ts", import.meta.url), "utf8")),
     { context },
   );
-  await module.link((name) => {
+  await module.link(async (name) => {
+    if (name.startsWith("./"))
+      return new vm.SourceTextModule(
+        stripTypeScriptTypes(await readFile(new URL(name, import.meta.url), "utf8")),
+        { context },
+      );
     const values = nativeModules[name];
     return new vm.SyntheticModule(
       Object.keys(values),

@@ -91,6 +91,8 @@ async function harness(width = 3000, childCount = 7, deep = false) {
       settings: () => ({ zoom: 1 }),
       shared: () => null,
       theme: () => palette,
+      props: () => null,
+      spaces: () => [],
       layout: () => null,
     },
   };
@@ -98,7 +100,12 @@ async function harness(width = 3000, childCount = 7, deep = false) {
     stripTypeScriptTypes(await readFile(new URL("main.ts", import.meta.url), "utf8")),
     { context },
   );
-  await module.link((name) => {
+  await module.link(async (name) => {
+    if (name.startsWith("./"))
+      return new vm.SourceTextModule(
+        stripTypeScriptTypes(await readFile(new URL(name, import.meta.url), "utf8")),
+        { context },
+      );
     const values = natives[name];
     return new vm.SyntheticModule(
       Object.keys(values),
