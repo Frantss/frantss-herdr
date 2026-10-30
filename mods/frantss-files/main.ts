@@ -175,6 +175,7 @@ export default class Files extends View {
   declare entries: Map<string, FileEntry[]>;
   declare entryCount: number;
   declare folders: Set<string>;
+  declare folderChildren: Map<string, Set<string>>;
   declare pending: Set<string>;
   declare marks: Record<string, Mark>;
   declare on: string | null;
@@ -202,6 +203,7 @@ export default class Files extends View {
     this.entries = new Map();
     this.entryCount = 0;
     this.folders = new Set();
+    this.folderChildren = new Map();
     this.pending = new Set();
     this.marks = {};
     this.generation = 0;
@@ -317,13 +319,15 @@ export default class Files extends View {
         .filter((entry) => entry.dir)
         .map((entry) => entry.name),
     );
-    for (const folder of this.folders) {
-      const slash = folder.lastIndexOf("/"),
-        parent = slash < 0 ? "" : folder.slice(0, slash),
-        name = folder.slice(slash + 1);
-      if (parent === path && !directories.has(name)) this.closeFolder(folder);
+    let pruned = false;
+    for (const folder of (this.folderChildren ?? this.indexFolders()).get(path) ?? []) {
+      const name = folder.slice(folder.lastIndexOf("/") + 1);
+      if (!directories.has(name)) {
+        this.closeFolder(folder);
+        pruned = true;
+      }
     }
-    return changed;
+    return changed || pruned;
   }
 
   refresh(cx: Context, changedPaths?: string[]) {
@@ -357,6 +361,7 @@ export default class Files extends View {
         0,
       );
       this.folders = new Set(cached?.folders);
+      this.indexFolders();
       this.pending = new Set();
       this.marks = { ...cached?.marks };
       this.watched = null;
@@ -459,10 +464,28 @@ export default class Files extends View {
     });
   }
 
+  indexFolders() {
+    const children = new Map<string, Set<string>>();
+    for (const folder of this.folders) {
+      const slash = folder.lastIndexOf("/"),
+        parent = slash < 0 ? "" : folder.slice(0, slash);
+      if (!children.has(parent)) children.set(parent, new Set());
+      children.get(parent).add(folder);
+    }
+    return (this.folderChildren = children);
+  }
+
   closeFolder(path: string) {
+    const children = this.folderChildren ?? this.indexFolders();
     for (const folder of this.folders)
       if (folder === path || folder.startsWith(path + "/")) {
         this.folders.delete(folder);
+        const slash = folder.lastIndexOf("/"),
+          parent = slash < 0 ? "" : folder.slice(0, slash),
+          siblings = children.get(parent);
+        siblings?.delete(folder);
+        if (!siblings?.size) children.delete(parent);
+        children.delete(folder);
         this.entryCount -= this.entries.get(folder)?.length ?? 0;
         this.entries.delete(folder);
       }
@@ -471,6 +494,11 @@ export default class Files extends View {
   toggle(path: string, cx: Context) {
     if (this.folders.has(path)) this.closeFolder(path);
     else {
+      const children = this.folderChildren ?? this.indexFolders(),
+        slash = path.lastIndexOf("/"),
+        parent = slash < 0 ? "" : path.slice(0, slash);
+      if (!children.has(parent)) children.set(parent, new Set());
+      children.get(parent).add(path);
       this.folders.add(path);
       if (!this.entries.has(path) && !this.pending.has(path)) {
         const context = this.context,

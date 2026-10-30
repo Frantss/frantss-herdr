@@ -364,6 +364,40 @@ const seedEntryCount = (files) => {
   );
 };
 
+test("unchanged directory reconciliation does not rescan unrelated expanded folders", async () => {
+  const h = await expandedFiles();
+  const folders = h.files.folders,
+    iterate = folders[Symbol.iterator].bind(folders);
+  let visits = 0;
+  folders[Symbol.iterator] = function* () {
+    for (const folder of iterate()) {
+      visits++;
+      yield folder;
+    }
+  };
+  h.files.applyFolder("", h.files.entries.get(""), h.files.context, h.files.generation);
+  visits = 0;
+  for (const path of ["", "src", "tests"])
+    h.files.applyFolder(path, h.files.entries.get(path), h.files.context, h.files.generation);
+  assert.equal(visits, 0);
+});
+
+test("an expansion during a pending listing is pruned by its unchanged parent", async () => {
+  const h = await expandedFiles();
+  const held = deferred();
+  h.state.held.set("/repo/src", held.promise);
+  h.files.refresh(h.cx, ["/repo/src/old.ts"]);
+  await ticks();
+  h.files.toggle("src/removed", h.cx);
+  await ticks();
+  assert.equal(h.files.folders.has("src/removed"), true);
+  held.resolve(h.files.entries.get("src"));
+  await h.drain();
+  assert.equal(h.files.folders.has("src/removed"), false);
+  assert.equal(h.files.entries.has("src/removed"), false);
+  assert.equal(h.files.folders.has("tests"), true);
+});
+
 async function expandedFiles() {
   const h = await harness(true);
   for (const path of ["src", "tests"]) {
