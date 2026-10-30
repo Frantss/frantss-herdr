@@ -34,6 +34,7 @@ import {
 import { button } from "./button.ts";
 import { hcOrToast } from "./agent-hc.ts";
 import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
+import { keepUnread, shownStatus } from "./unread.ts";
 
 type Theme = Record<string, `#${string}`>;
 type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
@@ -262,6 +263,8 @@ export default class Frantss extends View {
   declare seenAgents: Map<string, AgentInfo>;
   declare settling: Task;
   declare hovered: string | null;
+  // The agent focused at the last render, so a mark goes only when you go to its agent.
+  declare focusedAgent: string | null;
   init(_p: unknown, cx: AsyncContext) {
     // The rail and the breadcrumb both name workspaces by repo.
     if (props()?.role !== "rail" && props()?.role !== "top") return;
@@ -719,7 +722,13 @@ export default class Frantss extends View {
 
   rail(t: Theme, list: AgentInfo[], snapshot: WorkspaceSnapshot) {
     const all = snapshot.spaces;
-    const groups = GROUPS.map((g) => ({ ...g, agents: list.filter((a) => a.status === g.status) }));
+    const focused = list.find((a) => a.focused)?.address ?? null;
+    const unread = keepUnread(list, this.focusedAgent === undefined ? focused : this.focusedAgent);
+    this.focusedAgent = focused;
+    const groups = GROUPS.map((g) => ({
+      ...g,
+      agents: list.filter((a) => shownStatus(a, unread) === g.status),
+    }));
     setAgentOrder(groups.flatMap((g) => g.agents.map((a) => a.address)));
     const named = new Set(
       all.flatMap((s) => s.tabs.filter((tab) => tab.named).map((tab) => tab.id)),

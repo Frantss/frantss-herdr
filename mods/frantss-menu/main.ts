@@ -5,9 +5,10 @@ import type { Context, AsyncContext, FocusHandle } from "gpui-kit";
 // a command "worktree" opens the worktree dialog instead, and "rename" Herdr's rename prompt starting
 // from the tab's or space's shown name (target.name, from the frantss mods that open this menu).
 // An agent's pane menu starts with its actions: "reply" opens frantss-reply, "interrupt" runs
-// hc interrupt, "copy" copies args.text, and "kill" asks first. "terminal" is for a terminal without
-// a pane (target { terminal, cwd }), e.g. a sub-agent in the agent graph: a live one can be kept as a
-// tab, a finished one removed ("remove" runs hc rm).
+// hc interrupt, "copy" copies args.text, "unread" marks an idle agent unread (see unread.ts), and
+// "kill" asks first. "terminal" is for a terminal without a pane (target { terminal, cwd }), e.g. a
+// sub-agent in the agent graph: a live one can be kept as a tab, a finished one removed ("remove"
+// runs hc rm).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -28,6 +29,7 @@ import { closeTab } from "./close-tab.ts";
 import { hcOrToast } from "./agent-hc.ts";
 import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
 import { historyArgv, resumeArgv } from "./closed.ts";
+import { markUnread } from "./unread.ts";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s: import("herdr").SpaceInfo) {
@@ -68,6 +70,9 @@ const copyItems = (terminal: string, cwd: string): MenuItem[] => [
 // What the menu does to an agent, before the pane items.
 const agentItems = (terminal: string, cwd: string): MenuItem[] => [
   ["Peek", "terminal.peek", { terminal }],
+  ...(agents().find((a) => a.address === terminal)?.status === "idle"
+    ? [["Mark as unread", "unread", { terminal }] as MenuItem]
+    : []),
   ["Reply…", "reply", { terminal }],
   ["Interrupt", "interrupt", { terminal }],
   ...copyItems(terminal, cwd),
@@ -255,6 +260,7 @@ export default class Menu extends View {
       openAgentTab(it[2].cwd, historyArgv(it[2].terminal), `${it[2].name} history`);
     else if (it[1] === "resume") openAgentTab(it[2].cwd, resumeArgv(it[2].app));
     else if (it[1] === "forget-history") confirmForgetHistory(it[2].terminal, it[2].name);
+    else if (it[1] === "unread") markUnread(it[2].terminal);
     else if (it[1] === "reply")
       openOverlay({ mod: "frantss-reply", kind: "dialog", width: 480, height: 300, props: it[2] });
     else if (it[1] === "interrupt")

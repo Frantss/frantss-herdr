@@ -30,6 +30,8 @@ async function load(overrides = {}) {
       spaces: () => [],
       panes: () => [],
       exec: empty,
+      shared: empty,
+      setShared: empty,
       ...overrides,
     },
   };
@@ -92,6 +94,14 @@ test("a kept sub-agent goes back to its parent, and a plain terminal gets no age
     "terminal.right_click",
     "pane.close",
   ]);
+});
+
+test("an idle agent's menu can mark it unread", async () => {
+  const module = await load({ agents: () => [{ address: "t1", status: "idle" }] });
+  const menu = JSON.parse(
+    JSON.stringify(module.items({ tab: "pane", target: { pane: "p1", terminal: "t1" } }, null)),
+  );
+  assert.deepEqual(menu[1], ["Mark as unread", "unread", { terminal: "t1" }]);
 });
 
 const terminalMenu = async (target: Record<string, string>) =>
