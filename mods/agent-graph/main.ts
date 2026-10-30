@@ -417,43 +417,40 @@ export default class AgentGraph extends View {
       .when(!open, (el) => el.child(String(node.allKids.length)));
   }
 
-  // One line per edge, colored by the child: working pulses, finished is dashed.
-  // Path pixels ignore the app's zoom; percentages of the painted bounds follow it.
-  edge(t: Theme, parent: AgentNode, kid: AgentNode, width: number, height: number) {
+  // Percentages follow zoom; one path per style keeps shared trunks in urgency order.
+  edgeLayers(t: Theme, nodes: AgentNode[], width: number, height: number) {
     const px = (x: number): `${number}%` => `${(x / width) * 100}%`;
     const py = (y: number): `${number}%` => `${(y / height) * 100}%`;
-    const from = this.exit(parent);
-    const to = this.entry(kid);
-    // Right angles only. A tree's line drops halfway, crosses, then drops into the child;
-    // an outline's drops to the child's middle, then turns right into it.
-    const mid = (from.y + to.y) / 2;
-    const corners = this.outline
-      ? [[from.x, to.y]]
-      : [
-          [from.x, mid],
-          [to.x, mid],
-        ];
-    let path = PathBuilder.stroke(kid.status === "blocked" ? 2 : 1.5);
-    if (kid.status === "finished") path = path.dash_array([4, 4]);
-    path = path.move_to(px(from.x), py(from.y));
-    for (const [x, y] of [...corners, [to.x, to.y]]) path = path.line_to(px(x), py(y));
-    const builtPath = path.build();
-    const colors: Partial<Record<AgentStatus, Color>> = {
-      working: t.working,
-      blocked: t.blocked,
-      finished: t.border,
-    };
-    const color = colors[kid.status] ?? t.input;
-    return div()
-      .absolute()
-      .left(0)
-      .top(0)
-      .w(width)
-      .h(height)
-      .when(kid.status === "working", (el) =>
-        el.loop("opacity", { from: 0.35, to: 1, period: 1400 }),
-      )
-      .child(window.paint_path(builtPath, color).size_full());
+    const paths = new Map<number, ReturnType<typeof PathBuilder.stroke>>();
+    for (const parent of nodes)
+      for (const kid of parent.kids) {
+        const order = EDGE_ORDER[kid.status] ?? 1;
+        let path = paths.get(order);
+        if (!path) {
+          path = PathBuilder.stroke(order === 3 ? 2 : 1.5);
+          if (order === 0) path = path.dash_array([4, 4]);
+        }
+        const from = this.exit(parent),
+          to = this.entry(kid),
+          mid = (from.y + to.y) / 2;
+        path = path.move_to(px(from.x), py(from.y));
+        if (this.outline) path = path.line_to(px(from.x), py(to.y));
+        else path = path.line_to(px(from.x), py(mid)).line_to(px(to.x), py(mid));
+        paths.set(order, path.line_to(px(to.x), py(to.y)));
+      }
+    const colors = [t.border, t.input, t.working, t.blocked];
+    return [...paths]
+      .sort(([a], [b]) => a - b)
+      .map(([order, path]) =>
+        div()
+          .absolute()
+          .left(0)
+          .top(0)
+          .w(width)
+          .h(height)
+          .when(order === 2, (el) => el.loop("opacity", { from: 0.35, to: 1, period: 1400 }))
+          .child(window.paint_path(path.build(), colors[order]).size_full()),
+      );
   }
 
   header(t: Theme, roots: AgentNode[]) {
@@ -539,12 +536,7 @@ export default class AgentGraph extends View {
       .relative()
       .w(width)
       .h(height)
-      .children(
-        nodes
-          .flatMap((n) => n.kids.map((kid) => [n, kid]))
-          .sort(([, a], [, b]) => (EDGE_ORDER[a.status] ?? 1) - (EDGE_ORDER[b.status] ?? 1))
-          .map(([n, kid]) => this.edge(t, n, kid, width, height)),
-      )
+      .children(this.edgeLayers(t, nodes, width, height))
       .children(nodes.map((n) => this.card(t, n, shownTerminal, now)))
       .children(nodes.filter((n) => n.allKids.length).map((n) => this.foldButton(t, n)));
 
