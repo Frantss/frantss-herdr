@@ -10,16 +10,16 @@ export type ButtonVariant = "secondary" | "primary" | "quiet";
 
 export interface ButtonOptions {
   variant?: ButtonVariant;
-  // Toolbars use "compact"; the site's own height is "regular".
-  size?: "compact" | "regular";
+  // Toolbars use "compact"; the site's own height is "regular"; "dense" fits inside list rows.
+  size?: "dense" | "compact" | "regular";
   // Square, for an icon instead of text.
   square?: boolean;
   disabled?: boolean;
   tooltip?: string;
 }
 
-const HEIGHT = { compact: 24, regular: 34 };
-const PADDING = { compact: 8, regular: 12 };
+const HEIGHT = { dense: 20, compact: 24, regular: 34 };
+const PADDING = { dense: 6, compact: 8, regular: 12 };
 // The site's darker bottom edge under primary buttons; no theme color holds it.
 const ACCENT_EDGE = { dark: "#7c5fd6", light: "#4c1d95" } as const;
 
@@ -39,49 +39,58 @@ export function button(
     height = HEIGHT[size],
     accentEdge = settings().dark ? ACCENT_EDGE.dark : ACCENT_EDGE.light,
     quiet = variant === "quiet",
+    // A quiet icon has no text to underline, so it takes a tint; a translucent one shows on any
+    // background, including a row that is tinted on hover itself.
+    tinted = quiet && square,
     primary = variant === "primary",
     border = quiet ? "#00000000" : primary ? accentEdge : t.input,
     accessibleName = tooltip ?? (typeof label === "string" ? label : undefined);
   // GPUI draws one border color, so the site's bottom edge takes the border's color.
-  return Button.new(id)
-    .tab_stop(true)
-    .h(height)
-    .when(square, (el) => el.w(height))
-    .when(!square, (el) => el.px(quiet ? 8 : PADDING[size]))
-    .flex()
-    .flex_none()
-    .items_center()
-    .justify_center()
-    .gap(4)
-    .rounded(3)
-    .border_1()
-    .when(!quiet && !disabled, (el) => el.border_b(2).active((s) => s.border_b(1)))
-    .border_color(border)
-    .bg(quiet ? "#00000000" : primary ? t.accent : t.surface)
-    .text_size(12)
-    .text_color(quiet ? t.muted : primary ? t.accent_foreground : t.foreground)
-    .when(primary, (el) => el.font_bold())
-    .when(!primary, (el) => el.font_medium())
-    .when(disabled, (el) =>
-      el
-        .border_color(quiet ? "#00000000" : t.border)
-        .bg(primary ? t.border : "#00000000")
-        .text_color(t.muted),
-    )
-    .disabled(disabled)
-    .when(!disabled, (el) =>
-      el.cursor_pointer().hover((s) => {
-        if (quiet) s.text_color(t.foreground).underline();
-        else if (primary) s.bg(`${t.accent}d9`);
-        else s.border_color(t.muted).bg(t.hover);
-      }),
-    )
-    .focus((el) => el.border_color(t.accent))
-    .when(Boolean(tooltip), (el) => el.tooltip(tooltip))
-    .when(Boolean(accessibleName), (el) => el.accessibility_label(accessibleName))
-    .on_click((_e, cx) => {
-      cx.stop_propagation();
-      action(cx);
-    })
-    .child(label);
+  return (
+    Button.new(id)
+      .tab_stop(true)
+      .h(height)
+      .when(square, (el) => el.w(height))
+      .when(!square, (el) => el.px(quiet ? 8 : PADDING[size]))
+      .flex()
+      .flex_none()
+      .items_center()
+      .justify_center()
+      .gap(4)
+      .rounded(3)
+      .border_1()
+      .when(!quiet && !disabled, (el) => el.border_b(2).active((s) => s.border_b(1)))
+      .when(tinted && !disabled, (el) => el.active((s) => s.bg(`${t.foreground}2e`)))
+      .border_color(border)
+      .bg(quiet ? "#00000000" : primary ? t.accent : t.surface)
+      .text_size(12)
+      .text_color(quiet ? t.muted : primary ? t.accent_foreground : t.foreground)
+      .when(primary, (el) => el.font_bold())
+      .when(!primary, (el) => el.font_medium())
+      .when(disabled, (el) =>
+        el
+          .border_color(quiet ? "#00000000" : t.border)
+          .bg(primary ? t.border : "#00000000")
+          .text_color(t.muted),
+      )
+      .disabled(disabled)
+      .when(!disabled, (el) =>
+        el.cursor_pointer().hover((s) => {
+          if (tinted) s.text_color(t.foreground).bg(`${t.foreground}1a`);
+          else if (quiet) s.text_color(t.foreground).underline();
+          else if (primary) s.bg(`${t.accent}d9`);
+          else s.border_color(t.muted).bg(t.hover);
+        }),
+      )
+      .focus((el) => el.border_color(t.accent))
+      .when(Boolean(tooltip), (el) => el.tooltip(tooltip))
+      .when(Boolean(accessibleName), (el) => el.accessibility_label(accessibleName))
+      // Stops a press from also selecting or dragging the row or bar the button sits in.
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        action(cx);
+      })
+      .child(label)
+  );
 }

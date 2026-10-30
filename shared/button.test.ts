@@ -28,7 +28,7 @@ function element() {
           const start = node.styles.length;
           args[0](proxy);
           node.stateStyles[name] = node.styles.splice(start);
-        } else if (String(name).startsWith("on_")) node.handlers[name] = args[0];
+        } else if (String(name).startsWith("on_")) node.handlers[name] = args.at(-1);
         else if (name === "child") node.childNodes.push(args[0]);
         else node.styles.push([name, ...args]);
         return proxy;
@@ -103,6 +103,18 @@ test("quiet buttons are muted, transparent and underline on hover", async () => 
   assert.ok(node.stateStyles.hover.some(([name]) => name === "underline"));
 });
 
+test("quiet icon buttons tint on hover and press instead of underlining", async () => {
+  const node = (await load())("trash", "×", () => {}, {
+    variant: "quiet",
+    size: "dense",
+    square: true,
+  });
+  assert.equal(style(node.styles, "w"), 20);
+  assert.equal(style(node.stateStyles.hover, "bg"), `${palette.foreground}1a`);
+  assert.equal(style(node.stateStyles.active, "bg"), `${palette.foreground}2e`);
+  assert.ok(!node.stateStyles.hover.some(([name]) => name === "underline"));
+});
+
 test("disabled buttons drop the edge, hover and pointer", async () => {
   const node = (await load())("send", "Send", () => {}, { variant: "primary", disabled: true });
   assert.equal(style(node.styles, "bg"), palette.border);
@@ -113,11 +125,12 @@ test("disabled buttons drop the edge, hover and pointer", async () => {
   assert.equal(style(node.styles, "disabled"), true);
 });
 
-test("a click runs the action without reaching the parent", async () => {
+test("a press and click run the action without reaching the parent", async () => {
   const node = (await load())("x", "X", (cx) => cx.ran++, { square: true, tooltip: "Close" });
   const cx = { ran: 0, stopped: 0, stop_propagation: () => cx.stopped++ };
+  node.handlers.on_mouse_down({}, cx);
   node.handlers.on_click({}, cx);
-  assert.deepEqual([cx.ran, cx.stopped], [1, 1]);
+  assert.deepEqual([cx.ran, cx.stopped], [1, 2]);
   assert.equal(style(node.styles, "w"), 24);
   assert.equal(style(node.styles, "accessibility_label"), "Close");
 });
