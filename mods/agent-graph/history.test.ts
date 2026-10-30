@@ -242,3 +242,22 @@ test("removing expired records from core forgets their cache markers", async () 
   assert.equal(h.calls.filter((args) => args[0] === "get").length, 2);
   assert.equal(h.graph.expired.size, 1);
 });
+
+test("polls redraw only when the finished records or a shown duration change", async () => {
+  const h = await harness(async () => success({ terminals: [] }));
+  await h.settle();
+  assert.equal(h.notifications(), 0);
+  h.state.live[0].status_ms = h.state.now;
+  h.timers.get(30000)();
+  await h.settle();
+  assert.equal(h.notifications(), 1);
+  h.state.now += 30000;
+  h.timers.get(30000)();
+  await h.settle();
+  assert.equal(h.notifications(), 1);
+  h.state.now += 30000;
+  h.timers.get(30000)();
+  await h.settle();
+  assert.equal(h.notifications(), 2);
+  assert.equal(h.calls.length, 4);
+});

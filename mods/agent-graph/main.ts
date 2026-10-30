@@ -190,6 +190,7 @@ export default class AgentGraph extends View {
   declare syncing: boolean;
   declare stale: boolean;
   declare outline: boolean;
+  declare ages: string;
 
   init(_props: unknown, cx: AsyncContext) {
     this.folded = new Set();
@@ -201,14 +202,26 @@ export default class AgentGraph extends View {
     this.syncing = false;
     this.syncFinished(cx);
     // terminals() lists live terminals only. hc runs when that list changes, and every 30 s
-    // for finished ones removed with hc rm; the 30 s tick also ages the durations.
+    // for finished ones removed with hc rm; the 30 s tick also redraws when a duration ages.
     cx.timer.every(2000, (cx) => this.syncFinished(cx));
     cx.timer.every(30000, (cx) => {
       if (!panelShown("agent-graph")) return;
       this.liveKey = null;
       this.syncFinished(cx);
+      const ages = this.agesKey();
+      if (ages === this.ages) return;
+      this.ages = ages;
       cx.notify();
     });
+  }
+
+  // What time alone changes on the graph: the durations and the finished sub-agents kept.
+  agesKey() {
+    const now = Date.now();
+    return [
+      ...terminals().map((k: TerminalRecord) => (k.status_ms ? duration(now - k.status_ms) : "")),
+      ...this.ended.keys(),
+    ].join(" ");
   }
 
   syncFinished(cx: Context) {
@@ -229,7 +242,8 @@ export default class AgentGraph extends View {
     this.liveKey = key;
     this.syncing = true;
     cx.spawn(async (cx) => {
-      let failed = false;
+      let failed = false,
+        changed = false;
       try {
         const result = await hc(["ls", "--all", "--json"]);
         if (result.code !== 0) {
@@ -254,9 +268,10 @@ export default class AgentGraph extends View {
                 const full = await hc(["get", k.address, "--json"]);
                 if (full.code === 0) {
                   const record = JSON.parse(full.stdout) as TerminalRecord;
-                  if (Date.now() - (record.finished_ms ?? 0) < FINISHED_FOR_MS)
+                  if (Date.now() - (record.finished_ms ?? 0) < FINISHED_FOR_MS) {
                     this.ended.set(k.address, record);
-                  else this.expired.add(k.address);
+                    changed = true;
+                  } else this.expired.add(k.address);
                 } else failed = true;
               } catch {
                 failed = true;
@@ -266,9 +281,12 @@ export default class AgentGraph extends View {
         );
         const listed = new Set(ended.map((k) => k.address));
         for (const address of this.ended.keys())
-          if (!listed.has(address)) this.ended.delete(address);
+          if (!listed.has(address)) {
+            this.ended.delete(address);
+            changed = true;
+          }
         for (const address of this.expired) if (!listed.has(address)) this.expired.delete(address);
-        cx.notify();
+        if (changed) cx.notify();
       } catch {
         failed = true;
       } finally {

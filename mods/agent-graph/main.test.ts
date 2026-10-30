@@ -116,7 +116,7 @@ test("revealing a hidden agent graph renders and refreshes its stale terminals",
   assert.equal(tasks.length, 1);
   await Promise.all(tasks);
   assert.deepEqual(calls, [["ls", "--all", "--json"]]);
-  assert.equal(notifications, 1);
+  assert.equal(notifications, 0);
   const readsBeforeHide = reads.length;
   panel.hidden = true;
   graph.render(nativeContext);
