@@ -454,6 +454,52 @@ export default class Changes extends View {
       .child(div().flex_1().min_w(0).truncate().child(text));
   }
 
+  fileRow(f: ChangedFile, t: Theme) {
+    const parts = f.path.split("/"),
+      name = parts.pop();
+    return h_flex()
+      .id(`change-${f.path}`)
+      .h(24)
+      .flex_none()
+      .px(8)
+      .gap(8)
+      .items_center()
+      .rounded(3)
+      .cursor_pointer()
+      .text_color(this.open === f.path ? t.foreground : t.muted)
+      .when(this.open === f.path, (e) => e.bg(t.selected))
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .child(
+        div()
+          .w(14)
+          .text_size(11)
+          .text_color(
+            f.status === "A"
+              ? t.ansi2
+              : f.status === "D"
+                ? t.ansi1
+                : f.status === "U"
+                  ? t.ansi1
+                  : t.accent,
+          )
+          .child(f.status),
+      )
+      .child(
+        h_flex()
+          .flex_1()
+          .min_w(0)
+          .child(
+            div()
+              .text_color(t.dim)
+              .truncate()
+              .child(parts.length ? parts.join("/") + "/" : ""),
+          )
+          .child(div().max_w(260).min_w(0).truncate().child(name)),
+      )
+      .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
+      .when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
+  }
+
   render(cx: Context) {
     if (this.stale && shown()) {
       this.stale = false;
@@ -504,62 +550,33 @@ export default class Changes extends View {
           .id("changes-list")
           .flex_none()
           .h(Math.min(200, Math.max(44, this.files.length * 26 + 8)))
-          .overflow_y_scrollbar()
           .p(4)
-          .gap(2)
           .border_b(1)
           .border_color(t.border)
-          .children(
-            this.files.map((f) => {
-              const parts = f.path.split("/"),
-                name = parts.pop();
-              return h_flex()
-                .id(`change-${f.path}`)
-                .h(24)
-                .flex_none()
-                .px(8)
-                .gap(8)
-                .items_center()
-                .rounded(3)
-                .cursor_pointer()
-                .text_color(this.open === f.path ? t.foreground : t.muted)
-                .when(this.open === f.path, (e) => e.bg(t.selected))
-                .hover((s) => s.bg(t.hover).text_color(t.foreground))
-                .on_click((_e, cx) => this.pick(f.path, cx))
+          .when(this.files.length > 0, (el) =>
+            el.child(
+              div()
+                .relative()
+                .flex_1()
+                .min_h(0)
                 .child(
-                  div()
-                    .w(14)
-                    .text_size(11)
-                    .text_color(
-                      f.status === "A"
-                        ? t.ansi2
-                        : f.status === "D"
-                          ? t.ansi1
-                          : f.status === "U"
-                            ? t.ansi1
-                            : t.accent,
-                    )
-                    .child(f.status),
+                  v_virtual_list(
+                    "changes-files",
+                    this.files.length,
+                    26 * ((settings().zoom as number | undefined) ?? 1),
+                    (i) => this.files[i].path,
+                    (range) =>
+                      this.files
+                        .slice(range.start, range.end)
+                        .map((file) => v_flex().h(26).child(this.fileRow(file, t))),
+                  )
+                    .size_full()
+                    .on_item_click((path, cx) => this.pick(path, cx)),
                 )
                 .child(
-                  h_flex()
-                    .flex_1()
-                    .min_w(0)
-                    .child(
-                      div()
-                        .text_color(t.dim)
-                        .truncate()
-                        .child(parts.length ? parts.join("/") + "/" : ""),
-                    )
-                    .child(div().max_w(260).min_w(0).truncate().child(name)),
-                )
-                .when(f.add > 0, (e) =>
-                  e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`)),
-                )
-                .when(f.del > 0, (e) =>
-                  e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)),
-                );
-            }),
+                  Scrollbar.vertical("changes-files").viewport_from_layout().absolute().inset_0(),
+                ),
+            ),
           )
           .when(!this.files.length, (e) =>
             e.child(
@@ -604,15 +621,19 @@ export default class Changes extends View {
                   .w_full()
                   .min_w(this.diffWidth)
                   .h_full()
-                  .child(
-                    v_virtual_list(
-                      "changes-diff",
-                      this.rows.length,
-                      20,
-                      (i) => String(i),
-                      (range) =>
-                        this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t)),
-                    ).size_full(),
+                  .when(this.rows.length > 0, (el) =>
+                    el.child(
+                      v_virtual_list(
+                        "changes-diff",
+                        this.rows.length,
+                        20,
+                        (i) => String(i),
+                        (range) =>
+                          this.rows
+                            .slice(range.start, range.end)
+                            .map((row) => this.diffRow(row, t)),
+                      ).size_full(),
+                    ),
                   ),
               ),
           )
