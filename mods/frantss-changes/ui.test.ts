@@ -108,6 +108,8 @@ async function harness(refresh = false) {
       Scrollbar: { vertical: element },
       InputState: {},
       Input: { new: element },
+      TextareaState: {},
+      Textarea: { new: element },
       v_virtual_list(id, count, extent, key, render) {
         const node = element();
         state.lists.push({ id, count, extent, key, render, node });
@@ -215,7 +217,8 @@ async function harness(refresh = false) {
           stderr: "",
         };
       if (args[0] === "show") return { code: 0, stdout: state.index ?? "", stderr: "" };
-      if (["add", "reset", "restore"].includes(args[0])) {
+      if (args[0] === "log") return { code: 0, stdout: state.lastMessage ?? "", stderr: "" };
+      if (["add", "reset", "restore", "commit"].includes(args[0])) {
         state.indexCalls = [...(state.indexCalls ?? []), args];
         return state.indexResult ?? { code: 0, stdout: "", stderr: "" };
       }
@@ -270,6 +273,11 @@ async function harness(refresh = false) {
     kept: new Map(),
     commentInput: input(),
     noteInput: input(),
+    commitInput: input(),
+    commitMessage: "",
+    amending: false,
+    commitDraft: "",
+    acting: null,
     comments: [],
     reviewNote: "",
     target: null,
@@ -344,6 +352,11 @@ const file = (path: string, section = "unstaged") => ({
   add: 1,
   del: 2,
 });
+function byId(node, id) {
+  if (node?.styles?.some(([key, value]) => key === "id" && value === id)) return node;
+  return (node?.childNodes ?? []).map((child) => byId(child, id)).find(Boolean);
+}
+const disabled = (node) => node.styles.some(([key, value]) => key === "disabled" && value);
 const text = (node) =>
   typeof node === "string" ? node : (node?.childNodes ?? []).map(text).join(" ");
 
@@ -707,7 +720,7 @@ test("the shown file follows a stage into its new section, and Git's errors show
   h.changes.run([["git", ["add", "-A", "--", "file.ts"]]], h.cx);
   await h.drain();
   assert.equal(h.changes.open, "staged:file.ts");
-  assert.equal(h.changes.acting, false);
+  assert.equal(h.changes.acting, null);
   h.state.indexResult = { code: 128, stdout: "", stderr: "fatal: index.lock exists" };
   h.changes.run([["git", ["reset", "-q", "--", "file.ts"]]], h.cx);
   await h.drain();
@@ -821,6 +834,104 @@ test("an armed discard disarms when the files change or the place does", async (
   h.changes.armed = "unstaged:file.ts";
   h.changes.switchTo(JSON.stringify({ cwd: "/other", on: null }));
   assert.equal(h.changes.armed, null);
+});
+
+test("Commit commits the staged files, or stages and commits every change when none are", async () => {
+  const h = await harness(true);
+  h.state.status = "M  staged.ts\0 M edited.ts\0";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  const commitButton = () => byId(h.render(), "commit");
+  assert.ok(disabled(commitButton()));
+  h.changes.commitMessage = "feat: one\n";
+  assert.ok(text(commitButton()).includes("Commit") && !text(commitButton()).includes("all"));
+  commitButton().handlers.on_click({}, h.cx);
+  await h.drain();
+  assert.deepEqual(plain(h.state.indexCalls), [["commit", "--cleanup=strip", "-m", "feat: one\n"]]);
+  assert.equal(h.changes.commitMessage, "");
+  assert.equal(h.changes.commitInput.value(), "");
+
+  h.state.indexCalls = [];
+  h.state.status = " M edited.ts\0?? new.ts\0";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.changes.commitMessage = "feat: two";
+  assert.ok(text(commitButton()).includes("Commit all"));
+  h.changes.commitInput.set_value("feat: two");
+  h.changes.commit(h.cx);
+  await h.drain();
+  assert.deepEqual(plain(h.state.indexCalls), [
+    ["add", "-A"],
+    ["commit", "--cleanup=strip", "-m", "feat: two"],
+  ]);
+});
+
+test("a failed commit keeps its message and shows Git's error", async () => {
+  const h = await harness(true);
+  h.state.status = "M  staged.ts\0";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.changes.commitMessage = "wip";
+  h.state.indexResult = { code: 1, stdout: "", stderr: "pre-commit: lint failed" };
+  h.changes.commit(h.cx);
+  assert.equal(h.changes.acting, "commit");
+  assert.ok(text(byId(h.render(), "commit")).includes("Committing…"));
+  await h.drain();
+  assert.equal(h.changes.commitMessage, "wip");
+  assert.ok(String(h.changes.note).includes("pre-commit: lint failed"));
+});
+
+test("Amend edits the last commit's message and gives the draft back when turned off", async () => {
+  const h = await harness(true);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.state.lastMessage = "feat: last\n\nBody.\n";
+  h.changes.commitMessage = "draft";
+  h.changes.setAmending(true, h.cx);
+  await h.drain();
+  assert.equal(h.changes.commitMessage, "feat: last\n\nBody.");
+  assert.ok(text(byId(h.render(), "commit")).includes("Amend"));
+  h.changes.setAmending(false, h.cx);
+  assert.equal(h.changes.commitMessage, "draft");
+  assert.equal(h.changes.commitInput.value(), "draft");
+
+  h.state.status = "";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.changes.setAmending(true, h.cx);
+  await h.drain();
+  h.changes.commit(h.cx);
+  await h.drain();
+  assert.deepEqual(plain(h.state.indexCalls), [
+    ["commit", "--cleanup=strip", "--amend", "-m", "feat: last\n\nBody."],
+  ]);
+  assert.equal(h.changes.amending, false);
+});
+
+test("Commit waits for a message and changes, and Amend for a first commit", async () => {
+  const h = await harness(true);
+  h.state.status = "";
+  h.state.unborn = true;
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.changes.commitMessage = "feat: one";
+  assert.equal(h.changes.canCommit(), false);
+  assert.ok(disabled(byId(h.render(), "commit-amend")));
+  h.changes.amending = true;
+  assert.equal(h.changes.canCommit(), false);
+});
+
+test("each place keeps its own commit draft", async () => {
+  const h = await harness(true);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.changes.commitMessage = "for repo";
+  h.changes.switchTo(JSON.stringify({ cwd: "/other", on: null }));
+  assert.equal(h.changes.commitMessage, "");
+  assert.equal(h.changes.commitInput.value(), "");
+  h.changes.switchTo(JSON.stringify({ cwd: "/repo", on: null }));
+  assert.equal(h.changes.commitMessage, "for repo");
+  assert.equal(h.changes.commitInput.value(), "for repo");
 });
 
 // Values built inside the module's VM realm compare by structure once copied here.
@@ -1122,13 +1233,9 @@ test("the agent menu names agents by tab, shows their icons, and sends to the on
     { id: "s2", tabs: [{ id: "tb2", name: "docs", named: true }] },
   ];
   comment(2, "Rename it.");
-  function find(node, id) {
-    if (node?.styles?.some(([key, value]) => key === "id" && value === id)) return node;
-    return (node?.childNodes ?? []).map((child) => find(child, id)).find(Boolean);
-  }
-  find(h.render(), "review-agent").handlers.on_click({}, h.cx);
-  const menu = find(h.render(), "review-agents");
-  const row = (address) => find(menu, `review-agent-${address}`);
+  byId(h.render(), "review-agent").handlers.on_click({}, h.cx);
+  const menu = byId(h.render(), "review-agents");
+  const row = (address) => byId(menu, `review-agent-${address}`);
   assert.equal(text(row("t1")).trim(), "fix flaky tests idle");
   assert.equal(text(row("t2")).trim(), "docs other · working");
   assert.ok(
@@ -1136,9 +1243,9 @@ test("the agent menu names agents by tab, shows their icons, and sends to the on
       ([key, value]) => key === "text_color" && value === "#aaaaaa",
     ),
   );
-  find(menu, "review-agent-t2").handlers.on_click({}, h.cx);
+  byId(menu, "review-agent-t2").handlers.on_click({}, h.cx);
   assert.equal(h.changes.choosingAgent, false);
-  assert.ok(text(find(h.render(), "review-agent")).includes("docs"));
+  assert.ok(text(byId(h.render(), "review-agent")).includes("docs"));
   h.changes.sendReview(h.cx);
   await h.drain();
   assert.equal(h.state.sent.at(-1)[1], "t2");

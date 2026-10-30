@@ -13,6 +13,8 @@ import {
   h_flex,
   InputState,
   Input,
+  TextareaState,
+  Textarea,
   Scrollbar,
   v_virtual_list,
   v_resizable,
@@ -91,6 +93,9 @@ type Snapshot = Pick<
   | "comments"
   | "reviewNote"
   | "agentAddress"
+  | "commitMessage"
+  | "amending"
+  | "commitDraft"
 >;
 
 const key = () => JSON.stringify(followedPlace());
@@ -137,6 +142,9 @@ const SNAPSHOT = [
   "comments",
   "reviewNote",
   "agentAddress",
+  "commitMessage",
+  "amending",
+  "commitDraft",
 ] as const;
 const KEPT_PLACES = 20;
 // Numbers each diff line once, so a frame only draws the rows on screen.
@@ -209,7 +217,12 @@ export default class Changes extends View {
   declare commentInput: InputState;
   declare noteInput: InputState;
   // The input holding the keyboard.
-  declare typing: "comment" | "note" | null;
+  declare typing: "comment" | "note" | "commit" | null;
+  declare commitInput: TextareaState;
+  declare commitMessage: string;
+  // Amend shows the last commit's message; the message written before waits here.
+  declare amending: boolean;
+  declare commitDraft: string;
   // The review: comments wait here until one send gives them all to the agent.
   declare comments: ReviewComment[];
   declare reviewNote: string;
@@ -235,8 +248,8 @@ export default class Changes extends View {
   declare limited: boolean;
   declare loading: boolean;
   declare again: boolean;
-  // A stage or unstage is running; one runs at a time.
-  declare acting: boolean;
+  // The git action running, if any; one runs at a time.
+  declare acting: "index" | "commit" | null;
   declare loadingRendered: boolean;
   declare watchToken: object;
   declare stale: boolean;
@@ -254,16 +267,21 @@ export default class Changes extends View {
     this.reviewNote = DEFAULT_NOTE;
     this.target = null;
     this.agentAddress = null;
-    this.acting = false;
+    this.acting = null;
     this.again = false;
+    this.commitMessage = "";
+    this.amending = false;
+    this.commitDraft = "";
     this.pressRight = Infinity;
     this.pressCount = 0;
     this.armed = null;
     this.setLines([]);
     this.handle = cx.focus_handle();
     this.kept = new Map();
-    const field = (name: Changes["typing"], placeholder: string) => {
-      const input = InputState.new({ placeholder });
+    const field = <State extends InputState | TextareaState>(
+      name: Changes["typing"],
+      input: State,
+    ) => {
       input.on("focus", (_e, cx) => {
         this.typing = name;
         cx.notify();
@@ -274,12 +292,23 @@ export default class Changes extends View {
       });
       return input;
     };
-    this.commentInput = field("comment", "Comment");
+    this.commentInput = field("comment", InputState.new({ placeholder: "Comment" }));
     this.commentInput.on("submit", (_e, cx) => this.saveComment(cx));
-    this.noteInput = field("note", "Overall note (optional)");
+    this.noteInput = field("note", InputState.new({ placeholder: "Overall note (optional)" }));
     this.noteInput.set_value(this.reviewNote);
     this.noteInput.on("change", (_e) => {
       this.reviewNote = this.noteInput.value();
+    });
+    this.commitInput = field(
+      "commit",
+      TextareaState.new({ placeholder: "Message (⌘↵ to commit)" }),
+    );
+    this.commitInput.set_auto_grow(1, 6);
+    this.commitInput.on("change", (_e) => {
+      this.commitMessage = this.commitInput.value();
+    });
+    this.commitInput.on("submit", (e, cx) => {
+      if (e.secondary) this.commit(cx);
     });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.poll(cx));
@@ -458,9 +487,13 @@ export default class Changes extends View {
       this.comments = [];
       this.reviewNote = DEFAULT_NOTE;
       this.agentAddress = null;
+      this.commitMessage = "";
+      this.amending = false;
+      this.commitDraft = "";
     }
     this.choosingAgent = false;
     this.noteInput.set_value(this.reviewNote);
+    this.commitInput.set_value(this.commitMessage);
   }
 
   // The staged diff runs from HEAD to the index; the unstaged one from the index to the files.
@@ -1084,11 +1117,16 @@ export default class Changes extends View {
   }
 
   // Runs commands in the repository one after another until one fails, then shows what they
-  // changed.
-  run(commands: [string, string[]][], cx: Context) {
+  // changed. `done` follows when all of them succeed.
+  run(
+    commands: [string, string[]][],
+    cx: Context,
+    action: NonNullable<Changes["acting"]> = "index",
+    done?: () => void,
+  ) {
     const { root, on, context } = this;
     if (this.acting || !root || !commands.length) return;
-    this.acting = true;
+    this.acting = action;
     this.note = null;
     cx.spawn(async (cx) => {
       try {
@@ -1098,15 +1136,134 @@ export default class Changes extends View {
             throw new Error("This machine has no trash command, so nothing was discarded");
           if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
         }
+        done?.();
       } catch (e) {
         if (key() === context) this.note = String(e);
       } finally {
-        this.acting = false;
+        this.acting = null;
         this.refresh(cx);
         cx.notify();
       }
     });
     cx.notify();
+  }
+
+  // Staged files commit alone; with none staged, every change does. Amend can also change only
+  // the message.
+  canCommit() {
+    return (
+      !this.acting &&
+      Boolean(this.commitMessage.trim()) &&
+      (this.amending ? this.hasHead : this.files.length > 0)
+    );
+  }
+
+  // With nothing staged, Commit stages every change first.
+  commitsAll() {
+    return this.files.length > 0 && !this.files.some((file) => file.section === "staged");
+  }
+
+  commit(cx: Context) {
+    if (!this.canCommit()) return;
+    const context = this.context,
+      stageAll = this.commitsAll();
+    this.run(
+      [
+        ...(stageAll ? [["git", ["add", "-A"]] as [string, string[]]] : []),
+        [
+          "git",
+          [
+            "commit",
+            "--cleanup=strip",
+            ...(this.amending ? ["--amend"] : []),
+            "-m",
+            this.commitMessage,
+          ],
+        ],
+      ],
+      cx,
+      "commit",
+      () => {
+        const cleared = { commitMessage: "", amending: false, commitDraft: "" };
+        if (key() !== context) {
+          const kept = this.kept.get(context);
+          if (kept) Object.assign(kept, cleared);
+          return;
+        }
+        Object.assign(this, cleared);
+        this.commitInput.set_value("");
+      },
+    );
+  }
+
+  // Amend shows the last commit's message to edit; turning it off brings back the draft.
+  setAmending(amending: boolean, cx: Context) {
+    this.amending = amending;
+    if (amending) {
+      this.commitDraft = this.commitMessage;
+      const { root, on, context } = this;
+      cx.spawn(async (cx) => {
+        const r = await exec("git", ["log", "-1", "--format=%B"], { cwd: root, on }).catch(
+          (): null => null,
+        );
+        if (key() !== context || !this.amending || r?.code !== 0) return;
+        this.commitMessage = r.stdout.trim();
+        this.commitInput.set_value(this.commitMessage);
+        cx.notify();
+      });
+    } else {
+      this.commitMessage = this.commitDraft;
+      this.commitDraft = "";
+      this.commitInput.set_value(this.commitMessage);
+    }
+    cx.notify();
+  }
+
+  commitBar(t: Theme) {
+    const all = this.commitsAll(),
+      label = this.amending ? "Amend" : all ? "Commit all" : "Commit";
+    return v_flex()
+      .flex_none()
+      .p(8)
+      .gap(6)
+      .border_b(1)
+      .border_color(t.border)
+      .child(
+        div()
+          .id("commit-message")
+          .w_full()
+          .px(10)
+          .py(6)
+          .rounded(3)
+          .border_1()
+          .border_color(this.typing === "commit" ? t.accent : t.input)
+          .bg(t.background)
+          .cursor_text()
+          .child(Textarea.new(this.commitInput).w_full().text_size(12).text_color(t.foreground)),
+      )
+      .child(
+        h_flex()
+          .gap(8)
+          .child(
+            button(
+              "commit",
+              this.acting === "commit" ? "Committing…" : label,
+              (cx) => this.commit(cx),
+              {
+                variant: "primary",
+                disabled: !this.canCommit(),
+                tooltip: all ? "Stage every change and commit it" : undefined,
+              },
+            ).flex_1(),
+          )
+          .child(
+            button("commit-amend", "Amend", (cx) => this.setAmending(!this.amending, cx), {
+              variant: "quiet",
+              disabled: !this.hasHead || Boolean(this.acting),
+              tooltip: this.amending ? "Stop amending" : "Amend the last commit",
+            }).when(this.amending, (e) => e.text_color(t.accent)),
+          ),
+      );
   }
 
   // Each section's header row, then its files.
@@ -1238,6 +1395,7 @@ export default class Changes extends View {
           .child(div().text_size(11).text_color(t.ansi2).child(`+${add}`))
           .child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)),
       )
+      .when(Boolean(this.root), (e) => e.child(this.commitBar(t)))
       .child(
         v_resizable("changes-split")
           .flex_1()
