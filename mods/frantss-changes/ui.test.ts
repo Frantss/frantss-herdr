@@ -170,6 +170,10 @@ async function harness(refresh = false) {
   };
   if (refresh) {
     natives.herdr.exec = async (command, args, options) => {
+      if (command === "sh" && args[2] === "trash") {
+        state.indexCalls = [...(state.indexCalls ?? []), ["trash", ...args.slice(3)]];
+        return state.trashResult ?? { code: 0, stdout: "", stderr: "" };
+      }
       if (command === "sh") {
         const side = args[1].startsWith("git show") ? "old" : "new";
         state.highlights.push([side, ...args.slice(3)]);
@@ -211,7 +215,7 @@ async function harness(refresh = false) {
           stderr: "",
         };
       if (args[0] === "show") return { code: 0, stdout: state.index ?? "", stderr: "" };
-      if (args[0] === "add" || args[0] === "reset") {
+      if (["add", "reset", "restore"].includes(args[0])) {
         state.indexCalls = [...(state.indexCalls ?? []), args];
         return state.indexResult ?? { code: 0, stdout: "", stderr: "" };
       }
@@ -700,12 +704,12 @@ test("the shown file follows a stage into its new section, and Git's errors show
   await h.drain();
   assert.equal(h.changes.open, "unstaged:file.ts");
   h.state.status = "M  file.ts\0";
-  h.changes.runGit(["add", "-A", "--", "file.ts"], h.cx);
+  h.changes.run([["git", ["add", "-A", "--", "file.ts"]]], h.cx);
   await h.drain();
   assert.equal(h.changes.open, "staged:file.ts");
   assert.equal(h.changes.acting, false);
   h.state.indexResult = { code: 128, stdout: "", stderr: "fatal: index.lock exists" };
-  h.changes.runGit(["reset", "-q", "--", "file.ts"], h.cx);
+  h.changes.run([["git", ["reset", "-q", "--", "file.ts"]]], h.cx);
   await h.drain();
   assert.ok(String(h.changes.note).includes("index.lock exists"));
 });
@@ -746,6 +750,77 @@ test("a staged diff runs from HEAD to the index and colors both from Git", async
   h.changes.refresh(h.cx);
   await h.drain();
   assert.deepEqual(h.state.highlights, [["old", "file.ts", ":"]]);
+});
+
+test("discard asks for a second press, then trashes untracked files and restores tracked ones", async () => {
+  const h = await harness(true);
+  h.state.status = "MM src/a.ts\0?? src/new.ts\0UU src/conflict.ts\0 M top.ts\0";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.changes.setTree(true, h.cx);
+  h.render();
+  const list = () => h.state.lists.findLast((list) => list.id === "changes-files"),
+    press = (right: number, key: string, count = 1) => {
+      list().node.handlers.on_mouse_down({
+        local_position: { x: 300 - right, y: 0 },
+        bounds: { width: 300, height: 400 },
+        click_count: count,
+      });
+      list().node.handlers.on_item_click(key, h.cx);
+    },
+    rowText = (key: string) => {
+      h.render();
+      const at = Array.from({ length: list().count }, (_, i) => list().key(i)).indexOf(key);
+      return text(h.range(list(), at, at + 1)[0]);
+    };
+  press(40, "staged:src/a.ts");
+  assert.equal(h.changes.armed, null);
+  press(40, "unstaged:src/conflict.ts");
+  assert.equal(h.changes.armed, null);
+  press(40, "unstaged:src/");
+  assert.equal(h.changes.armed, "unstaged:src/");
+  assert.ok(rowText("unstaged:src/").includes("Discard?"));
+  press(40, "unstaged:src/", 2);
+  assert.equal(h.changes.armed, null);
+  press(40, "unstaged:src/");
+  press(100, "unstaged:top.ts");
+  assert.equal(h.changes.armed, null);
+  assert.equal(h.state.indexCalls, undefined);
+  press(40, "unstaged:src/");
+  press(60, "unstaged:src/");
+  await h.drain();
+  assert.deepEqual(plain(h.state.indexCalls), [
+    ["trash", "/repo/src/new.ts"],
+    ["restore", "--worktree", "--", "src/a.ts"],
+  ]);
+  press(40, "unstaged:");
+  assert.ok(rowText("unstaged:").includes("Discard all?"));
+});
+
+test("a place without a trash command discards nothing", async () => {
+  const h = await harness(true);
+  h.state.status = "?? new.ts\0 M file.ts\0";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.state.trashResult = { code: 127, stdout: "", stderr: "" };
+  h.changes.discard(h.changes.files, h.cx);
+  await h.drain();
+  assert.deepEqual(plain(h.state.indexCalls), [["trash", "/repo/new.ts"]]);
+  assert.ok(String(h.changes.note).includes("no trash command, so nothing was discarded"));
+});
+
+test("an armed discard disarms when the files change or the place does", async () => {
+  const h = await harness(true);
+  h.changes.refresh(h.cx);
+  await h.drain();
+  h.changes.armed = "unstaged:file.ts";
+  h.state.status = " M file.ts\0 M other.ts\0";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.armed, null);
+  h.changes.armed = "unstaged:file.ts";
+  h.changes.switchTo(JSON.stringify({ cwd: "/other", on: null }));
+  assert.equal(h.changes.armed, null);
 });
 
 // Values built inside the module's VM realm compare by structure once copied here.

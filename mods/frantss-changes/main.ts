@@ -33,6 +33,7 @@ import {
 import { LINE_LIMIT, trackedPreview, untrackedPreview } from "./preview.ts";
 import { expandGaps, fileLines } from "./gaps.ts";
 import { button } from "./button.ts";
+import { TRASH_SCRIPT } from "./trash.ts";
 import { followedPlace, panelShown } from "./panel.ts";
 import { treeRows, type TreeRow } from "./tree.ts";
 import {
@@ -99,14 +100,16 @@ const TRASH = "mods/frantss-changes/trash.svg",
   LIST = "mods/frantss-changes/list.svg",
   TREE = "mods/frantss-changes/tree.svg",
   PLUS = "mods/frantss-changes/plus.svg",
-  MINUS = "mods/frantss-changes/minus.svg";
+  MINUS = "mods/frantss-changes/minus.svg",
+  UNDO = "mods/frantss-changes/undo.svg";
 const SECTION_TITLE: Record<Section, string> = { staged: "Staged Changes", unstaged: "Changes" };
 const TREE_SETTING = "changes-tree";
 // Diff rows indent their text past the line number and the hover "+".
 const GUTTER = 62,
   COMPOSER = 48;
-// A list row's stage or unstage button, from the list's right edge.
-const INDEX_ACTION = 26;
+// The width of a list row's button and of its discard confirm, from the list's right edge.
+const INDEX_ACTION = 26,
+  CONFIRM = 80;
 const zoom = () => (settings().zoom as number | undefined) ?? 1;
 
 // Git's lock files come and go with every git command; refreshing on them alone never ends.
@@ -214,8 +217,11 @@ export default class Changes extends View {
   declare target: Target | null;
   // Where the last press in the diff landed, since a row click reports only the row.
   declare pressX: number;
-  // How far left of the file list's right edge its last press landed.
+  // How far left of the file list's right edge its last press landed, and its click count.
   declare pressRight: number;
+  declare pressCount: number;
+  // The list row whose discard waits for a second press.
+  declare armed: string | null;
   declare sending: boolean;
   // The agent picked for the review; null sends to this space's latest one.
   declare agentAddress: string | null;
@@ -251,6 +257,8 @@ export default class Changes extends View {
     this.acting = false;
     this.again = false;
     this.pressRight = Infinity;
+    this.pressCount = 0;
+    this.armed = null;
     this.setLines([]);
     this.handle = cx.focus_handle();
     this.kept = new Map();
@@ -408,6 +416,8 @@ export default class Changes extends View {
               (name) => name !== "files" && name !== "rows" && this[name] !== previous[name],
             );
           if (filesEqual) this.files = previous.files;
+          // A discard confirmed after the files changed could discard what its row did not show.
+          else this.armed = null;
           if (rowsEqual) this.rows = previous.rows;
         }
         const notify = changed || this.loadingRendered;
@@ -433,6 +443,7 @@ export default class Changes extends View {
     const kept = this.kept.get(context);
     this.context = context;
     this.note = null;
+    this.armed = null;
     this.watched = null;
     if (kept) Object.assign(this, kept);
     else {
@@ -888,7 +899,7 @@ export default class Changes extends View {
       .when(comments > 0, (e) =>
         e.child(div().text_size(11).text_color(t.accent).child(`✎ ${comments}`)),
       )
-      .child(this.indexAction(open, f.section, t));
+      .child(this.rowActions(open, f.section, t));
   }
 
   // Names the file the diff below shows.
@@ -953,7 +964,7 @@ export default class Changes extends View {
       .when(row.del > 0, (e) =>
         e.child(div().text_size(11).text_color(t.ansi1).child(`−${row.del}`)),
       )
-      .child(this.indexAction(`${section}:${row.path}/`, section, t));
+      .child(this.rowActions(`${section}:${row.path}/`, section, t));
   }
 
   sectionRow({ section, count }: Extract<ListRow, { kind: "section" }>, t: Theme) {
@@ -971,61 +982,122 @@ export default class Changes extends View {
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .child(div().flex_1().min_w(0).truncate().child(SECTION_TITLE[section]))
       .child(div().text_size(10).child(String(count)))
-      .child(this.indexAction(`${section}:`, section, t));
+      .child(this.rowActions(`${section}:`, section, t));
   }
 
-  // The stage or unstage button at the row's right end. A list row cannot take handlers, so the
-  // list's click handler finds a press over it; it shows on hover: an overlay over the row, since
-  // a row cannot style its children, whose fill covers the counts.
-  indexAction(id: string, section: Section, t: Theme) {
-    return div()
-      .id(`index-${id}`)
-      .absolute()
-      .inset_0()
-      .opacity(0)
-      .hover((s) => s.opacity(1))
-      .child(
+  // What discard restores for a list row in the Changes section: a file row its own file, a
+  // folder row those under it, the section's row all; a conflict needs more than a restore.
+  discardable(key: string) {
+    if (!key.startsWith("unstaged:")) return [];
+    const path = key.slice("unstaged:".length).replace(/\/$/, "");
+    return this.files.filter(
+      (file) =>
+        file.section === "unstaged" &&
+        file.status !== "U" &&
+        (!path || file.path === path || file.path.startsWith(`${path}/`)),
+    );
+  }
+
+  // The row's buttons at its right end: stage or unstage, and discard left of it. A list row
+  // cannot take handlers, so the list's click handler finds a press over them. They show on hover:
+  // an overlay over the row, since a row cannot style its children, whose fill covers the counts.
+  // An armed discard shows its confirm until the next press.
+  rowActions(key: string, section: Section, t: Theme) {
+    const armed = this.armed === key,
+      icon = (path: string) =>
         div()
-          .absolute()
-          .right(2)
-          .top(2)
           .size(20)
           .flex()
           .items_center()
           .justify_center()
-          .rounded(3)
-          .bg(t.hover)
           .text_color(this.acting ? t.dim : t.foreground)
-          .child(svg(section === "staged" ? MINUS : PLUS).size(14)),
+          .child(svg(path).size(14));
+    return div()
+      .id(`actions-${key}`)
+      .absolute()
+      .inset_0()
+      .when(!armed, (e) => e.opacity(0).hover((s) => s.opacity(1)))
+      .child(
+        h_flex()
+          .absolute()
+          .right(2)
+          .top(2)
+          .h(20)
+          .rounded(3)
+          .bg(armed ? t.ansi1 : t.hover)
+          .when(armed, (e) =>
+            e
+              .w(CONFIRM - 4)
+              .justify_center()
+              .items_center()
+              .text_size(11)
+              .font_bold()
+              .text_color(t.background)
+              .child(key.endsWith(":") ? "Discard all?" : "Discard?"),
+          )
+          .when(!armed && this.discardable(key).length > 0, (e) => e.child(icon(UNDO)))
+          .when(!armed, (e) => e.child(icon(section === "staged" ? MINUS : PLUS))),
       );
   }
 
-  // A press over a row's button stages or unstages what the row holds; elsewhere a section's row
-  // does nothing, a folder's opens or closes it, and a file's shows its diff.
+  // A press over a row's right button stages or unstages what the row holds. One over its discard
+  // button arms it, and a second press there, not part of a double-click, discards. Elsewhere a
+  // section's row does nothing, a folder's opens or closes it, and a file's shows its diff.
   clickListRow(key: string, cx: Context) {
-    const colon = key.indexOf(":"),
-      section = key.slice(0, colon) as Section,
-      path = key.slice(colon + 1);
-    if (this.pressRight <= INDEX_ACTION * zoom()) {
+    const armed = this.armed === key,
+      right = this.pressRight / zoom(),
+      path = key.slice(key.indexOf(":") + 1);
+    this.armed = null;
+    if (armed && right <= CONFIRM) {
+      if (this.pressCount === 1) this.discard(this.discardable(key), cx);
+      else cx.notify();
+    } else if (right <= INDEX_ACTION) {
       const paths = [path.replace(/\/$/, "") || "."];
-      this.runGit(
-        section === "staged" ? ["reset", "-q", "--", ...paths] : ["add", "-A", "--", ...paths],
+      this.run(
+        [
+          [
+            "git",
+            key.startsWith("staged:")
+              ? ["reset", "-q", "--", ...paths]
+              : ["add", "-A", "--", ...paths],
+          ],
+        ],
         cx,
       );
+    } else if (right <= INDEX_ACTION * 2 && this.discardable(key).length) {
+      this.armed = key;
+      cx.notify();
     } else if (path.endsWith("/")) this.toggleFolder(key.slice(0, -1), cx);
     else if (path) this.pick(key, cx);
+    else if (armed) cx.notify();
   }
 
-  // Runs one git command on the repository, then shows what it changed.
-  runGit(args: string[], cx: Context) {
+  // Untracked files go to the trash first, so a place without one discards nothing; tracked ones
+  // go back to what the index holds, which keeps their staged changes.
+  discard(files: ChangedFile[], cx: Context) {
+    const untracked = files.filter((file) => file.fresh).map((file) => `${this.root}/${file.path}`),
+      tracked = files.filter((file) => !file.fresh).map((file) => file.path),
+      commands: [string, string[]][] = [];
+    if (untracked.length) commands.push(["sh", ["-c", TRASH_SCRIPT, "trash", ...untracked]]);
+    if (tracked.length) commands.push(["git", ["restore", "--worktree", "--", ...tracked]]);
+    this.run(commands, cx);
+  }
+
+  // Runs commands in the repository one after another until one fails, then shows what they
+  // changed.
+  run(commands: [string, string[]][], cx: Context) {
     const { root, on, context } = this;
-    if (this.acting || !root) return;
+    if (this.acting || !root || !commands.length) return;
     this.acting = true;
     this.note = null;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec("git", args, { cwd: root, on });
-        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
+        for (const [command, args] of commands) {
+          const r = await exec(command, args, { cwd: root, on });
+          if (r.code === 127 && command === "sh")
+            throw new Error("This machine has no trash command, so nothing was discarded");
+          if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
+        }
       } catch (e) {
         if (key() === context) this.note = String(e);
       } finally {
@@ -1214,6 +1286,7 @@ export default class Changes extends View {
                                 e.local_position && e.bounds
                                   ? e.bounds.width - e.local_position.x
                                   : Infinity;
+                              this.pressCount = e.click_count;
                             })
                             .on_item_click((key, cx) => this.clickListRow(key, cx)),
                         )
