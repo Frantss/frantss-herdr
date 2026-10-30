@@ -29,6 +29,7 @@ import {
   type AgentRecord,
   type CoreTerminal,
 } from "./closed.ts";
+import { button } from "./button.ts";
 
 type Theme = Record<string, `#${string}`>;
 type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
@@ -128,7 +129,7 @@ const menu = (tab: string, target: Record<string, unknown>) =>
 const statusDot = (t: Theme, status: string) =>
   status && status !== "idle" ? dot(t, status) : null;
 // The rail's + is this wide, so rows without one can keep their dots in the same column.
-const PLUS_WIDTH = 14;
+const PLUS_WIDTH = 20;
 const URGENT = ["blocked", "done", "working"];
 
 // What a program says it is doing, from its terminal title: Claude Code names its thread there
@@ -383,7 +384,7 @@ export default class Frantss extends View {
             `forget-${record.address}`,
             "Forget",
             svg("mods/pane/close.svg").size(10),
-            (_e, cx) => forget(cx),
+            (cx) => forget(cx),
           ),
         ),
       onClick: () =>
@@ -629,12 +630,7 @@ export default class Frantss extends View {
   }
 
   // A small "+" in the rail; it doesn't select the row it sits on.
-  plus(
-    t: Theme,
-    id: string,
-    tooltip: string,
-    onClick: (event: ClickEvent, cx: Context) => unknown,
-  ) {
+  plus(t: Theme, id: string, tooltip: string, onClick: (cx: Context) => unknown) {
     return this.control(t, id, tooltip, "+", onClick);
   }
 
@@ -644,24 +640,14 @@ export default class Frantss extends View {
     id: string,
     tooltip: string,
     label: Element | string,
-    onClick: (event: ClickEvent, cx: Context) => unknown,
+    onClick: (cx: Context) => unknown,
   ) {
-    return div()
-      .id(id)
-      .tooltip(tooltip)
-      .w(PLUS_WIDTH)
-      .flex()
-      .justify_center()
-      .text_size(12)
-      .text_color(t.dim)
-      .cursor_pointer()
-      .hover((e) => e.text_color(t.foreground))
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click((e, cx) => {
-        cx.stop_propagation();
-        onClick(e, cx);
-      })
-      .child(label);
+    return button(id, label, onClick, {
+      variant: "quiet",
+      size: "dense",
+      square: true,
+      tooltip,
+    }).text_color(t.dim);
   }
 
   addWorkspace(cx: Context) {
@@ -875,7 +861,7 @@ export default class Frantss extends View {
         id: "spaces",
         title: "WORKSPACES",
         count: saved.length + unsaved.length,
-        action: this.plus(t, "add-workspace", "Add workspace", (_e, cx) => this.addWorkspace(cx)),
+        action: this.plus(t, "add-workspace", "Add workspace", (cx) => this.addWorkspace(cx)),
         rows: workspaceRows,
       },
       // An agent group shows only while it has agents.

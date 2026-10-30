@@ -29,7 +29,7 @@ async function harness() {
   const unused = () => assert.fail("Unexpected native call");
   const natives = {
     "gpui-kit": { View: class {}, div: unused, svg: unused, image: unused },
-    "gpui-base": { h_flex: unused, v_flex: unused },
+    "gpui-base": { h_flex: unused, v_flex: unused, Button: { new: unused } },
     herdr: {
       agents: unused,
       spaces: unused,
@@ -37,6 +37,7 @@ async function harness() {
       props: unused,
       run: unused,
       theme: unused,
+      settings: unused,
       setAgentOrder: unused,
       openOverlay: unused,
       shared: unused,

@@ -117,7 +117,11 @@ async function harness(role = "rail") {
       svg: (source) => element("svg", source),
       image: (source) => element("image", source),
     },
-    "gpui-base": { h_flex: () => element(), v_flex: () => element() },
+    "gpui-base": {
+      h_flex: () => element(),
+      v_flex: () => element(),
+      Button: { new: (id) => element().id(id) },
+    },
     herdr: {
       spaces: () => {
         state.calls.spaces++;
@@ -141,6 +145,7 @@ async function harness(role = "rail") {
       agents: () => state.agents,
       props: () => ({ role: state.role, pane: state.pane }),
       theme: () => ({}),
+      settings: () => ({}),
       shared: (name) => state.shared.get(name) ?? null,
       setShared: (name, value) => state.shared.set(name, value),
       setAgentOrder() {},
