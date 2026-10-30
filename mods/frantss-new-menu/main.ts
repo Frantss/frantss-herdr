@@ -101,6 +101,16 @@ export default class NewMenu extends View {
           `${mod} T`,
         ),
       )
+      .child(
+        this.row(
+          "browser",
+          svg("mods/frantss-browser/globe.svg").size(14),
+          "Browser",
+          () => run("pane.split", { direction: "right", mod: "frantss-browser" }),
+          "",
+          Boolean(space),
+        ),
+      )
       .child(div().px(9).pt(8).pb(4).text_size(11).text_color(t.dim).child("Start an agent"))
       .child(
         v_flex()

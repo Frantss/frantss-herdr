@@ -64,6 +64,14 @@ tab, written to `frantss-files/fresh-config.json` in Herdr's config folder. Stop
 to give it a changed theme.
 The app launcher uses macOS `open`. Other panels use Herdr's `hc` and native APIs.
 
+The browser pane (+ menu, Browser) shows a frameless Chromium window from the
+`electron` dependency over the pane's page area. The pane starts it from this
+checkout when nothing answers on port 9333. Agents drive it with
+`agent-browser --cdp 9333`. Herdr does not tell mods where a pane is on screen, so
+the window appears after the pointer moves over the pane, and after a resize it
+waits for the pointer again while the pane shows the last screenshot. One browser
+pane at a time; closing it hides the window, and agents can still use the browser.
+
 `pnpm check` refreshes Herdr's generated API declarations in the ignored `types/`
 files, then checks formatting, linting and TypeScript types with Vite+. It uses
 Herdr's existing non-strict-null contracts. Use `pnpm fmt` to format files,
