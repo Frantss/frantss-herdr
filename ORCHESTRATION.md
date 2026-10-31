@@ -11,15 +11,15 @@
 
 These are strong recommendations. Prefer task fit and verified results; briefly explain material departures. Sol is the default when no category fits.
 
-| Task category | Preferred model | Reasoning effort |
-| --- | --- | --- |
-| Default implementation, debugging, coordination, review | GPT-6.1 Sol (`gpt-6.1-sol`) | Medium; High for difficult bugs, architectural decisions, or large impact. |
-| UI implementation, visual design, interaction, polish | Claude Opus 5.5 | Native adaptive/default; increase supported effort for complex interactions or design tradeoffs. |
-| Extensive repetitive refactors with a clear specification | Available free coding models in OpenCode | Native default; increase supported effort for nontrivial transformations. Sol High for planning/review requiring substantial behavior-preservation judgment. |
-| Writing, screenshot interpretation, browser/computer tasks | GPT-6.1 Terra (`gpt-6.1-terra`) | Low for straightforward work; Medium for ambiguous visuals or synthesis across sources. |
-| Focused coding, extraction, classification, repeated transformations | GPT-6 Luna (`gpt-6-luna`) | Start High; use Sol for broader judgment. |
-| Small lookups, file discovery, short summaries, simple checks | Claude Haiku | Native default; stronger model for substantial judgment. |
-| Bounded features, tests, routine reviews | Claude Sonnet | Native default/adaptive; increase supported effort for multi-step reasoning. |
+| Task category                                                        | Preferred model                          | Reasoning effort                                                                                                                                             |
+| -------------------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Default implementation, debugging, coordination, review              | GPT-6.1 Sol (`gpt-6.1-sol`)              | Medium; High for difficult bugs, architectural decisions, or large impact.                                                                                   |
+| UI implementation, visual design, interaction, polish                | Claude Opus 5.5                          | Native adaptive/default; increase supported effort for complex interactions or design tradeoffs.                                                             |
+| Extensive repetitive refactors with a clear specification            | Available free coding models in OpenCode | Native default; increase supported effort for nontrivial transformations. Sol High for planning/review requiring substantial behavior-preservation judgment. |
+| Writing, screenshot interpretation, browser/computer tasks           | GPT-6.1 Terra (`gpt-6.1-terra`)          | Low for straightforward work; Medium for ambiguous visuals or synthesis across sources.                                                                      |
+| Focused coding, extraction, classification, repeated transformations | GPT-6 Luna (`gpt-6-luna`)                | Start High; use Sol for broader judgment.                                                                                                                    |
+| Small lookups, file discovery, short summaries, simple checks        | Claude Haiku                             | Native default; stronger model for substantial judgment.                                                                                                     |
+| Bounded features, tests, routine reviews                             | Claude Sonnet                            | Native default/adaptive; increase supported effort for multi-step reasoning.                                                                                 |
 
 ## Availability and reasoning controls
 
