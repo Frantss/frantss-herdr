@@ -676,16 +676,19 @@ test("forgetting retains history on command failure and ignores live or missing 
   assert.equal(h.state.hcCalls.length, count);
 });
 
-test("subscription meters stay outside the scrolling rail above Settings and show stale and reset states", async () => {
+test("usage starts closed above Settings and summarizes each subscription's most used window", async () => {
   const h = await harness();
   const now = Date.now();
   h.view.subscriptionUsage.data.claude = {
     windows: [
       { label: "5h", usedPercent: 42, resetsAt: now / 1000 + 3600 },
-      { label: "7d", usedPercent: 75, resetsAt: now / 1000 - 1 },
+      { label: "7d", usedPercent: 18, resetsAt: now / 1000 + 86400 },
     ],
-    updatedAt: now - 900000,
-    error: "Offline",
+    updatedAt: now,
+  };
+  h.view.subscriptionUsage.data.codex = {
+    windows: [{ label: "5h", usedPercent: 91, resetsAt: now / 1000 + 38 * 60 - 30 }],
+    updatedAt: now,
   };
   const tree = h.render();
   const usage = byId(tree, "subscription-usage");
@@ -694,13 +697,35 @@ test("subscription meters stay outside the scrolling rail above Settings and sho
   assert.ok(
     tree.childNodes.indexOf(usage) < tree.childNodes.findIndex((node) => byId(node, "settings")),
   );
-  assert.match(text(byId(usage, "usage-claude")), /ClaudeStale5h42%7d—/);
-  assert.match(text(byId(usage, "usage-codex")), /Codex/);
+  assert.equal(text(byId(usage, "usage-summary-claude")), "Claude42%");
+  assert.equal(text(byId(usage, "usage-summary-codex")), "Codex91% 38m");
+  assert.equal(byId(usage, "usage-claude"), null);
   assert.ok(
     byId(usage, "refresh-subscriptions").styles.some(
       ([key, value]) => key === "accessibility_label" && value === "Refresh subscription usage",
     ),
   );
+  byId(usage, "header-usage").handlers.on_click({}, h.cx);
+  assert.equal(JSON.stringify(h.state.shared.get("frantss.collapsed")), '["usage:open"]');
+});
+
+test("open usage shows each window's reset and marks stale and failed reads", async () => {
+  const h = await harness();
+  const now = Date.now();
+  h.state.shared.set("frantss.collapsed", ["usage:open"]);
+  h.view.subscriptionUsage.data.claude = {
+    windows: [
+      { label: "5h", usedPercent: 42, resetsAt: now / 1000 + 3600 },
+      { label: "7d", usedPercent: 75, resetsAt: now / 1000 - 1 },
+    ],
+    updatedAt: now - 900000,
+    error: "Offline",
+  };
+  const usage = byId(h.render(), "subscription-usage");
+  assert.equal(byId(usage, "usage-summary-claude"), null);
+  assert.match(text(byId(usage, "header-usage")), /USAGE15m ago/);
+  assert.equal(text(byId(usage, "usage-claude")), "ClaudeStale5h42%1h 0m7d——Offline");
+  assert.equal(text(byId(usage, "usage-codex")), "CodexWaiting for usage…");
 });
 
 test("only the rail reads usage on startup, every five minutes, and on manual refresh", async () => {

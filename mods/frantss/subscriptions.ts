@@ -71,11 +71,22 @@ export function usageWindow(window: UsageWindow, snapshot: UsageSnapshot, now: n
   };
 }
 
-export function resetTime(resetsAt: number, now: number) {
+// Time left before a window resets, at most two units: "38m", "2h 10m", "4d 3h". Null once passed.
+export function resetIn(resetsAt: number, now: number) {
   const minutes = Math.ceil((resetsAt * 1000 - now) / 60000);
-  if (minutes <= 0) return "Reset passed. Refresh usage.";
-  if (minutes < 60) return `Resets in ${minutes}m`;
+  if (minutes <= 0) return null;
+  if (minutes < 60) return `${minutes}m`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `Resets in ${hours}h ${minutes % 60}m`;
-  return `Resets in ${Math.floor(hours / 24)}d ${hours % 24}h`;
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+// The most used window that has not reset: what the collapsed rail shows for a subscription.
+export function peakWindow(snapshot: UsageSnapshot, now: number) {
+  return snapshot.windows
+    .filter((window) => !usageWindow(window, snapshot, now).expired)
+    .reduce<UsageWindow | null>(
+      (peak, window) => (!peak || window.usedPercent > peak.usedPercent ? window : peak),
+      null,
+    );
 }

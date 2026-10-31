@@ -40,7 +40,8 @@ import {
   SUBSCRIPTION_REFRESH_MS,
   SUBSCRIPTIONS,
   SubscriptionUsage,
-  resetTime,
+  peakWindow,
+  resetIn,
   usageWindow,
 } from "./subscriptions.ts";
 
@@ -1043,26 +1044,100 @@ export default class Frantss extends View {
       .child(this.footer(t));
   }
 
+  // Subscription quota, pinned above the footer. Closed, its header shows each subscription's most used
+  // window; tooltips don't show in this layout, so details stay in visible text.
   subscriptions(t: Theme, now: number) {
     const usage = this.subscriptionUsage;
+    const open = collapsedIds().includes("usage:open");
+    const providers = SUBSCRIPTIONS.map((provider) => {
+      const snapshot = usage.data[provider];
+      const stale = snapshot.windows.some((window) => usageWindow(window, snapshot, now).stale);
+      return {
+        provider,
+        snapshot,
+        name: provider === "claude" ? "Claude" : "Codex",
+        status: stale ? "Stale" : snapshot.error ? "Unavailable" : "",
+      };
+    });
+    const updatedAt = Math.max(...providers.map((p) => p.snapshot.updatedAt ?? 0));
+    const updated = updatedAt ? age(now - updatedAt) : "";
+    const meter = (percent: number, stale: boolean) =>
+      div()
+        .flex_1()
+        .min_w(0)
+        .h(4)
+        .rounded(2)
+        .bg(t.input)
+        .child(
+          div()
+            .h_full()
+            .rounded(2)
+            .w(`${percent}%`)
+            .bg(stale ? t.muted : percent >= 90 ? t.blocked : t.accent),
+        );
+    const summary = providers.map(({ provider, snapshot, name, status }) => {
+      const peak = peakWindow(snapshot, now);
+      const full = !status && peak && peak.usedPercent >= 90;
+      const value = [
+        peak ? `${Math.round(peak.usedPercent)}%` : "—",
+        full ? resetIn(peak.resetsAt, now) : null,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return { provider, name, value, color: status ? t.muted : full ? t.blocked : t.foreground };
+    });
     return v_flex()
       .id("subscription-usage")
       .flex_none()
-      .px(16)
-      .py(10)
-      .gap(10)
+      .py(8)
+      .gap(6)
       .border_t(1)
       .border_color(t.border)
       .child(
         h_flex()
+          .id("header-usage")
+          .h(RAIL.header)
+          .px(12)
+          .gap(8)
           .items_center()
-          .gap(6)
-          .child(div().flex_1().text_size(11).text_color(t.muted).child("USAGE"))
+          .cursor_pointer()
+          .on_click(() => toggleCollapsed("usage:open"))
+          .accessibility_label(
+            `Usage: ${summary.map((s) => `${s.name} ${s.value}`).join(", ")}. ${open ? "Collapse" : "Expand"}`,
+          )
+          .child(chevron(t, !open))
           .child(
-            div()
+            div().flex_none().text_size(11).font_medium().text_color(t.foreground).child("USAGE"),
+          )
+          .child(
+            h_flex()
+              .flex_1()
+              .min_w(0)
+              .gap(8)
+              .justify_end()
               .text_size(10)
-              .text_color(t.muted)
-              .child(usage.refreshing ? "Refreshing…" : "used"),
+              .when(usage.refreshing, (e) =>
+                e.child(div().text_color(t.muted).child("Refreshing…")),
+              )
+              .when(!usage.refreshing && open && Boolean(updated), (e) =>
+                e.child(
+                  div()
+                    .text_color(t.muted)
+                    .child(updated === "now" ? "now" : `${updated} ago`),
+                ),
+              )
+              .when(!usage.refreshing && !open, (e) =>
+                e.children(
+                  summary.map((s) =>
+                    h_flex()
+                      .id(`usage-summary-${s.provider}`)
+                      .flex_none()
+                      .gap(4)
+                      .child(div().text_color(t.muted).child(s.name))
+                      .child(div().text_color(s.color).child(s.value)),
+                  ),
+                ),
+              ),
           )
           .child(
             button("refresh-subscriptions", "↻", (cx) => this.refreshSubscriptions(cx), {
@@ -1074,100 +1149,74 @@ export default class Frantss extends View {
             }),
           ),
       )
-      .children(
-        SUBSCRIPTIONS.map((provider) => {
-          const snapshot = usage.data[provider];
-          const name = provider === "claude" ? "Claude" : "Codex";
-          const stale = snapshot.windows.some((window) => usageWindow(window, snapshot, now).stale);
-          const elapsed = age(now - (snapshot.updatedAt ?? now));
-          const updated =
-            snapshot.updatedAt === undefined
-              ? ""
-              : elapsed === "now"
-                ? "Updated now"
-                : `Updated ${elapsed} ago`;
-          const detail = [snapshot.error, updated, "Refreshes every 5 minutes."]
-            .filter(Boolean)
-            .join("\n");
-          return v_flex()
-            .id(`usage-${provider}`)
-            .gap(4)
-            .child(
-              h_flex()
-                .items_center()
-                .gap(6)
-                .child(div().flex_none().text_size(11).text_color(t.foreground).child(name))
-                .child(
+      .when(open, (e) =>
+        e.children(
+          providers.map(({ provider, snapshot, name, status }) =>
+            v_flex()
+              .id(`usage-${provider}`)
+              .px(16)
+              .gap(4)
+              .child(
+                h_flex()
+                  .items_center()
+                  .gap(6)
+                  .child(div().flex_1().text_size(11).text_color(t.foreground).child(name))
+                  .child(div().text_size(10).text_color(t.muted).child(status)),
+              )
+              .children(
+                snapshot.windows.map((window) => {
+                  const state = usageWindow(window, snapshot, now);
+                  const reset = resetIn(window.resetsAt, now);
+                  return h_flex()
+                    .id(`usage-${provider}-${window.label}`)
+                    .gap(8)
+                    .items_center()
+                    .accessibility_label(
+                      `${name} ${window.label}: ${state.percent} used${state.stale ? " (stale)" : ""}. ${reset ? `Resets in ${reset}` : "Reset passed"}`,
+                    )
+                    .child(
+                      div()
+                        .w(24)
+                        .flex_none()
+                        .truncate()
+                        .text_size(10)
+                        .text_color(t.muted)
+                        .child(window.label),
+                    )
+                    .child(meter(state.expired ? 0 : window.usedPercent, state.stale))
+                    .child(
+                      div()
+                        .w(32)
+                        .flex_none()
+                        .text_right()
+                        .text_size(10)
+                        .text_color(t.foreground)
+                        .child(state.percent),
+                    )
+                    .child(
+                      div()
+                        .w(40)
+                        .flex_none()
+                        .text_right()
+                        .text_size(10)
+                        .text_color(t.muted)
+                        .child(reset ?? "—"),
+                    );
+                }),
+              )
+              .when(Boolean(snapshot.error) || !snapshot.windows.length, (e) =>
+                e.child(
                   div()
-                    .flex_1()
-                    .min_w(0)
-                    .truncate()
-                    .text_right()
                     .text_size(10)
                     .text_color(t.muted)
-                    .tooltip(detail)
-                    .child(stale ? "Stale" : snapshot.error ? "Unavailable" : updated),
+                    .child(
+                      snapshot.error ??
+                        (usage.refreshing ? "Reading usage…" : "Waiting for usage…"),
+                    ),
                 ),
-            )
-            .when(!snapshot.windows.length, (e) =>
-              e.child(
-                div()
-                  .text_size(10)
-                  .text_color(t.muted)
-                  .tooltip(detail)
-                  .child(
-                    snapshot.error ?? (usage.refreshing ? "Reading usage…" : "Waiting for usage…"),
-                  ),
               ),
-            )
-            .children(
-              snapshot.windows.map((window) => {
-                const state = usageWindow(window, snapshot, now);
-                const reset = resetTime(window.resetsAt, now);
-                const description = `${name} ${window.label}: ${state.percent} used${state.stale ? " (stale)" : ""}. ${reset}`;
-                return h_flex()
-                  .id(`usage-${provider}-${window.label}`)
-                  .gap(8)
-                  .items_center()
-                  .tooltip(`${description}\n${detail}`)
-                  .accessibility_label(description)
-                  .child(
-                    div()
-                      .w(24)
-                      .flex_none()
-                      .truncate()
-                      .text_size(10)
-                      .text_color(t.muted)
-                      .child(window.label),
-                  )
-                  .child(
-                    div()
-                      .flex_1()
-                      .min_w(0)
-                      .h(4)
-                      .rounded(2)
-                      .bg(t.input)
-                      .child(
-                        div()
-                          .h_full()
-                          .rounded(2)
-                          .w(`${state.expired ? 0 : window.usedPercent}%`)
-                          .bg(
-                            state.stale ? t.muted : window.usedPercent >= 90 ? t.blocked : t.accent,
-                          ),
-                      ),
-                  )
-                  .child(
-                    div()
-                      .w(32)
-                      .flex_none()
-                      .text_size(10)
-                      .text_color(t.foreground)
-                      .child(state.percent),
-                  );
-              }),
-            );
-        }),
+          ),
+        ),
       );
   }
 

@@ -1,6 +1,6 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
-import { SubscriptionUsage, resetTime, usageWindow } from "./subscriptions.ts";
+import { SubscriptionUsage, peakWindow, resetIn, usageWindow } from "./subscriptions.ts";
 
 const payload = (percent = 42) =>
   JSON.stringify({ windows: [{ label: "5h", usedPercent: percent, resetsAt: 2000 }] });
@@ -75,6 +75,22 @@ test("expired windows hide their old percentage and stale reads are marked", () 
   assert.equal(usageWindow(window, snapshot, 1700000).stale, true);
   assert.equal(usageWindow(window, { ...snapshot, error: "Offline" }, 1100000).stale, true);
   assert.equal(usageWindow(window, snapshot, 2000000).percent, "—");
-  assert.equal(resetTime(2000, 1100000), "Resets in 15m");
-  assert.equal(resetTime(2000, 2000000), "Reset passed. Refresh usage.");
+  assert.equal(resetIn(2000, 1100000), "15m");
+  assert.equal(resetIn(2000 + 7800, 1100000), "2h 25m");
+  assert.equal(resetIn(2000 + 97200, 1100000), "1d 3h");
+  assert.equal(resetIn(2000, 2000000), null);
+});
+
+test("the peak window is the most used window that has not reset", () => {
+  const snapshot = {
+    windows: [
+      { label: "5h", usedPercent: 40, resetsAt: 2000 },
+      { label: "7d", usedPercent: 95, resetsAt: 1000 },
+      { label: "30d", usedPercent: 60, resetsAt: 3000 },
+    ],
+    updatedAt: 900000,
+  };
+  assert.equal(peakWindow(snapshot, 1100000)?.label, "30d");
+  assert.equal(peakWindow(snapshot, 3000000), null);
+  assert.equal(peakWindow({ windows: [] }, 1100000), null);
 });

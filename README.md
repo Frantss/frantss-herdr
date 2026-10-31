@@ -65,9 +65,11 @@ to give it a changed theme.
 The app launcher uses macOS `open`. Other panels use Herdr's `hc` and native APIs.
 
 The rail's **Usage** section shows Claude and Codex subscription quota consumed.
-It reads the local CLI sign-ins on startup and every five minutes; its refresh
-button reads both again. Hover a meter for its reset time. A failed refresh keeps
-the last values marked **Stale**; an expired window shows a dash until refreshed.
+Closed, it shows each subscription's most used window, with its reset time from
+90%; click it to see every window and its reset time. It reads the local CLI
+sign-ins on startup and every five minutes; its refresh button reads both again.
+A failed refresh keeps the last values marked **Stale**; an expired window shows
+a dash until refreshed.
 Sign in through each CLI if prompted. Claude uses the CLI's private usage endpoint,
 which may change; Codex requires a CLI with `account/rateLimits/read` support.
 
