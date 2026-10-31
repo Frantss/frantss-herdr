@@ -18,6 +18,7 @@ import {
   hc,
   nextCommand,
   notify,
+  terminals,
 } from "herdr";
 
 import type { AgentInfo, SpaceInfo, TabInfo, PaneInfo, Program } from "herdr";
@@ -35,6 +36,14 @@ import { button } from "./button.ts";
 import { hcOrToast } from "./agent-hc.ts";
 import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
 import { keepUnread, shownStatus } from "./unread.ts";
+import {
+  SESSION_LABEL,
+  contextUsage,
+  tokenCount,
+  usageLineArgv,
+  usedPercent,
+  type ContextUsage,
+} from "./context.ts";
 import { SUBSCRIPTION_LAUNCH, SUBSCRIPTION_READER } from "./subscription-reader.ts";
 import {
   SUBSCRIPTION_REFRESH_MS,
@@ -75,7 +84,7 @@ type RailRow = {
   indent?: number;
   lead?: Element | false;
   text: string;
-  value?: string;
+  value?: string | Element;
   end?: Element;
   onClick: (event: ClickEvent, cx: Context) => unknown;
   onMenu?: (event: MouseButtonEvent, cx: Context) => unknown;
@@ -107,6 +116,21 @@ const RAIL = { pad: 16, header: 24, row: 24, rowGap: 2, sectionGap: 16, emptyGap
 // Close to the site's dock ease (300ms, no overshoot); gpui-kit has no cubic-bezier easing.
 const GLIDE = { response: 300, damping: 1 };
 const glide = (e: Element, y: number) => e.absolute().top(y).spring("top", GLIDE);
+// A 4px meter's bar, filled to `percent`: red from 90%, muted when stale. Callers set its width.
+const meterBar = (t: Theme, percent: number, stale = false) =>
+  div()
+    .h(4)
+    .rounded(2)
+    .bg(t.input)
+    .child(
+      div()
+        .h_full()
+        .rounded(2)
+        .w(`${percent}%`)
+        .bg(stale ? t.muted : percent >= 90 ? t.blocked : t.accent),
+    );
+// How often the focused agent's context is read again, while its session file may change.
+const CONTEXT_REFRESH_MS = 5000;
 
 const icon = (t: Theme, program: Program, size = 14) =>
   !program?.icon
@@ -280,6 +304,12 @@ export default class Frantss extends View {
   declare hovered: string | null;
   // The agent focused at the last render, so a mark goes only when you go to its agent.
   declare focusedAgent: string | null;
+  // The focused agent's context, read from its session file: what was read (`key`) and for whom.
+  declare context: { address: string; usage: ContextUsage } | null;
+  declare contextKey: string;
+  // The focused agent the rail last looked up, so a render looks up only a newly focused one.
+  declare contextFor: string | null;
+  declare contextReading: boolean;
   init(_p: unknown, cx: AsyncContext) {
     // The rail and the breadcrumb both name workspaces by repo.
     if (props()?.role !== "rail" && props()?.role !== "top") return;
@@ -300,7 +330,53 @@ export default class Frantss extends View {
       });
       this.refreshSubscriptions(cx);
       cx.timer.every(SUBSCRIPTION_REFRESH_MS, (cx) => this.refreshSubscriptions(cx));
+      cx.timer.every(CONTEXT_REFRESH_MS, (cx) => this.refreshContext(cx));
     }
+  }
+
+  // Reads the focused agent's context again when it or its session changed since the last read.
+  // `seq` changes as the agent works, so an idle agent's file isn't read again.
+  refreshContext(cx: Context) {
+    const agent = agents().find((a) => a.focused);
+    const transcript: string | undefined = agent
+      ? terminals().find((terminal) => terminal.address === agent.address)?.labels?.[SESSION_LABEL]
+      : undefined;
+    const argv = transcript && usageLineArgv(agent.app, transcript);
+    if (!argv) {
+      if (this.context) this.context = null;
+      this.contextKey = "";
+      return;
+    }
+    const key = JSON.stringify([agent.address, transcript, agent.seq]);
+    if (key === this.contextKey || this.contextReading) return;
+    this.contextKey = key;
+    this.contextReading = true;
+    const on = spaces().find((s) => s.id === agent.space)?.machine ?? null;
+    cx.spawn(async (cx) => {
+      try {
+        const result = await exec(argv[0], argv.slice(1), { on }).catch((): null => null);
+        const usage = result?.code === 0 ? contextUsage(agent.app, result.stdout.trim()) : null;
+        this.context = usage ? { address: agent.address, usage } : null;
+      } finally {
+        this.contextReading = false;
+        cx.notify();
+      }
+    });
+  }
+
+  // The focused agent's context in its row's value slot: a short bar and its percent, or only its
+  // tokens when the session file doesn't give the window.
+  contextMeter(t: Theme, usage: ContextUsage) {
+    const percent = usedPercent(usage);
+    return h_flex()
+      .gap(6)
+      .items_center()
+      .when(percent !== null, (e) => e.child(meterBar(t, percent).w(32)))
+      .child(
+        div()
+          .text_color(percent >= 90 ? t.blocked : t.dim)
+          .child(percent === null ? tokenCount(usage.tokens) : `${percent}%`),
+      );
   }
 
   refreshSubscriptions(cx: Context) {
@@ -1002,7 +1078,10 @@ export default class Frantss extends View {
             text: named.has(a.tab)
               ? a.tab_name
               : (threadTitle(a.title, a.program) ?? a.program.name).toLowerCase(),
-            value: a.space_name,
+            value:
+              a.focused && this.context?.address === a.address
+                ? this.contextMeter(t, this.context.usage)
+                : a.space_name,
             onClick: () => run("agent.focus", { terminal: a.address }),
             onMenu: () => menu("pane", { pane: a.pane, terminal: a.address }),
             hoverEnd: this.agentControls(t, a),
@@ -1088,19 +1167,7 @@ export default class Frantss extends View {
     const updatedAt = Math.max(...providers.map((p) => p.snapshot.updatedAt ?? 0));
     const updated = updatedAt ? age(now - updatedAt) : "";
     const meter = (percent: number, stale: boolean) =>
-      div()
-        .flex_1()
-        .min_w(0)
-        .h(4)
-        .rounded(2)
-        .bg(t.input)
-        .child(
-          div()
-            .h_full()
-            .rounded(2)
-            .w(`${percent}%`)
-            .bg(stale ? t.muted : percent >= 90 ? t.blocked : t.accent),
-        );
+      meterBar(t, percent, stale).flex_1().min_w(0);
     const summary = providers.map(({ provider, snapshot, name, status }) => {
       const peak = peakWindow(snapshot, now);
       const full = !status && peak && peak.usedPercent >= 90;
@@ -1386,6 +1453,12 @@ export default class Frantss extends View {
     this.publishWorkspaces(snapshot);
     const list = agents();
     this.trackAgents(cx, list, snapshot);
+    // A newly focused agent's context shows at once; the timer keeps it current after.
+    const focusedAddress = list.find((a) => a.focused)?.address ?? null;
+    if (focusedAddress !== this.contextFor) {
+      this.contextFor = focusedAddress;
+      this.refreshContext(cx);
+    }
     return this.rail(t, list, snapshot);
   }
 }

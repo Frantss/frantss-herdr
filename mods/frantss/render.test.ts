@@ -80,7 +80,12 @@ async function harness(role = "rail") {
     commands: [] as any[],
     calls: { spaces: 0, panes: 0, paneVisits: 0 },
     tasks: [] as ((cx: unknown) => Promise<void>)[],
-    terminals: [] as { address: string; state: string; cwd?: string }[],
+    terminals: [] as {
+      address: string;
+      state: string;
+      cwd?: string;
+      labels?: Record<string, string>;
+    }[],
     cancelled: [] as unknown[],
     propsCalls: 0,
     agentOrder: [] as string[],
@@ -90,6 +95,8 @@ async function harness(role = "rail") {
     removalResult: Promise.resolve({ code: 0, stdout: "", stderr: "" }),
     timers: [] as { ms: number; callback: (cx: unknown) => void }[],
     usageReads: [] as string[],
+    contextReads: [] as unknown[],
+    contextLine: "",
   };
   function element(kind = "div", source?) {
     const node: any = {
@@ -168,8 +175,13 @@ async function harness(role = "rail") {
       },
       run: (...args) => state.commands.push(args),
       openOverlay: (options) => state.overlays.push(options),
-      exec: async (command, args) => {
+      terminals: () => state.terminals,
+      exec: async (command, args, options) => {
         assert.equal(command, "sh");
+        if (args[1].startsWith("grep")) {
+          state.contextReads.push([args.at(-1), options?.on ?? null]);
+          return { code: 0, stdout: `${state.contextLine}\n`, stderr: "" };
+        }
         state.usageReads.push(args.at(-1));
         return {
           code: 0,
@@ -570,6 +582,44 @@ test("the rail lists agent groups and navigates agents in the order they need at
     .filter((id) => ["blocked", "done", "working", "idle"].includes(id?.replace("header-", "")));
   assert.deepEqual(headers, ["header-blocked", "header-done", "header-working", "header-idle"]);
   assert.deepEqual(plain(h.state.agentOrder), ["blocked", "done", "working", "idle"]);
+});
+
+test("the focused agent's row shows its context from its labeled session file", async () => {
+  const h = await harness();
+  const codex = (address, focused, seq) => ({
+    address,
+    space: "primary",
+    space_name: "primary",
+    status: "working",
+    app: "codex",
+    program: agent,
+    title: "x",
+    focused,
+    seq,
+  });
+  h.state.agents = [codex("t1", true, 1), codex("t2", false, 1)];
+  h.state.terminals = [
+    { address: "t1", state: "live", labels: { "frantss.session": "/s/one.jsonl" } },
+    { address: "t2", state: "live", labels: {} },
+  ];
+  h.state.contextLine = JSON.stringify({
+    payload: {
+      type: "token_count",
+      info: { last_token_usage: { total_tokens: 95000 }, model_context_window: 100000 },
+    },
+  });
+  h.render();
+  await Promise.all(h.state.tasks.splice(0).map((task) => task(h.cx)));
+  assert.deepEqual(plain(h.state.contextReads), [["/s/one.jsonl", null]]);
+  const tree = h.render();
+  assert.equal(text(byId(tree, "agent-t1")), "x95%");
+  assert.equal(text(byId(tree, "agent-t2")), "xprimary");
+  // Unchanged, the timer doesn't read the file again; a new seq does.
+  h.view.refreshContext(h.cx);
+  assert.equal(h.state.tasks.length, 0);
+  h.state.agents[0].seq = 2;
+  h.view.refreshContext(h.cx);
+  assert.equal(h.state.tasks.length, 1);
 });
 
 test("the rail records local agents and lists closed ones with history, resume, and forget", async () => {

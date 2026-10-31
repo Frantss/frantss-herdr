@@ -33,6 +33,7 @@ async function harness() {
     herdr: {
       notify: () => {},
       nextCommand: unused,
+      terminals: () => [],
       agents: unused,
       spaces: unused,
       panes: unused,

@@ -73,6 +73,13 @@ a dash until refreshed.
 Sign in through each CLI if prompted. Claude uses the CLI's private usage endpoint,
 which may change; Codex requires a CLI with `account/rateLimits/read` support.
 
+The focused agent's row in the rail shows its context: a bar and percent for Codex,
+and the token count for Claude Code, whose session file doesn't give the window.
+It needs `scripts/session-label.sh` (and `jq`) as a `SessionStart` command hook,
+by this checkout's absolute path, in `~/.claude/settings.json` and `~/.codex/hooks.json`.
+The hook labels the agent's terminal with its session file; agents started before
+it was added show no context until they restart or resume.
+
 `pnpm check` refreshes Herdr's generated API declarations in the ignored `types/`
 files, then checks formatting, linting and TypeScript types with Vite+. It uses
 Herdr's existing non-strict-null contracts. Use `pnpm fmt` to format files,
