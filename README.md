@@ -64,6 +64,13 @@ tab, written to `frantss-files/fresh-config.json` in Herdr's config folder. Stop
 to give it a changed theme.
 The app launcher uses macOS `open`. Other panels use Herdr's `hc` and native APIs.
 
+The rail's **Usage** section shows Claude and Codex subscription quota consumed.
+It reads the local CLI sign-ins on startup and every five minutes; its refresh
+button reads both again. Hover a meter for its reset time. A failed refresh keeps
+the last values marked **Stale**; an expired window shows a dash until refreshed.
+Sign in through each CLI if prompted. Claude uses the CLI's private usage endpoint,
+which may change; Codex requires a CLI with `account/rateLimits/read` support.
+
 `pnpm check` refreshes Herdr's generated API declarations in the ignored `types/`
 files, then checks formatting, linting and TypeScript types with Vite+. It uses
 Herdr's existing non-strict-null contracts. Use `pnpm fmt` to format files,

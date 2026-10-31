@@ -88,6 +88,8 @@ async function harness(role = "rail") {
     hcCalls: [] as string[][],
     errors: [] as unknown[],
     removalResult: Promise.resolve({ code: 0, stdout: "", stderr: "" }),
+    timers: [] as { ms: number; callback: (cx: unknown) => void }[],
+    usageReads: [] as string[],
   };
   function element(kind = "div", source?) {
     const node: any = {
@@ -166,7 +168,20 @@ async function harness(role = "rail") {
       },
       run: (...args) => state.commands.push(args),
       openOverlay: (options) => state.overlays.push(options),
-      exec: unused,
+      exec: async (command, args) => {
+        assert.equal(command, "sh");
+        state.usageReads.push(args.at(-1));
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            windows: [
+              { label: "5h", usedPercent: 42, resetsAt: Date.now() / 1000 + 3600 },
+              { label: "7d", usedPercent: 75, resetsAt: Date.now() / 1000 + 86400 },
+            ],
+          }),
+          stderr: "",
+        };
+      },
       pickFolder: unused,
       knownAgents: async () => [],
       hc: async (args) => {
@@ -215,6 +230,8 @@ async function harness(role = "rail") {
       return { cancel: () => state.cancelled.push(task) };
     },
     stop_propagation() {},
+    notify() {},
+    timer: { every: (ms, callback) => state.timers.push({ ms, callback }) },
   };
   return { state, view, cx, render: () => view.render(cx) };
 }
@@ -657,4 +674,57 @@ test("forgetting retains history on command failure and ignores live or missing 
   await h.view.forgetHistory("t9");
   await h.view.forgetHistory("missing");
   assert.equal(h.state.hcCalls.length, count);
+});
+
+test("subscription meters stay outside the scrolling rail above Settings and show stale and reset states", async () => {
+  const h = await harness();
+  const now = Date.now();
+  h.view.subscriptionUsage.data.claude = {
+    windows: [
+      { label: "5h", usedPercent: 42, resetsAt: now / 1000 + 3600 },
+      { label: "7d", usedPercent: 75, resetsAt: now / 1000 - 1 },
+    ],
+    updatedAt: now - 900000,
+    error: "Offline",
+  };
+  const tree = h.render();
+  const usage = byId(tree, "subscription-usage");
+  assert.ok(usage);
+  assert.equal(byId(byId(tree, "frantss-rail"), "subscription-usage"), null);
+  assert.ok(
+    tree.childNodes.indexOf(usage) < tree.childNodes.findIndex((node) => byId(node, "settings")),
+  );
+  assert.match(text(byId(usage, "usage-claude")), /ClaudeStale5h42%7d—/);
+  assert.match(text(byId(usage, "usage-codex")), /Codex/);
+  assert.ok(
+    byId(usage, "refresh-subscriptions").styles.some(
+      ([key, value]) => key === "accessibility_label" && value === "Refresh subscription usage",
+    ),
+  );
+});
+
+test("only the rail reads usage on startup, every five minutes, and on manual refresh", async () => {
+  const h = await harness();
+  h.view.init({}, h.cx);
+  assert.equal(h.state.timers[0].ms, 300000);
+  await h.state.tasks.at(-1)(h.cx);
+  assert.deepEqual(h.state.usageReads, ["claude", "codex"]);
+  const usage = byId(h.render(), "refresh-subscriptions");
+  usage.handlers.on_click({}, h.cx);
+  await h.state.tasks.at(-1)(h.cx);
+  assert.equal(h.state.usageReads.length, 4);
+  h.state.timers[0].callback(h.cx);
+  await h.state.tasks.at(-1)(h.cx);
+  assert.equal(h.state.usageReads.length, 6);
+  h.state.commandQueue.push("refresh-usage");
+  void h.state.tasks[0](h.cx);
+  await Promise.resolve();
+  await h.state.tasks.at(-1)(h.cx);
+  assert.equal(h.state.usageReads.length, 8);
+  for (const role of ["top", "pane"]) {
+    const other = await harness(role);
+    other.view.init({}, other.cx);
+    assert.equal(other.state.timers.length, 0);
+    assert.equal(other.state.usageReads.length, 0);
+  }
 });

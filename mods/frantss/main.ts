@@ -35,6 +35,14 @@ import { button } from "./button.ts";
 import { hcOrToast } from "./agent-hc.ts";
 import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
 import { keepUnread, shownStatus } from "./unread.ts";
+import { SUBSCRIPTION_LAUNCH, SUBSCRIPTION_READER } from "./subscription-reader.ts";
+import {
+  SUBSCRIPTION_REFRESH_MS,
+  SUBSCRIPTIONS,
+  SubscriptionUsage,
+  resetTime,
+  usageWindow,
+} from "./subscriptions.ts";
 
 type Theme = Record<string, `#${string}`>;
 type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
@@ -255,6 +263,7 @@ const slugify = (text: string) =>
 const spaceName = (s: SpaceInfo) => (s.named ? s.name : (s.branch ?? s.name));
 
 export default class Frantss extends View {
+  subscriptionUsage = new SubscriptionUsage();
   declare repos: Record<string, string | null>;
   declare checkouts: Record<string, "main" | "linked" | null>;
   declare marks: Record<string, number>;
@@ -275,14 +284,41 @@ export default class Frantss extends View {
     if (props()?.role === "rail") {
       for (const machine of new Set(["", ...spaces().map((s) => s.machine ?? "")]))
         refreshAgents(machine).catch(() => {});
-      cx.spawn(async () => {
+      cx.spawn(async (cx) => {
         for (;;) {
           const command = await nextCommand();
+          if (command === "refresh-usage") this.refreshSubscriptions(cx);
           if (command.startsWith("forget-history:"))
             await this.forgetHistory(decodeURIComponent(command.slice("forget-history:".length)));
         }
       });
+      this.refreshSubscriptions(cx);
+      cx.timer.every(SUBSCRIPTION_REFRESH_MS, (cx) => this.refreshSubscriptions(cx));
     }
+  }
+
+  refreshSubscriptions(cx: Context) {
+    if (this.subscriptionUsage.refreshing) return;
+    cx.spawn(async (cx) => {
+      await this.subscriptionUsage.refresh(
+        async (provider) => {
+          // Match the agent launcher: a desktop process may not have the user's Node on PATH.
+          const result = await exec("sh", [
+            "-c",
+            SUBSCRIPTION_LAUNCH,
+            "herdr-usage",
+            "--input-type=module",
+            "-e",
+            SUBSCRIPTION_READER,
+            provider,
+          ]);
+          if (result.code !== 0) throw new Error("Reader failed");
+          return result.stdout;
+        },
+        () => Date.now(),
+        () => cx.notify(),
+      );
+    });
   }
 
   // Looks up the places and saved workspaces it hasn't seen. Render runs whenever spaces, panes or
@@ -1003,7 +1039,136 @@ export default class Frantss extends View {
           ),
         ),
       )
+      .child(this.subscriptions(t, now))
       .child(this.footer(t));
+  }
+
+  subscriptions(t: Theme, now: number) {
+    const usage = this.subscriptionUsage;
+    return v_flex()
+      .id("subscription-usage")
+      .flex_none()
+      .px(16)
+      .py(10)
+      .gap(10)
+      .border_t(1)
+      .border_color(t.border)
+      .child(
+        h_flex()
+          .items_center()
+          .gap(6)
+          .child(div().flex_1().text_size(11).text_color(t.muted).child("USAGE"))
+          .child(
+            div()
+              .text_size(10)
+              .text_color(t.muted)
+              .child(usage.refreshing ? "Refreshing…" : "used"),
+          )
+          .child(
+            button("refresh-subscriptions", "↻", (cx) => this.refreshSubscriptions(cx), {
+              variant: "quiet",
+              size: "dense",
+              square: true,
+              disabled: usage.refreshing,
+              tooltip: "Refresh subscription usage",
+            }),
+          ),
+      )
+      .children(
+        SUBSCRIPTIONS.map((provider) => {
+          const snapshot = usage.data[provider];
+          const name = provider === "claude" ? "Claude" : "Codex";
+          const stale = snapshot.windows.some((window) => usageWindow(window, snapshot, now).stale);
+          const elapsed = age(now - (snapshot.updatedAt ?? now));
+          const updated =
+            snapshot.updatedAt === undefined
+              ? ""
+              : elapsed === "now"
+                ? "Updated now"
+                : `Updated ${elapsed} ago`;
+          const detail = [snapshot.error, updated, "Refreshes every 5 minutes."]
+            .filter(Boolean)
+            .join("\n");
+          return v_flex()
+            .id(`usage-${provider}`)
+            .gap(4)
+            .child(
+              h_flex()
+                .items_center()
+                .gap(6)
+                .child(div().flex_none().text_size(11).text_color(t.foreground).child(name))
+                .child(
+                  div()
+                    .flex_1()
+                    .min_w(0)
+                    .truncate()
+                    .text_right()
+                    .text_size(10)
+                    .text_color(t.muted)
+                    .tooltip(detail)
+                    .child(stale ? "Stale" : snapshot.error ? "Unavailable" : updated),
+                ),
+            )
+            .when(!snapshot.windows.length, (e) =>
+              e.child(
+                div()
+                  .text_size(10)
+                  .text_color(t.muted)
+                  .tooltip(detail)
+                  .child(
+                    snapshot.error ?? (usage.refreshing ? "Reading usage…" : "Waiting for usage…"),
+                  ),
+              ),
+            )
+            .children(
+              snapshot.windows.map((window) => {
+                const state = usageWindow(window, snapshot, now);
+                const reset = resetTime(window.resetsAt, now);
+                const description = `${name} ${window.label}: ${state.percent} used${state.stale ? " (stale)" : ""}. ${reset}`;
+                return h_flex()
+                  .id(`usage-${provider}-${window.label}`)
+                  .gap(8)
+                  .items_center()
+                  .tooltip(`${description}\n${detail}`)
+                  .accessibility_label(description)
+                  .child(
+                    div()
+                      .w(24)
+                      .flex_none()
+                      .truncate()
+                      .text_size(10)
+                      .text_color(t.muted)
+                      .child(window.label),
+                  )
+                  .child(
+                    div()
+                      .flex_1()
+                      .min_w(0)
+                      .h(4)
+                      .rounded(2)
+                      .bg(t.input)
+                      .child(
+                        div()
+                          .h_full()
+                          .rounded(2)
+                          .w(`${state.expired ? 0 : window.usedPercent}%`)
+                          .bg(
+                            state.stale ? t.muted : window.usedPercent >= 90 ? t.blocked : t.accent,
+                          ),
+                      ),
+                  )
+                  .child(
+                    div()
+                      .w(32)
+                      .flex_none()
+                      .text_size(10)
+                      .text_color(t.foreground)
+                      .child(state.percent),
+                  );
+              }),
+            );
+        }),
+      );
   }
 
   // Recently closed agents, pinned above the footer; past a few rows it scrolls on its own.
