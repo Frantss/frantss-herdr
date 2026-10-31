@@ -283,12 +283,14 @@ test("rail keeps workspace order, global-first cwd, tab names, worktree marks, a
       (node) => node?.source === "mods/workspace-chrome/branch.svg",
     ),
   );
-  assert.equal(
-    descendants(byId(tree, "space-primary")).some(
-      (node) => node?.source === "mods/workspace-chrome/branch.svg",
-    ),
-    false,
-  );
+  const icons = (id: string) =>
+    descendants(byId(tree, id))
+      .map((node) => node?.source)
+      .filter((source) => source && !source.includes("chevron"));
+  assert.deepEqual(icons("space-primary"), ["mods/frantss/checkout.svg"]);
+  assert.deepEqual(icons(`group-${group}`), ["mods/workspace-chrome/folder.svg"]);
+  assert.deepEqual(icons(`group-${key("/closed")}`), ["mods/workspace-chrome/folder.svg"]);
+  assert.deepEqual(icons("tab-t-program"), ["mods/workspace-chrome/terminal.svg"]);
   byId(tree, `new-${group}`).handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.overlays.at(-1).props), {
     space: "primary",
@@ -330,22 +332,24 @@ test("rail publishes space workspaces again only when one changes", async () => 
   assert.equal(h.state.shared.get("frantss.spaceWorkspaces")["outside"], key("/outside/.git"));
 });
 
-test("rail shows a tab's panes in its place when it has more than one", async () => {
+test("rail lists a tab's panes under it when it has more than one", async () => {
   const h = await harness();
   const tree = h.render();
   const rows = descendants(tree)
     .map((node) => node?.elementId)
     .filter((id) => /^(tab|pane)-pane-t-(agent|mod)/.test(id) || /^tab-t-(agent|mod)$/.test(id));
   assert.deepEqual(rows, [
+    "tab-t-agent",
     "pane-pane-t-agent-Zsh",
     "pane-pane-t-agent-✳ Fix API",
     "pane-pane-t-agent-✳ Later agent",
+    "tab-t-mod",
     "pane-pane-t-mod-Canvas",
     "pane-pane-t-mod-/path",
   ]);
   assert.deepEqual(
     rows.map((id) => text(byId(tree, id))),
-    ["zsh", "fix api", "later agent", "canvas", "path"],
+    ["fix api", "├zsh", "├fix api", "└later agent", "canvas", "├canvas", "└path"],
   );
   byId(tree, "pane-pane-t-agent-✳ Fix API").handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.commands.at(-1)), [
@@ -412,7 +416,7 @@ test("each new render uses current titles and cwds without retaining live-data m
   h.view.repos[key("/different")] = null;
   h.state.calls = { spaces: 0, panes: 0, paneVisits: 0 };
   const tree = h.render();
-  assert.equal(text(byId(tree, "pane-pane-t-agent-✳ Fix API")), "updated task");
+  assert.equal(text(byId(tree, "pane-pane-t-agent-✳ Fix API")), "├updated task");
   assert.ok(byId(tree, `group-${key("/different")}`));
   assert.deepEqual(h.state.calls, { spaces: 1, panes: 1, paneVisits: h.state.panes.length });
 });

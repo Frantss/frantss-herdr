@@ -82,6 +82,7 @@ type RailRow = {
   // Controls shown in place of `value` while the row is hovered.
   hoverEnd?: Element;
   collapsed?: boolean;
+  connector?: string;
   agent?: boolean;
 };
 type RailSection = {
@@ -113,6 +114,10 @@ const icon = (t: Theme, program: Program, size = 14) =>
     : (program.tint ? svg(program.icon).text_color(t.muted) : image(program.icon))
         .size(size)
         .flex_none();
+// The workspace tree's icon column: each level has its own icon, so rows read apart at a glance.
+const treeIcon = (t: Theme, source: string) => svg(source).size(12).flex_none().text_color(t.dim);
+const programIcon = (t: Theme, program: Program) =>
+  icon(t, program, 12) ?? treeIcon(t, "mods/workspace-chrome/terminal.svg");
 // Only blocked pulses: a loop redraws the whole window every frame, and agents work for long stretches.
 const dot = (t: Theme, status: string) =>
   div()
@@ -594,10 +599,11 @@ export default class Frantss extends View {
 
   // One rail row: "❯ label ······ value" with a `value`, else "❯ label" with an optional `end` beside it.
   // The ❯ is a separate marker that glides between rows. `lead`: the icon column, false for none.
-  // `lit`: bright without being current (a group holding the current space); `dim`: faint (a workspace
+  // `lit`: bright without being current (a workspace, the active space); `dim`: faint (a workspace
   // with nothing open). `strong`: medium weight (a workspace); `small`: smaller text (a tab), so each
   // level of the tree reads apart. `collapsed`: a chevron in the first column, pointing the way what is
-  // under the row is (true closed, false open); none when undefined.
+  // under the row is (true closed, false open); none when undefined. `connector`: a tree glyph in that
+  // column instead (a tab's panes).
   row(
     t: Theme,
     {
@@ -616,6 +622,7 @@ export default class Frantss extends View {
       onMenu,
       hoverEnd,
       collapsed,
+      connector,
     }: RailRow,
   ) {
     const hovered = Boolean(hoverEnd) && this.hovered === id;
@@ -647,7 +654,8 @@ export default class Frantss extends View {
             .w(10 + (indent ?? 0))
             .flex_none()
             .justify_end()
-            .when(collapsed !== undefined, (e) => e.child(chevron(t, collapsed))),
+            .when(collapsed !== undefined, (e) => e.child(chevron(t, collapsed)))
+            .when(connector !== undefined, (e) => e.text_color(t.dim).child(connector)),
         )
         .when(lead !== false, (e) => e.child(lead ?? div().w(14).flex_none()))
         .child(div().flex_1().min_w(0).truncate().child(text))
@@ -771,9 +779,10 @@ export default class Frantss extends View {
       all.flatMap((s) => s.tabs.filter((tab) => tab.named).map((tab) => tab.id)),
     );
     // Each repo (or folder) is a row with its spaces under it, and each space with its tabs under it
-    // until you close it; the current space is lit and the current tab marked. Rows here are bare names,
-    // a status dot after. A tab with more than one pane shows its panes in its place. A space with one
-    // tab of one pane stands for that tab: it shows its name, takes the marker and has nothing to close.
+    // until you close it; the current space is lit and the current tab marked. Each row has its level's
+    // icon (folder; checkout or worktree branch; program), its name, then a status dot. A tab with more
+    // than one pane lists its panes under it. A space with one tab of one pane stands for that tab: it
+    // shows its name and program, takes the marker and has nothing to close.
     const tabPanes = (tab: TabInfo) => snapshot.panesByTab.get(tab.id) ?? [];
     const standsForTab = (s: SpaceInfo) => s.tabs.length === 1 && tabPanes(s.tabs[0]).length < 2;
     const collapsed = collapsedIds();
@@ -793,14 +802,23 @@ export default class Frantss extends View {
         h_flex().gap(8).items_center().child(statusIndicator).child(div().w(PLUS_WIDTH))
       );
     };
-    // A worktree space has a branch icon left of its dot's column, as Codex marks worktree threads.
+    // A worktree space has a branch icon, as Codex marks worktree threads; its own checkout has a commit.
+    // A space standing for its tab has the tab's program icon instead, so its branch moves to its end.
+    const linked = (s: SpaceInfo) => this.checkouts?.[snapshot.placeBySpace.get(s.id)] === "linked";
+    const branchIcon = () => treeIcon(t, "mods/workspace-chrome/branch.svg");
+    const spaceIcon = (s: SpaceInfo) =>
+      standsForTab(s)
+        ? programIcon(t, snapshot.leadByTab.get(s.tabs[0].id)?.program)
+        : linked(s)
+          ? branchIcon()
+          : treeIcon(t, "mods/frantss/checkout.svg");
     const spaceEnd = (s: SpaceInfo) => {
       const dotted = dotEnd(s.status);
-      if (this.checkouts?.[snapshot.placeBySpace.get(s.id)] !== "linked") return dotted;
+      if (!standsForTab(s) || !linked(s)) return dotted;
       return h_flex()
         .gap(8)
         .items_center()
-        .child(svg("mods/workspace-chrome/branch.svg").size(12).flex_none().text_color(t.dim))
+        .child(branchIcon())
         .child(dotted ?? div().w(6 + 8 + PLUS_WIDTH));
     };
     const spaceRow = (s: SpaceInfo): RailRow => ({
@@ -808,7 +826,7 @@ export default class Frantss extends View {
       current: s.active && standsForTab(s),
       lit: s.active,
       indent: 14,
-      lead: false,
+      lead: spaceIcon(s),
       end: spaceEnd(s),
       collapsed: standsForTab(s) ? undefined : spaceClosed(s),
       text: standsForTab(s)
@@ -825,14 +843,16 @@ export default class Frantss extends View {
     const tabRows = (s: SpaceInfo): RailRow[] =>
       standsForTab(s) || spaceClosed(s)
         ? []
-        : s.tabs.flatMap((tab) => (tabPanes(tab).length > 1 ? paneRows(s, tab) : [tabRow(s, tab)]));
+        : s.tabs.flatMap((tab) => [tabRow(s, tab), ...paneRows(s, tab)]);
+    const split = (tab: TabInfo) => tabPanes(tab).length > 1;
     const tabRow = (s: SpaceInfo, tab: TabInfo): RailRow => ({
       id: `tab-${tab.id}`,
-      current: s.active && tab.active,
+      // A split tab's marker sits on its focused pane.
+      current: s.active && tab.active && !split(tab),
       indent: 28,
       dim: true,
       small: true,
-      lead: false,
+      lead: programIcon(t, snapshot.leadByTab.get(tab.id)?.program),
       end: dotEnd(tab.status),
       text: tabName(tab, snapshot.leadByTab.get(tab.id)),
       onClick: () => run("tab.select", { id: tab.id }),
@@ -844,13 +864,14 @@ export default class Frantss extends View {
         }),
     });
     const paneRows = (s: SpaceInfo, tab: TabInfo): RailRow[] =>
-      tabPanes(tab).map((pane) => ({
+      (split(tab) ? tabPanes(tab) : []).map((pane, index, all) => ({
         id: `pane-${pane.pane}`,
         current: s.active && tab.active && pane.focused,
-        indent: 28,
+        indent: 42,
+        connector: index === all.length - 1 ? "└" : "├",
         dim: true,
         small: true,
-        lead: false,
+        lead: programIcon(t, pane.program),
         end: dotEnd(pane.status),
         text: paneName(pane),
         onClick: () => run("pane.focus", { pane: pane.pane }),
@@ -887,9 +908,9 @@ export default class Frantss extends View {
       const s = ownCheckout(g);
       return {
         id: `group-${g.key}`,
-        lit: g.spaces.some((s) => s.active),
+        lit: true,
         strong: true,
-        lead: false,
+        lead: treeIcon(t, "mods/workspace-chrome/folder.svg"),
         text: saved?.name ?? g.name,
         collapsed: workspaceClosed(g),
         end: h_flex()
@@ -919,7 +940,7 @@ export default class Frantss extends View {
       id: `group-${w.key}`,
       dim: true,
       strong: true,
-      lead: false,
+      lead: treeIcon(t, "mods/workspace-chrome/folder.svg"),
       text: w.name,
       end: h_flex()
         .gap(8)
