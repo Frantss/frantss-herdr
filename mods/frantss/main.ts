@@ -79,7 +79,7 @@ type RailRow = {
   end?: Element;
   onClick: (event: ClickEvent, cx: Context) => unknown;
   onMenu?: (event: MouseButtonEvent, cx: Context) => unknown;
-  // Controls shown in place of `value` while the row is hovered.
+  // Controls shown in place of `value` and `end` while the row is hovered.
   hoverEnd?: Element;
   collapsed?: boolean;
   connector?: string;
@@ -669,7 +669,7 @@ export default class Frantss extends View {
             div().flex_none().max_w(80).truncate().text_size(11).text_color(t.dim).child(value),
           ),
         )
-        .when(Boolean(end), (e) => e.child(end))
+        .when(!hovered && Boolean(end), (e) => e.child(end))
     );
   }
 
@@ -798,13 +798,15 @@ export default class Frantss extends View {
         ...collapsedIds().filter((id) => !id.startsWith(`space:${s.id}:`)),
         `space:${s.id}:${spaceClosed(s) ? "open" : "closed"}`,
       ]);
-    // A dot left of where a workspace row's + sits, under that row's own dot.
-    const dotEnd = (status: string) => {
+    // A dot left of where a workspace row's + sits, under that row's own dot; `plus` fills that column.
+    const dotEnd = (status: string, plus?: Element) => {
       const statusIndicator = statusDot(t, status);
-      return (
-        statusIndicator &&
-        h_flex().gap(8).items_center().child(statusIndicator).child(div().w(PLUS_WIDTH))
-      );
+      if (!statusIndicator && !plus) return null;
+      return h_flex()
+        .gap(8)
+        .items_center()
+        .child(statusIndicator ?? div().w(6))
+        .child(plus ?? div().w(PLUS_WIDTH));
     };
     // A worktree space has a branch icon, as Codex marks worktree threads; its own checkout has a commit.
     // A space standing for its tab has the tab's program icon instead, so its branch moves to its end.
@@ -816,8 +818,8 @@ export default class Frantss extends View {
         : linked(s)
           ? branchIcon()
           : treeIcon(t, "mods/frantss/checkout.svg");
-    const spaceEnd = (s: SpaceInfo) => {
-      const dotted = dotEnd(s.status);
+    const spaceEnd = (s: SpaceInfo, plus?: Element) => {
+      const dotted = dotEnd(s.status, plus);
       if (!standsForTab(s) || !linked(s)) return dotted;
       return h_flex()
         .gap(8)
@@ -832,6 +834,15 @@ export default class Frantss extends View {
       indent: 14,
       lead: spaceIcon(s),
       end: spaceEnd(s),
+      // Hovered, its + starts a thread as a new tab in this space (no repo: no Worktree choice).
+      hoverEnd: spaceEnd(
+        s,
+        newThread(`tab-${s.id}`, {
+          space: s.id,
+          folder: snapshot.cwdBySpace.get(s.id),
+          machine: s.machine,
+        }),
+      ),
       collapsed: standsForTab(s) ? undefined : spaceClosed(s),
       text: standsForTab(s)
         ? tabName(s.tabs[0], snapshot.leadByTab.get(s.tabs[0].id))

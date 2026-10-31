@@ -104,6 +104,17 @@ test("an idle agent's menu can mark it unread", async () => {
   assert.deepEqual(menu[1], ["Mark as unread", "unread", { terminal: "t1" }]);
 });
 
+test("a space's menu opens a new tab in it, worktrees included", async () => {
+  const menu = JSON.parse(
+    JSON.stringify((await load()).items({ tab: "space", target: { id: "s1" } }, "linked")),
+  ) as [string, string, Record<string, string>][];
+  assert.deepEqual(
+    menu.map(([, command]) => command),
+    ["space.rename", "tab.new", "worktree", "worktree", "worktree", "space.close"],
+  );
+  assert.deepEqual(menu[1], ["New tab", "tab.new", { space: "s1" }]);
+});
+
 const terminalMenu = async (target: Record<string, string>) =>
   JSON.parse(JSON.stringify((await load()).items({ tab: "terminal", target }, null))) as [
     string,

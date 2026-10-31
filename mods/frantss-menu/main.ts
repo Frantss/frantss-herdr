@@ -158,6 +158,7 @@ export function items(p: MenuProps, git: "main" | "linked" | null): MenuItem[] {
     case "space":
       return [
         renameItem("space", tg),
+        ["New tab", "tab.new", { space: tg.id }],
         ...(git
           ? [
               ["New worktree", "worktree", { space: tg.id, action: "new" }],

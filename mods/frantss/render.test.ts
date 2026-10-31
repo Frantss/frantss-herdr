@@ -250,6 +250,11 @@ function text(node): string {
 function descendants(node): any[] {
   return [node, ...(node?.childNodes ?? []).flatMap(descendants)];
 }
+// A row's hover controls render only while the rail tracks that row as hovered.
+function hoverRender(h, rowId: string) {
+  h.view.hovered = rowId;
+  return h.render();
+}
 
 for (const role of ["rail", "top"]) {
   test(`${role} reads one spaces/panes snapshot and traverses panes once per render`, async () => {
@@ -359,6 +364,24 @@ test("rail lists a tab's panes under it when it has more than one", async () => 
   byId(tree, "pane-pane-t-agent-Zsh").handlers.on_mouse_down({}, h.cx);
   assert.equal(h.state.overlays.at(-1).props.tab, "pane");
   assert.equal(h.state.overlays.at(-1).props.target.pane, "pane-t-agent-Zsh");
+});
+
+test("a hovered space row's + starts a thread as a new tab in that space", async () => {
+  const h = await harness();
+  assert.equal(byId(h.render(), "new-tab-worktree"), null);
+  const tree = hoverRender(h, "space-worktree");
+  assert.ok(
+    descendants(byId(tree, "space-worktree")).some(
+      (node) => node?.source === "mods/workspace-chrome/branch.svg",
+    ),
+  );
+  byId(tree, "new-tab-worktree").handlers.on_click({}, h.cx);
+  assert.equal(h.state.overlays.at(-1).mod, "frantss-thread");
+  assert.deepEqual(plain(h.state.overlays.at(-1).props), {
+    space: "worktree",
+    folder: "/home/.herdr/worktrees/project/feature",
+    machine: null,
+  });
 });
 
 test("a space whose only tab has several panes lists them instead of standing for the tab", async () => {
