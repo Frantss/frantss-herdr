@@ -629,16 +629,20 @@ export default class Frantss extends View {
     return (
       h_flex()
         .id(id)
+        // Inset 4px with rounded corners, like frantss-menu's rows; content keeps its 12px from the edge.
+        // Margins, not offsets: footer and closed rows are in flow, where `left` would shift them.
         .left(0)
         .right(0)
+        .mx(4)
         .h(RAIL.row)
-        .px(12)
+        .px(8)
+        .rounded(3)
         .gap(8)
         .items_center()
         .text_size(small ? 11 : 12)
         .when(Boolean(strong), (e) => e.font_medium())
         .text_color(current || lit ? t.foreground : dim ? t.dim : t.muted)
-        .hover((s) => s.text_color(t.foreground))
+        .hover((s) => s.bg(t.hover).text_color(t.foreground))
         .on_click(onClick)
         .when(Boolean(onMenu), (e) => e.on_mouse_down("right", onMenu))
         .when(Boolean(hoverEnd), (e) =>
