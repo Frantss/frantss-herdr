@@ -296,7 +296,8 @@ test("rail keeps workspace order, global-first cwd, tab names, worktree marks, a
   assert.deepEqual(icons(`group-${group}`), ["mods/workspace-chrome/folder.svg"]);
   assert.deepEqual(icons(`group-${key("/closed")}`), ["mods/workspace-chrome/folder.svg"]);
   assert.deepEqual(icons("tab-t-program"), ["mods/workspace-chrome/terminal.svg"]);
-  byId(tree, `new-${group}`).handlers.on_click({}, h.cx);
+  assert.equal(byId(tree, `new-${group}`), null);
+  byId(hoverRender(h, `group-${group}`), `new-${group}`).handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.overlays.at(-1).props), {
     space: "primary",
     folder: "/project/live",
@@ -311,7 +312,7 @@ test("rail keeps workspace order, global-first cwd, tab names, worktree marks, a
     space: "primary",
     name: "Keep CASE",
   });
-  byId(tree, `new-${remoteGroup}`).handlers.on_click({}, h.cx);
+  byId(hoverRender(h, `group-${remoteGroup}`), `new-${remoteGroup}`).handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.overlays.at(-1).props), {
     space: "build/remote",
     folder: "/project/live",
@@ -512,7 +513,7 @@ test("duplicate saved workspaces retain the first folder for rows and menus", as
   assert.deepEqual(plain(h.state.overlays.at(-1).props), { folder: "/closed/first", saved: true });
   byId(tree, `group-${closed}`).handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.commands.at(-1)), ["space.new", { folder: "/closed/first" }]);
-  byId(tree, `new-${closed}`).handlers.on_click({}, h.cx);
+  byId(hoverRender(h, `group-${closed}`), `new-${closed}`).handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.overlays.at(-1).props), { folder: "/closed/first", repo: true });
 });
 

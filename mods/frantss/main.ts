@@ -894,9 +894,9 @@ export default class Frantss extends View {
       }));
     const withTabs = (s: SpaceInfo) => [spaceRow(s), ...tabRows(s)];
     // A group row is a workspace: its open spaces (its own checkout and worktrees) are under it, unless
-    // you closed it. Clicking opens or closes it; its + starts a thread (frantss-thread) in its own
-    // checkout (not one of Herdr's worktrees), else its first space; its menu keeps or removes it
-    // (frantss-workspace).
+    // you closed it. Clicking opens or closes it; its + (on hover, as on space rows) starts a thread
+    // (frantss-thread) in its own checkout (not one of Herdr's worktrees), else its first space; its
+    // menu keeps or removes it (frantss-workspace).
     const newThread = (key: string, target: Record<string, unknown>) =>
       this.plus(t, `new-${key}`, "New thread", () =>
         openOverlay({
@@ -921,6 +921,7 @@ export default class Frantss extends View {
     const workspaceClosed = (g: SpaceGroup) => collapsed.includes(`workspace:${g.key}`);
     const groupRow = (g: SpaceGroup, saved: NamedWorkspace): RailRow => {
       const s = ownCheckout(g);
+      const status = URGENT.find((st) => g.spaces.some((space) => space.status === st));
       return {
         id: `group-${g.key}`,
         lit: true,
@@ -928,23 +929,16 @@ export default class Frantss extends View {
         lead: treeIcon(t, "mods/workspace-chrome/folder.svg"),
         text: saved?.name ?? g.name,
         collapsed: workspaceClosed(g),
-        end: h_flex()
-          .gap(8)
-          .items_center()
-          .child(
-            statusDot(
-              t,
-              URGENT.find((st) => g.spaces.some((s) => s.status === st)),
-            ) ?? div().w(6),
-          )
-          .child(
-            newThread(g.key, {
-              space: s.id,
-              folder: snapshot.cwdBySpace.get(s.id),
-              machine: s.machine,
-              repo: g.repo,
-            }),
-          ),
+        end: dotEnd(status),
+        hoverEnd: dotEnd(
+          status,
+          newThread(g.key, {
+            space: s.id,
+            folder: snapshot.cwdBySpace.get(s.id),
+            machine: s.machine,
+            repo: g.repo,
+          }),
+        ),
         onClick: () => toggleCollapsed(`workspace:${g.key}`),
         // Only folders on this machine can be kept (the folder picker's, and new spaces', machine).
         onMenu: () => g.local && workspaceMenu(saved?.folder ?? g.folder, Boolean(saved)),
@@ -957,11 +951,7 @@ export default class Frantss extends View {
       strong: true,
       lead: treeIcon(t, "mods/workspace-chrome/folder.svg"),
       text: w.name,
-      end: h_flex()
-        .gap(8)
-        .items_center()
-        .child(div().w(6))
-        .child(newThread(w.key, { folder: w.folder, repo: w.repo })),
+      hoverEnd: dotEnd("", newThread(w.key, { folder: w.folder, repo: w.repo })),
       onClick: () => run("space.new", { folder: w.folder }),
       onMenu: () => workspaceMenu(w.folder, true),
     });
