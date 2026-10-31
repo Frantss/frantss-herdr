@@ -25,14 +25,9 @@
 - Exception: after changing mods, layouts or themes, run `pnpm run link` without asking, so Herdr loads the change.
 - After approval, fix encountered bugs directly related to your work and report the fixes afterwards. Apply the same proposal requirement to architectural or cross-cutting bug fixes.
 
-## Context management
+## Orchestration
 
-- Keep the main context focused on the goal, constraints, decisions, and integration.
-- When sub-agents are available and permitted, delegate bounded research, code exploration, implementation, reviews, and output-heavy checks. Handle trivial operations directly when delegation adds more overhead than it removes.
-- Give each sub-agent a clear goal, relevant context, constraints, and completion criteria. Pass only the context needed for its task.
-- Require a concise summary of results, evidence references, verification outcomes, and unresolved issues. Keep detailed searches, logs, and intermediate output in the sub-agent's context.
-- Verify consequential conclusions against the referenced evidence. Read additional details when needed to resolve uncertainty or integrate changes.
-- Give concurrent sub-agents separate edit ownership. Coordinate work that depends on shared files or results.
+- Use Herdr Core (`hc`) when delegation benefits the task. Before delegating, read [ORCHESTRATION.md](ORCHESTRATION.md) for worker coordination and strongly recommended model and reasoning choices. Handle trivial work directly.
 
 ## Proposing solutions
 
