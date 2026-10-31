@@ -48,7 +48,7 @@ export default defineConfig({
     environment: "node",
     execArgv: ["--experimental-vm-modules"],
   },
-  fmt: { ignorePatterns: ["AGENTS.md"] },
+  fmt: { ignorePatterns: ["AGENTS.md", "ORCHESTRATION.md"] },
   lint: {
     options: { typeAware: true, typeCheck: true },
     rules: { "typescript/no-useless-default-assignment": "off" },

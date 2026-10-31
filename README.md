@@ -77,8 +77,8 @@ which may change; Codex requires a CLI with `account/rateLimits/read` support.
 files, then checks formatting, linting and TypeScript types with Vite+. It uses
 Herdr's existing non-strict-null contracts. Use `pnpm fmt` to format files,
 `pnpm lint` for linting, and `pnpm test` to build and run tests. The configuration
-is in `vite.config.ts`. `AGENTS.md` stays excluded from formatting so it remains
-an exact copy of its source.
+is in `vite.config.ts`. `AGENTS.md` and `ORCHESTRATION.md` stay excluded from
+formatting so they remain exact copies of their source.
 
 `pnpm check:mods` builds and renders every emitted mod with Herdr's native checker.
 Set `HERDR_APP_BIN` if `herdr-app` is not on PATH. Herdr 0.1.7's checker can abort
