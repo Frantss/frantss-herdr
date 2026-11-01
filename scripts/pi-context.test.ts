@@ -14,9 +14,16 @@ async function harness(terminal: string | undefined = "t7") {
   await module.evaluate();
   const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
   const calls: unknown[] = [];
+  const names: string[] = [];
+  let name: string | undefined;
   let fail = false;
   (module.namespace as { default: Function }).default({
     on: (event, handler) => handlers.set(event, handler),
+    getSessionName: () => name,
+    setSessionName: (value: string) => {
+      name = value;
+      names.push(value);
+    },
     exec: async (...args) => {
       calls.push(JSON.parse(JSON.stringify(args)));
       if (fail) throw new Error("Core unavailable");
@@ -26,6 +33,10 @@ async function harness(terminal: string | undefined = "t7") {
   return {
     handlers,
     calls,
+    names,
+    name: (value: string) => {
+      name = value;
+    },
     fail: () => {
       fail = true;
     },
@@ -107,4 +118,92 @@ test("Pi outside Herdr registers no handlers", async () => {
   const h = await harness("");
   assert.equal(h.handlers.size, 0);
   assert.equal(h.calls.length, 0);
+});
+
+test("a resumed unnamed Pi session exposes its first user task as the terminal title", async () => {
+  const h = await harness();
+  await h.handlers.get("session_start")(
+    {},
+    {
+      getContextUsage: () => undefined,
+      sessionManager: {
+        getBranch: () => [
+          {
+            type: "message",
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: "Update the installed skills\nKeep unrelated files unchanged.",
+                },
+              ],
+            },
+          },
+          { type: "message", message: { role: "user", content: "Now verify the result" } },
+        ],
+      },
+    },
+  );
+  assert.deepEqual(h.names, ["Update the installed skills"]);
+});
+
+test("Pi names a new session when its first user message starts a turn", async () => {
+  const h = await harness();
+  assert.ok(h.handlers.has("before_agent_start"));
+  await h.handlers.get("before_agent_start")(
+    { messageType: "user", prompt: "Fix   Pi labels\nCheck both panes." },
+    {
+      sessionManager: { getBranch: () => [] },
+    },
+  );
+  assert.deepEqual(h.names, ["Fix Pi labels"]);
+  await h.handlers.get("before_agent_start")(
+    { messageType: "user", prompt: "Check another issue" },
+    {},
+  );
+  assert.deepEqual(h.names, ["Fix Pi labels"]);
+});
+
+test("Pi preserves explicit session names and ignores custom starts and image-only prompts", async () => {
+  const h = await harness();
+  h.name("Chosen name");
+  await h.handlers.get("session_start")(
+    {},
+    {
+      getContextUsage: () => undefined,
+      sessionManager: {
+        getBranch: () => [
+          { type: "message", message: { role: "user", content: "Original prompt" } },
+        ],
+      },
+    },
+  );
+  assert.deepEqual(h.names, []);
+  h.name("");
+  const ctx = {
+    sessionManager: {
+      getBranch: () => [
+        { type: "message", message: { role: "user", content: [{ type: "image", data: "image" }] } },
+      ],
+    },
+  };
+  await h.handlers.get("before_agent_start")(
+    { messageType: "custom", message: { content: "Internal task" } },
+    ctx,
+  );
+  assert.deepEqual(h.names, []);
+  await h.handlers.get("session_start")({}, { ...ctx, getContextUsage: () => undefined });
+  assert.deepEqual(h.names, []);
+});
+
+test("Pi limits generated session names and ignores terminal control characters", async () => {
+  const h = await harness();
+  await h.handlers.get("before_agent_start")(
+    { messageType: "user", prompt: "\u001b\u0007" + "A".repeat(100) },
+    {
+      sessionManager: { getBranch: () => [] },
+    },
+  );
+  assert.deepEqual(h.names, ["A".repeat(80)]);
 });

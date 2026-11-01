@@ -355,6 +355,36 @@ test("rail publishes space workspaces again only when one changes", async () => 
   assert.equal(h.state.shared.get("frantss.spaceWorkspaces")["outside"], key("/outside/.git"));
 });
 
+test("Pi session names reach tab rows, pane headers, and agent rows", async () => {
+  const h = await harness();
+  const target = h.state.panes.find((pane) => pane.tab === "t-cwd");
+  Object.assign(target, {
+    title: "π - Fix Pi titles - gasty",
+    cwd: "/project/gasty",
+    terminal: "t-pi",
+    program: { key: "pi", name: "Pi", agent: true },
+  });
+  h.state.agents = [
+    {
+      address: "t-pi",
+      tab: "t-cwd",
+      pane: target.pane,
+      space: "primary",
+      space_name: "primary",
+      app: "pi",
+      program: target.program,
+      title: target.title,
+      status: "working",
+    },
+  ];
+  const tree = h.render();
+  assert.equal(text(byId(tree, "tab-t-cwd")), "fix pi titles");
+  assert.equal(text(byId(tree, "agent-t-pi")), "fix pi titlesprimary");
+  h.state.role = "pane";
+  h.state.pane = target.pane;
+  assert.match(text(h.render()), /fix pi titles/);
+});
+
 test("rail lists a tab's panes under it when it has more than one", async () => {
   const h = await harness();
   const tree = h.render();

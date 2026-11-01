@@ -95,7 +95,9 @@ ln -s "$PWD/scripts/pi-context.ts" "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/exte
 
 Run these commands from this checkout. The extension reports Pi's own context estimate
 through `hc` terminal labels. Unknown usage after compaction stays hidden until Pi has
-a new estimate. Install the extension on each machine where Pi runs. Closed Pi sessions
+a new estimate. It names unnamed Pi sessions from the first user message's first nonempty
+line, limited to 80 characters; existing session names are kept. Use Pi's `/name` to
+change that name. Install the extension on each machine where Pi runs. Closed Pi sessions
 offer **Resume…**, which opens Pi's session selector in the original folder.
 
 `pnpm check` refreshes Herdr's generated API declarations in the ignored `types/`
