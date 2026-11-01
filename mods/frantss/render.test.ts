@@ -19,6 +19,7 @@ const space = (id, folder, tabs, other = {}) => ({
 });
 const pane = (tab, cwd, title, program = null, other = {}) => ({
   pane: `pane-${tab}-${title}`,
+  terminal: null as string | null,
   tab,
   cwd,
   title,
@@ -78,6 +79,7 @@ async function harness(role = "rail") {
     agents: [] as any[],
     overlays: [] as any[],
     commands: [] as any[],
+    onCommand: (_name: string, _args: any) => {},
     calls: { spaces: 0, panes: 0, paneVisits: 0 },
     tasks: [] as ((cx: unknown) => Promise<void>)[],
     terminals: [] as {
@@ -173,7 +175,10 @@ async function harness(role = "rail") {
       setAgentOrder: (addresses) => {
         state.agentOrder = addresses;
       },
-      run: (...args) => state.commands.push(args),
+      run: (...args) => {
+        state.commands.push(args);
+        state.onCommand(args[0], args[1]);
+      },
       openOverlay: (options) => state.overlays.push(options),
       terminals: () => state.terminals,
       exec: async (command, args, options) => {
@@ -482,6 +487,118 @@ test("pane headers retain their single pane lookup without workspace indexing", 
   assert.ok(byId(lone, "split-right"));
   assert.equal(byId(lone, "zoom-pane"), null);
   assert.equal(byId(lone, "close-pane"), null);
+});
+
+test("only terminal panes sharing their tab offer an accessible move-to-tab control", async () => {
+  const h = await harness("pane");
+  Object.assign(h.state.panes[2], { terminal: "t42" });
+  const control = byId(h.render(), "move-pane-to-tab");
+  assert.ok(control);
+  assert.ok(control.styles.some(([name, value]) => name === "tab_stop" && value));
+  assert.ok(
+    control.styles.some(
+      ([name, value]) => name === "accessibility_label" && value === "Move to new tab",
+    ),
+  );
+  control.handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands), [
+    [`frantss.move-pane:${encodeURIComponent(h.state.pane)}`],
+  ]);
+
+  h.state.pane = h.state.panes[4].pane;
+  h.state.panes[4].terminal = "t43";
+  assert.equal(byId(h.render(), "move-pane-to-tab"), null);
+  h.state.pane = h.state.panes[5].pane;
+  Object.assign(h.state.panes[5], { terminal: null, mod: "canvas" });
+  assert.equal(byId(h.render(), "move-pane-to-tab"), null);
+});
+
+test("moving waits for parking, ignores repeat requests, and retains the terminal in its original space", async () => {
+  const h = await harness();
+  const target = h.state.panes[2];
+  target.terminal = "build/t42";
+  let release;
+  const sleeps: number[] = [];
+  const cx = {
+    sleep: (ms) => {
+      sleeps.push(ms);
+      return new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    },
+  };
+  h.state.onCommand = (name, args) => {
+    if (name === "terminal.keep")
+      h.state.panes.push({ ...target, pane: "new-pane", tab: "new-tab", terminal: args.terminal });
+  };
+  const move = h.view.movePane(target.pane, cx);
+  assert.deepEqual(plain(h.state.commands), [["terminal.park", { terminal: "build/t42" }]]);
+  await h.view.movePane(target.pane, cx);
+  const sibling = h.state.panes.find((each) => each !== target && each.tab === target.tab);
+  sibling.terminal = "build/t43";
+  const otherMove = h.view.movePane(sibling.pane, cx);
+  assert.equal(h.state.commands.length, 1);
+  await otherMove;
+  assert.deepEqual(sleeps, [100]);
+  h.state.panes = h.state.panes.filter((each) => each !== target);
+  release();
+  await move;
+  assert.deepEqual(plain(h.state.commands), [
+    ["terminal.park", { terminal: "build/t42" }],
+    ["tab.select", { id: target.tab }],
+    ["terminal.keep", { terminal: "build/t42", place: "tab" }],
+  ]);
+  assert.equal(h.state.errors.length, 0);
+});
+
+test("a failed park does not keep or close a terminal, reports the failure, and allows retry", async () => {
+  const h = await harness();
+  const target = h.state.panes[2];
+  target.terminal = "t42";
+  const cx = { sleep: async () => {} };
+  await h.view.movePane(target.pane, cx);
+  assert.deepEqual(plain(h.state.commands), [["terminal.park", { terminal: "t42" }]]);
+  assert.equal(h.state.errors.length, 1);
+  assert.match(plain(h.state.errors)[0].title, /Could not move/);
+  await h.view.movePane(target.pane, cx);
+  assert.equal(h.state.commands.length, 2);
+});
+
+test("a failed keep offers a recovery action for the running terminal", async () => {
+  const h = await harness();
+  const target = h.state.panes[2];
+  target.terminal = "t42";
+  h.state.onCommand = (name) => {
+    if (name === "terminal.park") h.state.panes = h.state.panes.filter((each) => each !== target);
+  };
+  await h.view.movePane(target.pane, { sleep: async () => {} });
+  assert.deepEqual(plain(h.state.errors)[0].action, {
+    name: "terminal.keep",
+    args: { terminal: "t42", place: "tab" },
+  });
+  assert.ok(!h.state.commands.some(([name]) => name === "pane.close" || name === "terminal.kill"));
+});
+
+test("stale, lone, and mod pane move requests have no side effects", async () => {
+  const h = await harness();
+  h.state.panes[4].terminal = "t43";
+  for (const id of ["missing", h.state.panes[4].pane, h.state.panes[5].pane])
+    await h.view.movePane(id, {});
+  assert.equal(h.state.commands.length, 0);
+});
+
+test("the rail owns pane moves requested by pane header commands", async () => {
+  const h = await harness();
+  const moves: string[] = [];
+  h.view.movePane = async (id) => {
+    moves.push(id);
+  };
+  h.state.commandQueue.push("move-pane:pane%2F42");
+  h.view.init({}, h.cx);
+  void h.state.tasks[0](h.cx);
+  await new Promise(setImmediate);
+  await h.state.tasks.at(-1)(h.cx);
+  assert.deepEqual(moves, ["pane/42"]);
 });
 
 test("the rail's footer opens the settings and adds a machine", async () => {

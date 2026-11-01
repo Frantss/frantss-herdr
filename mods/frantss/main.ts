@@ -294,6 +294,7 @@ const spaceName = (s: SpaceInfo) => (s.named ? s.name : (s.branch ?? s.name));
 
 export default class Frantss extends View {
   subscriptionUsage = new SubscriptionUsage();
+  movingTabs = new Set<string>();
   declare repos: Record<string, string | null>;
   declare checkouts: Record<string, "main" | "linked" | null>;
   declare marks: Record<string, number>;
@@ -326,11 +327,55 @@ export default class Frantss extends View {
           if (command === "refresh-usage") this.refreshSubscriptions(cx);
           if (command.startsWith("forget-history:"))
             await this.forgetHistory(decodeURIComponent(command.slice("forget-history:".length)));
+          if (command.startsWith("move-pane:")) {
+            const id = decodeURIComponent(command.slice("move-pane:".length));
+            cx.spawn((cx) => this.movePane(id, cx));
+          }
         }
       });
       this.refreshSubscriptions(cx);
       cx.timer.every(SUBSCRIPTION_REFRESH_MS, (cx) => this.refreshSubscriptions(cx));
       cx.timer.every(CONTEXT_REFRESH_MS, (cx) => this.refreshContext(cx));
+    }
+  }
+
+  // The rail outlives the pane header removed by parking its terminal.
+  async movePane(id: string, cx: AsyncContext) {
+    const all = panes();
+    const pane = all.find((each) => each.pane === id);
+    if (
+      !pane?.terminal ||
+      this.movingTabs.has(pane.tab) ||
+      !all.some((each) => each.pane !== id && each.tab === pane.tab)
+    )
+      return;
+    const terminal = pane.terminal;
+    this.movingTabs.add(pane.tab);
+    const waitFor = async (ready: () => boolean) => {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (ready()) return;
+        await cx.sleep(100);
+      }
+      if (!ready()) throw new Error("Herdr did not finish moving the terminal within 10 seconds.");
+    };
+    try {
+      run("terminal.park", { terminal });
+      await waitFor(() => !panes().some((each) => each.terminal === terminal));
+      if (!spaces().some((space) => space.tabs.some((tab) => tab.id === pane.tab)))
+        throw new Error("The original tab was closed during the move.");
+      run("tab.select", { id: pane.tab });
+      run("terminal.keep", { terminal, place: "tab" });
+      await waitFor(() => panes().some((each) => each.terminal === terminal));
+    } catch (error) {
+      const parked = !panes().some((each) => each.terminal === terminal);
+      notify({
+        title: "Could not move pane to a new tab",
+        body: `${error instanceof Error ? error.message : String(error)}${parked ? " Click this message to restore the terminal as a tab." : ""}`,
+        level: "error",
+        ...(parked ? { action: { name: "terminal.keep", args: { terminal, place: "tab" } } } : {}),
+      });
+    } finally {
+      this.movingTabs.delete(pane.tab);
     }
   }
 
@@ -1373,8 +1418,7 @@ export default class Frantss extends View {
       );
   }
 
-  // A pane's header; it splits its pane. A pane that shares its tab can also be zoomed and closed
-  // from it (a lone one fills its tab and closes with it).
+  // A shared pane can be zoomed or closed here; a terminal can also move to its own tab.
   pane(t: Theme) {
     const all = panes(),
       id = props().pane;
@@ -1422,6 +1466,17 @@ export default class Frantss extends View {
       )
       .when(withOthers, (e) =>
         e
+          .when(Boolean(pane.terminal), (e) =>
+            e.child(
+              this.control(
+                t,
+                "move-pane-to-tab",
+                "Move to new tab",
+                svg("mods/frantss/move-to-tab.svg").size(12),
+                () => run(`frantss.move-pane:${encodeURIComponent(pane.pane)}`),
+              ),
+            ),
+          )
           .child(
             this.control(
               t,
