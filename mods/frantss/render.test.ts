@@ -837,6 +837,26 @@ test("a pending transcript read cannot replace Pi's context after focus changes"
   });
 });
 
+test("closed Pi sessions offer Pi's session picker", async () => {
+  const h = await harness();
+  h.state.shared.set("frantss.closedAgents", [
+    {
+      address: "t7",
+      app: "pi",
+      program: { name: "Pi", key: "pi", agent: true },
+      title: "Pi task",
+      cwd: "/project/live",
+      closed: 1,
+    },
+  ]);
+  const tree = h.render();
+  byId(tree, "resume-t7").handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands.at(-1)), [
+    "tab.new",
+    { space: "primary", folder: "/project/live", argv: ["pi", "--resume"] },
+  ]);
+});
+
 test("the rail records local agents and lists closed ones with history, resume, and forget", async () => {
   const h = await harness();
   h.state.agents = [

@@ -60,6 +60,7 @@ export const closedAgents = (records: AgentRecord[]) =>
     .sort((left, right) => right.closed - left.closed);
 
 const RESUME: Record<string, string[]> = {
+  pi: ["pi", "--resume"],
   "claude-code": ["claude", "--resume"],
   codex: ["codex", "--no-daemon", "resume"],
 };

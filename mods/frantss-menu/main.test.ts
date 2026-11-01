@@ -147,7 +147,12 @@ test("a recently closed agent offers history, a supported session picker, and co
     ["Resume…", "resume", { cwd: "/old", app: "codex" }],
     ["Forget history…", "forget-history", { terminal: "t9", name: "fix tabs" }],
   ]);
-  for (const app of [null, "pi"]) {
+  const piMenu = module.items({ tab: "closed", target: { ...target, app: "pi" } }, null);
+  assert.deepEqual(
+    Array.from(piMenu, ([label]) => label),
+    ["View history", "Resume…", "Forget history…"],
+  );
+  for (const app of [null, "unknown"]) {
     const items = module.items({ tab: "closed", target: { ...target, app } }, null);
     assert.deepEqual(
       Array.from(items, ([label]) => label),
