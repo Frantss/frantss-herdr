@@ -46,6 +46,7 @@ import { iconFile, type IconManifest } from "./icons.ts";
 import { statusMarks, type Mark } from "./status.ts";
 import { daemonName, daemonRunning, freshConfig, freshTheme, FRESH_THEME } from "./fresh.ts";
 import { editorLanguage, previewKind, previewText } from "./preview.ts";
+import { copyImage, removeImage } from "./image.ts";
 import { checkName, menuItems, parentOf, type MenuItem } from "./menu.ts";
 import { appIcon, installedApps, INSTALLED, knownApps, openArgs, type App } from "./apps.ts";
 import { followedPlace, panelShown } from "./panel.ts";
@@ -179,6 +180,8 @@ export default class Files extends View {
   declare file: string | null;
   declare fileText: string | null;
   declare fileError: string | null;
+  declare fileImage: string | null;
+  declare imageRequest: number;
   declare code: EditorState | null;
   declare source: boolean;
   declare handle: FocusHandle;
@@ -221,6 +224,8 @@ export default class Files extends View {
     this.file = null;
     this.fileText = null;
     this.fileError = null;
+    this.fileImage = null;
+    this.imageRequest = 0;
     this.code = null;
     this.source = false;
     this.menu = null;
@@ -383,7 +388,7 @@ export default class Files extends View {
         if (this.kept.size > KEPT_PLACES) this.kept.delete(this.kept.keys().next().value);
       }
       this.generation = (this.generation ?? 0) + 1;
-      this.closePreview();
+      void this.closePreview();
       this.menu = null;
       this.editing = null;
       this.loading = false;
@@ -574,11 +579,14 @@ export default class Files extends View {
   // Shows a file below the tree, or reloads the one shown; unchanged text keeps the view as it is.
   show(path: string, cx: Context) {
     if (path !== this.file) {
-      this.closePreview();
+      void this.closePreview();
       this.file = path;
     }
     cx.notify();
-    if (previewKind(path) === "image") return;
+    if (previewKind(path) === "image") {
+      if (!this.on) this.showImage(path, cx);
+      return;
+    }
     const context = this.context,
       generation = this.generation,
       root = this.root,
@@ -597,6 +605,36 @@ export default class Files extends View {
     });
   }
 
+  showImage(path: string, cx: Context) {
+    const context = this.context,
+      generation = this.generation,
+      root = this.root,
+      request = ++this.imageRequest,
+      current = () =>
+        request === this.imageRequest && this.file === path && this.current(context, generation);
+    cx.spawn(async (cx) => {
+      let asset: string;
+      try {
+        asset = await copyImage(`${root}/${path}`);
+      } catch {
+        if (current()) {
+          this.fileError = "Cannot preview this image (missing or unreadable)";
+          cx.notify();
+        }
+        return;
+      }
+      if (!current()) {
+        await removeImage(asset);
+        return;
+      }
+      const previous = this.fileImage;
+      this.fileImage = asset;
+      this.fileError = null;
+      cx.notify();
+      await removeImage(previous);
+    });
+  }
+
   setPreview(text: string | null, error: string | null) {
     this.code?.release();
     this.code = null;
@@ -607,12 +645,20 @@ export default class Files extends View {
   }
 
   closePreview() {
+    const asset = this.fileImage;
+    this.fileImage = null;
+    this.imageRequest++;
     this.code?.release();
     this.code = null;
     this.file = null;
     this.fileText = null;
     this.fileError = null;
     this.source = false;
+    return removeImage(asset);
+  }
+
+  async close() {
+    await this.closePreview();
   }
 
   toggleSource(cx: Context) {
@@ -760,7 +806,7 @@ export default class Files extends View {
       if (kind === "rename") {
         this.closeFolder(path);
         if (this.file === path) this.show(relative, cx);
-        else if (this.file?.startsWith(path + "/")) this.closePreview();
+        else if (this.file?.startsWith(path + "/")) void this.closePreview();
       } else if (kind === "new-file") this.show(relative, cx);
       this.editing = null;
       this.handle.focus();
@@ -783,7 +829,7 @@ export default class Files extends View {
         });
         return;
       }
-      if (this.file === path || this.file?.startsWith(path + "/")) this.closePreview();
+      if (this.file === path || this.file?.startsWith(path + "/")) void this.closePreview();
       this.closeFolder(path);
       this.refresh(cx, [absolute]);
       cx.notify();
@@ -1326,19 +1372,22 @@ export default class Files extends View {
           )
           .child(
             this.iconButton("files-close", "Close preview", CLOSE, (cx) => {
-              this.closePreview();
+              void this.closePreview();
               cx.notify();
             }),
           ),
       )
-      .child(this.previewBody(path, kind, t));
+      .child(this.previewBody(kind, t));
   }
 
-  previewBody(path: string, kind: ReturnType<typeof previewKind>, t: Theme) {
+  previewBody(kind: ReturnType<typeof previewKind>, t: Theme) {
     const message = (text: string) => div().p(12).text_size(12).text_color(t.dim).child(text);
+    if (kind === "image" && this.on)
+      return message("Images on another machine cannot be previewed");
+    if (this.fileError) return message(this.fileError);
     if (kind === "image")
-      return this.on
-        ? message("Images on another machine cannot be previewed")
+      return !this.fileImage
+        ? message("Loading file…")
         : div()
             .flex_1()
             .min_h(0)
@@ -1346,8 +1395,7 @@ export default class Files extends View {
             .flex()
             .items_center()
             .justify_center()
-            .child(image(`${this.root}/${path}`).max_w_full().max_h_full());
-    if (this.fileError) return message(this.fileError);
+            .child(image(this.fileImage).max_w_full().max_h_full());
     if (this.code) return Editor.new(this.code).flex_1().min_h(0);
     if (kind === "markdown" && this.fileText !== null)
       return TextView.markdown("files-markdown", this.fileText)

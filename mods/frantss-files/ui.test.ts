@@ -12,12 +12,15 @@ async function harness(refresh = false) {
     calls: [],
     editors: [],
     texts: {},
+    images: { "/repo/logo.png": [137, 80, 78, 71] },
+    assets: new Map(),
     commands: [],
     notices: [],
     shared: {},
     zoom: 0.8,
     cwd: "/repo",
     on: null,
+    platform: "macos",
     directories: new Map(),
     executions: [],
     tasks: [],
@@ -85,6 +88,10 @@ async function harness(refresh = false) {
   const context = vm.createContext({});
   const palette = { background: "#111111", muted: "#aaaaaa", dim: "#555555" };
   const natives = {
+    "fs/promises": {
+      mkdir: async () => {},
+      unlink: async (path) => state.assets.delete(path),
+    },
     "gpui-kit": {
       View: class {},
       div: element,
@@ -155,6 +162,7 @@ async function harness(refresh = false) {
           throw new Error(`Unexpected host call ${name}`);
         },
       ]),
+      ["appHome", () => "/herdr"],
       ["spaces", () => []],
       ["shared", (key) => state.shared[key] ?? null],
       [
@@ -170,7 +178,7 @@ async function harness(refresh = false) {
       ],
       ["props", () => null],
       ["layout", () => state.layout],
-      ["window", () => ({ platform: "macos" })],
+      ["window", () => ({ platform: state.platform })],
       ["settings", () => ({ zoom: state.zoom })],
       ["theme", () => palette],
     ]),
@@ -183,6 +191,11 @@ async function harness(refresh = false) {
   if (!refresh)
     natives.herdr.exec = async (command, args, options) => {
       state.commands.push([command, ...args, options?.on ?? null]);
+      if (command === "cp") {
+        if (state.run) return state.run(command, args);
+        if (!(args[0] in state.images)) throw new Error("Image unavailable");
+        state.assets.set(args[1], state.images[args[0]]);
+      }
       return state.run?.(command, args) ?? { code: 0, stdout: "", stderr: "" };
     };
   if (refresh)
@@ -256,6 +269,8 @@ async function harness(refresh = false) {
     file: null,
     fileText: null,
     fileError: null,
+    fileImage: null,
+    imageRequest: 0,
     code: null,
     source: false,
     menu: null,
@@ -1110,9 +1125,110 @@ test("binary files explain themselves, and images show without reading text", as
     typeof node === "object" && "src" in node
       ? node.src
       : (node?.childNodes ?? []).map(source).find((value) => value !== undefined);
-  assert.equal(source(h.render()), "/repo/logo.png");
+  const asset = source(h.render());
+  assert.ok(asset.startsWith("frantss-files/previews/"));
+  assert.deepEqual(h.state.assets.get(`/herdr/${asset}`), h.state.images["/repo/logo.png"]);
   h.files.on = "server";
   assert.ok(textOf(h.render()).includes("Images on another machine cannot be previewed"));
+});
+
+test("image previews replace cached assets on reload and remove them on close", async () => {
+  const h = await harness();
+  h.files.show("logo.png", h.cx);
+  assert.ok(textOf(h.render()).includes("Loading file…"));
+  await h.drain();
+  const first = h.files.fileImage;
+  h.state.images["/repo/logo.png"] = [1, 2, 3];
+  h.files.show("logo.png", h.cx);
+  await h.drain();
+  assert.notEqual(h.files.fileImage, first);
+  assert.equal(h.state.assets.has(`/herdr/${first}`), false);
+  assert.deepEqual(h.state.assets.get(`/herdr/${h.files.fileImage}`), [1, 2, 3]);
+  findNode(h.render(), byId("files-close")).handlers.on_click({}, h.cx);
+  await h.drain();
+  assert.equal(h.state.assets.size, 0);
+});
+
+test("missing images show an error and remote images do not copy local files", async () => {
+  const h = await harness();
+  h.files.show("missing.png", h.cx);
+  await h.drain();
+  assert.ok(textOf(h.render()).includes("Cannot preview this image"));
+  h.files.on = "server";
+  const copies = h.state.commands.length;
+  h.files.show("remote.png", h.cx);
+  await h.drain();
+  assert.equal(h.state.commands.length, copies);
+  assert.ok(textOf(h.render()).includes("Images on another machine cannot be previewed"));
+});
+
+test("an image copy finishing after the preview closes is discarded", async () => {
+  const h = await harness();
+  let finish;
+  h.state.run = (_command, args) =>
+    new Promise((resolve) => {
+      finish = () => {
+        h.state.assets.set(args[1], [137, 80, 78, 71]);
+        resolve({ code: 0, stdout: "", stderr: "" });
+      };
+    });
+  h.files.show("logo.png", h.cx);
+  await new Promise((resolve) => setImmediate(resolve));
+  h.files.closePreview();
+  finish();
+  await h.drain();
+  assert.equal(h.files.file, null);
+  assert.equal(h.files.fileImage, null);
+  assert.equal(h.state.assets.size, 0);
+});
+
+test("image reloads finishing out of order keep only the latest asset", async () => {
+  const h = await harness();
+  const copies = [];
+  h.state.run = (_command, args) =>
+    new Promise((resolve) => {
+      copies.push(() => {
+        h.state.assets.set(args[1], [copies.length]);
+        resolve({ code: 0, stdout: "", stderr: "" });
+      });
+    });
+  h.files.show("logo.png", h.cx);
+  await new Promise((resolve) => setImmediate(resolve));
+  h.files.show("logo.png", h.cx);
+  await new Promise((resolve) => setImmediate(resolve));
+  copies[1]();
+  await new Promise((resolve) => setImmediate(resolve));
+  const latest = h.files.fileImage;
+  copies[0]();
+  await h.drain();
+  assert.equal(h.files.fileImage, latest);
+  assert.equal(h.state.assets.size, 1);
+  await h.files.close();
+  assert.equal(h.state.assets.size, 0);
+});
+
+test("failed image copies remove partial assets and show an error", async () => {
+  const h = await harness();
+  h.state.run = (_command, args) => {
+    h.state.assets.set(args[1], [137]);
+    return { code: 1, stderr: "Copy failed", stdout: "" };
+  };
+  h.files.show("logo.png", h.cx);
+  await h.drain();
+  assert.equal(h.state.assets.size, 0);
+  assert.ok(textOf(h.render()).includes("Cannot preview this image"));
+});
+
+test("Windows image copies pass paths as literal PowerShell arguments", async () => {
+  const h = await harness();
+  h.state.platform = "windows";
+  h.files.show("logo's [1].png", h.cx);
+  await h.drain();
+  const [command, ...args] = h.state.commands[0];
+  assert.equal(command, "powershell");
+  assert.ok(args[2].includes("Copy-Item -LiteralPath $source"));
+  assert.equal(args[3], "/repo/logo's [1].png");
+  assert.ok(args[4].startsWith("/herdr/frantss-files/previews/"));
 });
 
 async function menuHarness() {
