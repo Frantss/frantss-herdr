@@ -88,3 +88,11 @@ test("the branch line names the branch, its upstream, and how far apart they are
   assert.equal(branch("## HEAD (no branch)").branch, null);
   assert.equal(branch("## No commits yet on main").branch, null);
 });
+
+test("a nested repository's entry drops its trailing slash, so no folder row shares its key", () => {
+  const { entries } = parseStatus("## main\0?? dashboard/\0?? docs/a.md\0");
+  assert.deepEqual(
+    entries.map((entry) => entry.path),
+    ["dashboard", "docs/a.md"],
+  );
+});

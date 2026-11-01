@@ -34,7 +34,8 @@ const letter = (code: string) => (code === "D" ? "D" : code === "A" ? "A" : "M")
 // `git status --porcelain=v1 -z --branch --no-renames` output: whether HEAD exists; the branch,
 // null when detached or before the first commit; its upstream, null when it has none or the
 // remote deleted it; how far the branch is ahead of and behind it as of the last fetch; and the
-// changed paths with their index (X) and worktree (Y) codes.
+// changed paths with their index (X) and worktree (Y) codes. An untracked nested repository comes
+// as "name/"; without the slash its key cannot match its folder row's in the tree.
 export function parseStatus(stdout: string) {
   const [line = "", ...entries] = stdout.split("\0").filter(Boolean),
     hasHead = !/^## (No commits yet|Initial commit) on /.test(line),
@@ -47,7 +48,10 @@ export function parseStatus(stdout: string) {
     upstream: track === "gone" ? null : upstream,
     ahead: count("ahead"),
     behind: count("behind"),
-    entries: entries.map((entry) => ({ xy: entry.slice(0, 2), path: entry.slice(3) })),
+    entries: entries.map((entry) => ({
+      xy: entry.slice(0, 2),
+      path: entry.slice(3).replace(/\/$/, ""),
+    })),
   };
 }
 
