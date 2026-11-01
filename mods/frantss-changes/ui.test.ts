@@ -293,7 +293,11 @@ async function harness(refresh = false) {
     tree: false,
     listSize: 200,
     collapsed: new Set(),
-    handle: { focus() {} },
+    handle: {
+      focus() {
+        state.focuses = (state.focuses ?? 0) + 1;
+      },
+    },
     context: JSON.stringify({ cwd: "/repo", on: null }),
   });
   const watch = changes.watch.bind(changes);
@@ -474,6 +478,7 @@ test("Changes starts the resizable file list at 200 and preserves empty and erro
   h.changes.error = "Cannot read changes";
   assert.ok(text(h.render()).includes("Cannot read changes"));
   h.changes.files = Array.from({ length: 1000 }, (_, i) => file(`file-${i}.ts`));
+  h.changes.open = "unstaged:file-0.ts";
   const tree = h.render();
   function find(node, matches) {
     if (node?.styles?.some(matches)) return node;
@@ -495,6 +500,7 @@ const deferred = () => {
 test("the file list keeps the height it was dragged to when the panel shows again", async () => {
   const h = await harness();
   h.changes.files = [file("a.ts")];
+  h.changes.open = "unstaged:a.ts";
   const split = (node) =>
     node?.handlers?.on_resize ? node : (node?.childNodes ?? []).map(split).find(Boolean);
   split(h.render()).handlers.on_resize([320, 400], h.cx);
@@ -502,6 +508,81 @@ test("the file list keeps the height it was dragged to when the panel shows agai
     node?.styles?.some(([key, value]) => key === "size" && value === 320) ||
     (node?.childNodes ?? []).some(sized);
   assert.ok(sized(h.render()));
+  h.changes.open = null;
+  assert.equal(split(h.render()), undefined);
+  assert.ok(byId(h.render(), "changes-list").styles.some(([key]) => key === "flex_1"));
+  h.changes.open = "unstaged:a.ts";
+  assert.ok(sized(h.render()));
+});
+
+test("the diff header closes the preview, preserves saved comments, and reopens from the file list", async () => {
+  const { h, comment } = await reviewing();
+  comment(2, "Keep this review comment.");
+  const comments = plain(h.changes.comments);
+  const close = byId(h.render(), "changes-close-preview");
+  assert.ok(close);
+  assert.ok(close.styles.some(([key, value]) => key === "tab_stop" && value));
+  assert.ok(
+    close.styles.some(
+      ([key, value]) => key === "accessibility_label" && value === "Close diff preview",
+    ),
+  );
+  const focuses = h.state.focuses ?? 0;
+  close.handlers.on_click({}, h.cx);
+  assert.equal(h.changes.open, null);
+  assert.equal(h.changes.closed, true);
+  assert.equal(h.changes.target, null);
+  assert.deepEqual(plain(h.changes.rows), []);
+  assert.deepEqual(plain(h.changes.comments), comments);
+  assert.equal(h.state.focuses, focuses + 1);
+  h.state.lists = [];
+  const closed = h.render();
+  assert.equal(byId(closed, "changes-diff-rows"), undefined);
+  assert.equal(byId(closed, "changes-close-preview"), undefined);
+  assert.ok(byId(closed, "changes-list").styles.some(([key]) => key === "flex_1"));
+  assert.deepEqual(
+    h.state.lists.map((list) => list.id),
+    ["changes-files"],
+  );
+  assert.ok(text(closed).includes("1 comment"));
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.open, null);
+  assert.equal(h.changes.closed, true);
+  assert.deepEqual(plain(h.changes.comments), comments);
+  h.state.cwd = "/other";
+  h.changes.switchTo(JSON.stringify({ cwd: "/other", on: null }));
+  h.state.cwd = "/repo";
+  h.changes.switchTo(JSON.stringify({ cwd: "/repo", on: null }));
+  assert.equal(h.changes.closed, true);
+  const list = h.state.lists.findLast((list) => list.id === "changes-files");
+  list.node.handlers.on_item_click("unstaged:file.ts", h.cx);
+  await h.drain();
+  assert.equal(h.changes.open, "unstaged:file.ts");
+  assert.equal(h.changes.closed, false);
+  assert.ok(byId(h.render(), "changes-diff-rows"));
+  assert.deepEqual(plain(h.changes.comments), comments);
+  assert.equal(h.state.indexCalls, undefined);
+});
+
+test("a diff finishing or failing after the preview closes cannot restore its rows", async () => {
+  for (const fail of [false, true]) {
+    const h = await harness(true);
+    h.changes.refresh(h.cx);
+    await h.drain();
+    const pending = deferred();
+    h.state.queryBlocks.set("other", pending.promise);
+    h.changes.refresh(h.cx);
+    await ticks();
+    byId(h.render(), "changes-close-preview").handlers.on_click({}, h.cx);
+    if (fail) pending.reject(new Error("Diff unavailable"));
+    else pending.resolve();
+    await h.drain();
+    assert.equal(h.changes.open, null);
+    assert.equal(h.changes.closed, true);
+    assert.deepEqual(plain(h.changes.rows), []);
+    assert.equal(byId(h.render(), "changes-diff-rows"), undefined);
+  }
 });
 
 test("unchanged Changes refreshes preserve file and diff arrays without notifying", async () => {

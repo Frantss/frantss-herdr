@@ -449,10 +449,11 @@ export default class Changes extends View {
         // The first file's diff shows until you pick another.
         if (!this.open && !this.closed && files.length) this.open = entryKey(files[0]);
         if (this.open) {
+          const open = this.open;
           try {
-            await this.load(this.open, context, cx);
+            await this.load(open, context, cx);
           } catch {
-            if (key() === context)
+            if (key() === context && this.open === open)
               this.setLines(["Cannot preview this diff (too large or unreadable)"]);
           }
         }
@@ -993,7 +994,18 @@ export default class Changes extends View {
           ),
       )
       .when(f.add > 0, (e) => e.child(div().text_size(11).text_color(t.ansi2).child(`+${f.add}`)))
-      .when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)));
+      .when(f.del > 0, (e) => e.child(div().text_size(11).text_color(t.ansi1).child(`−${f.del}`)))
+      .child(
+        button(
+          "changes-close-preview",
+          svg("mods/pane/close.svg").size(12),
+          (cx) => {
+            this.pick(this.open!, cx);
+            this.handle.focus();
+          },
+          { variant: "quiet", size: "dense", square: true, tooltip: "Close diff preview" },
+        ),
+      );
   }
 
   folderRow(row: Extract<ListRow, { kind: "folder" }>, t: Theme) {
@@ -1396,6 +1408,132 @@ export default class Changes extends View {
     return this.totals;
   }
 
+  fileList(rows: ListRow[], t: Theme) {
+    return v_flex()
+      .id("changes-list")
+      .size_full()
+      .p(4)
+      .when(this.files.length > 0, (el) =>
+        el.child(
+          // A virtual list takes no pointer handlers, so its wrapper hears where a press lands.
+          div()
+            .id("changes-files-area")
+            .relative()
+            .flex_1()
+            .min_h(0)
+            .on_mouse_down("left", (e) => {
+              this.pressRight =
+                e.local_position && e.bounds ? e.bounds.width - e.local_position.x : Infinity;
+              this.pressCount = e.click_count;
+            })
+            .child(
+              v_virtual_list(
+                "changes-files",
+                rows.length,
+                26 * zoom(),
+                (i) => this.rowKey(rows[i]),
+                (range) =>
+                  rows.slice(range.start, range.end).map((row) =>
+                    v_flex()
+                      .h(26)
+                      .child(
+                        row.kind === "section"
+                          ? this.sectionRow(row, t)
+                          : row.kind === "folder"
+                            ? this.folderRow(row, t)
+                            : this.fileRow(row.file, t, this.tree ? row.depth : undefined),
+                      ),
+                  ),
+              )
+                .size_full()
+                .on_item_click((key, cx) => this.clickListRow(key, cx)),
+            )
+            .child(Scrollbar.vertical("changes-files").viewport_from_layout().absolute().inset_0()),
+        ),
+      )
+      .when(!this.files.length, (e) =>
+        e.child(
+          div()
+            .p(8)
+            .text_color(t.dim)
+            .child(
+              this.error ||
+                (this.loading
+                  ? "Loading changes…"
+                  : this.root
+                    ? "No uncommitted changes"
+                    : "No folder"),
+            ),
+        ),
+      )
+      .when(this.limited, (el) =>
+        el.child(
+          div()
+            .px(8)
+            .py(4)
+            .text_size(11)
+            .text_color(t.dim)
+            .child("Showing the first 1,000 changed files"),
+        ),
+      );
+  }
+
+  diffPreview(file: ChangedFile, t: Theme) {
+    return (
+      // The border color is the inputs' one; the theme's border is too faint to divide the list from the diff.
+      v_flex()
+        .size_full()
+        .border_t(1)
+        .border_color(t.input)
+        .child(this.diffHeader(file, t))
+        .child(
+          div()
+            .flex_1()
+            .min_h(0)
+            .relative()
+            .font_family((settings().font_family as string | undefined) ?? "JetBrains Mono")
+            .text_size(11)
+            .child(
+              div()
+                .id("changes-diff-x")
+                .size_full()
+                .overflow_x_scrollbar()
+                .child(
+                  div()
+                    .w_full()
+                    .min_w(this.diffWidth)
+                    .h_full()
+                    .id("changes-diff-rows")
+                    .on_mouse_down("left", (e) => {
+                      this.pressX = e.local_position?.x ?? Infinity;
+                    })
+                    .when(this.rows.length > 0, (el) =>
+                      el.child(
+                        v_virtual_list(
+                          "changes-diff",
+                          this.rows.length,
+                          this.target
+                            ? this.rows.map(
+                                (row) => (row.kind === "compose" ? COMPOSER : 20) * zoom(),
+                              )
+                            : 20 * zoom(),
+                          (i) => String(i),
+                          (range) =>
+                            this.rows
+                              .slice(range.start, range.end)
+                              .map((row, i) => this.diffRow(row, range.start + i, t)),
+                        )
+                          .size_full()
+                          .on_item_click((index, cx) => this.clickRow(Number(index), cx)),
+                      ),
+                    ),
+                ),
+            )
+            .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0()),
+        )
+    );
+  }
+
   render(cx: Context) {
     if (!panelShown("changes")) return div();
     if (this.stale) {
@@ -1501,169 +1639,20 @@ export default class Changes extends View {
       )
       .when(Boolean(this.root), (e) => e.child(this.commitBar(t)))
       .child(
-        v_resizable("changes-split")
-          .flex_1()
-          .min_h(0)
-          // Hiding the panel drops the split, so its size is kept to start from.
-          .on_resize((sizes) => {
-            this.listSize = sizes[0];
-            localStorage.setItem(SPLIT_SETTING, String(sizes[0]));
-          })
-          .child(
-            resizable_panel()
-              .size(this.listSize)
-              .size_range(44)
+        openFile
+          ? v_resizable("changes-split")
+              .flex_1()
+              .min_h(0)
+              // Hiding the preview or panel drops the split, so its size is kept to start from.
+              .on_resize((sizes) => {
+                this.listSize = sizes[0];
+                localStorage.setItem(SPLIT_SETTING, String(sizes[0]));
+              })
               .child(
-                v_flex()
-                  .id("changes-list")
-                  .size_full()
-                  .p(4)
-                  .when(this.files.length > 0, (el) =>
-                    el.child(
-                      // A virtual list takes no pointer handlers, so its wrapper hears where a press lands.
-                      div()
-                        .id("changes-files-area")
-                        .relative()
-                        .flex_1()
-                        .min_h(0)
-                        .on_mouse_down("left", (e) => {
-                          this.pressRight =
-                            e.local_position && e.bounds
-                              ? e.bounds.width - e.local_position.x
-                              : Infinity;
-                          this.pressCount = e.click_count;
-                        })
-                        .child(
-                          v_virtual_list(
-                            "changes-files",
-                            rows.length,
-                            26 * zoom(),
-                            (i) => this.rowKey(rows[i]),
-                            (range) =>
-                              rows.slice(range.start, range.end).map((row) =>
-                                v_flex()
-                                  .h(26)
-                                  .child(
-                                    row.kind === "section"
-                                      ? this.sectionRow(row, t)
-                                      : row.kind === "folder"
-                                        ? this.folderRow(row, t)
-                                        : this.fileRow(
-                                            row.file,
-                                            t,
-                                            this.tree ? row.depth : undefined,
-                                          ),
-                                  ),
-                              ),
-                          )
-                            .size_full()
-                            .on_item_click((key, cx) => this.clickListRow(key, cx)),
-                        )
-                        .child(
-                          Scrollbar.vertical("changes-files")
-                            .viewport_from_layout()
-                            .absolute()
-                            .inset_0(),
-                        ),
-                    ),
-                  )
-                  .when(!this.files.length, (e) =>
-                    e.child(
-                      div()
-                        .p(8)
-                        .text_color(t.dim)
-                        .child(
-                          this.error ||
-                            (this.loading
-                              ? "Loading changes…"
-                              : this.root
-                                ? "No uncommitted changes"
-                                : "No folder"),
-                        ),
-                    ),
-                  )
-                  .when(this.limited, (el) =>
-                    el.child(
-                      div()
-                        .px(8)
-                        .py(4)
-                        .text_size(11)
-                        .text_color(t.dim)
-                        .child("Showing the first 1,000 changed files"),
-                    ),
-                  ),
-              ),
-          )
-          .child(
-            resizable_panel().child(
-              // The border color is the inputs' one; the theme's border is too faint to divide the list from the diff.
-              v_flex()
-                .size_full()
-                .border_t(1)
-                .border_color(t.input)
-                .when(Boolean(openFile), (e) => e.child(this.diffHeader(openFile!, t)))
-                .child(
-                  div()
-                    .flex_1()
-                    .min_h(0)
-                    .relative()
-                    .font_family((settings().font_family as string | undefined) ?? "JetBrains Mono")
-                    .text_size(11)
-                    .child(
-                      div()
-                        .id("changes-diff-x")
-                        .size_full()
-                        .overflow_x_scrollbar()
-                        .child(
-                          div()
-                            .w_full()
-                            .min_w(this.diffWidth)
-                            .h_full()
-                            .id("changes-diff-rows")
-                            .on_mouse_down("left", (e) => {
-                              this.pressX = e.local_position?.x ?? Infinity;
-                            })
-                            .when(this.rows.length > 0, (el) =>
-                              el.child(
-                                v_virtual_list(
-                                  "changes-diff",
-                                  this.rows.length,
-                                  this.target
-                                    ? this.rows.map(
-                                        (row) => (row.kind === "compose" ? COMPOSER : 20) * zoom(),
-                                      )
-                                    : 20 * zoom(),
-                                  (i) => String(i),
-                                  (range) =>
-                                    this.rows
-                                      .slice(range.start, range.end)
-                                      .map((row, i) => this.diffRow(row, range.start + i, t)),
-                                )
-                                  .size_full()
-                                  .on_item_click((index, cx) => this.clickRow(Number(index), cx)),
-                              ),
-                            ),
-                        ),
-                    )
-                    .child(
-                      Scrollbar.vertical("changes-diff")
-                        .viewport_from_layout()
-                        .absolute()
-                        .inset_0(),
-                    )
-                    .when(!this.open && this.files.length > 0, (e) =>
-                      e.child(
-                        div()
-                          .absolute()
-                          .top(6)
-                          .px(12)
-                          .text_color(t.dim)
-                          .child("Select a file to view its changes"),
-                      ),
-                    ),
-                ),
-            ),
-          ),
+                resizable_panel().size(this.listSize).size_range(44).child(this.fileList(rows, t)),
+              )
+              .child(resizable_panel().child(this.diffPreview(openFile, t)))
+          : this.fileList(rows, t).flex_1().min_h(0),
       )
       .when(Boolean(this.note), (e) =>
         e.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)),
