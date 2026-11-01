@@ -4,6 +4,7 @@ import { h_flex } from "gpui-base";
 import { button as sharedButton } from "./button.ts";
 import { findNode, followedPlace, PANEL_MODS, type LayoutNode, type PanelId } from "./panel.ts";
 import { closeTab } from "./close-tab.ts";
+import { tabName } from "./tab-names.ts";
 import {
   spaces,
   panes,
@@ -19,31 +20,7 @@ import {
   watchFolder,
 } from "herdr";
 
-import type { SpaceInfo, TabInfo, Program } from "herdr";
-
-// The frantss rail's thread title (a mod can't import another's code): what a program says it is
-// doing in its terminal title, spinner glyphs gone; null for paths, user@host or its own name.
-function threadTitle(title: string, program: Program) {
-  const live = (title ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
-  const telling =
-    live &&
-    live !== program?.name &&
-    live.toLowerCase() !== program?.key &&
-    !/^[~/]|^[A-Za-z]:\\/.test(live) &&
-    !live.includes("@");
-  return telling ? live : null;
-}
-
-// An unnamed tab is called after its agent's thread, else its program, in lower case.
-function tabName(c: TabInfo, ps = panes()) {
-  if (c.named) return c.name;
-  const lead = ps.find((p) => p.tab === c.id && p.program?.agent) ?? ps.find((p) => p.tab === c.id);
-  return (
-    threadTitle(lead?.title, lead?.program) ??
-    lead?.program?.name ??
-    "terminal"
-  ).toLowerCase();
-}
+import type { SpaceInfo } from "herdr";
 
 // Git's lock files come and go with every git command; counting on them alone never ends.
 const meaningful = (paths: string[]) =>
@@ -102,14 +79,23 @@ export default class Toolbar extends View {
         const command = await nextCommand();
         const space = spaces().find((s) => s.active),
           tab = space?.tabs.find((c) => c.active);
-        if (command === "rename" && tab) rename("tab", tab.id, tabName(tab));
+        if (command === "rename" && tab)
+          rename(
+            "tab",
+            tab.id,
+            tabName(
+              tab,
+              panes().filter((pane) => pane.tab === tab.id),
+              space,
+            ),
+          );
         if (command === "rename-space" && space) rename("space", space.id, spaceName(space));
         if (command === "close-tab" && tab) {
           const focus = focused(),
             tabPanes = panes().filter((pane) => pane.tab === tab.id);
           const pane = focus?.tab === tab.id && tabPanes.find((pane) => pane.pane === focus.pane);
           if (pane && tabPanes.length > 1) run("pane.close", { pane: pane.pane });
-          else closeTab(tab.id, tabName(tab, tabPanes));
+          else closeTab(tab.id, tabName(tab, tabPanes, space));
         }
       }
     });

@@ -372,7 +372,7 @@ test("rail lists a tab's panes under it when it has more than one", async () => 
   ]);
   assert.deepEqual(
     rows.map((id) => text(byId(tree, id))),
-    ["fix api", "├zsh", "├fix api", "└later agent", "canvas", "├canvas", "└path"],
+    ["main", "├zsh", "├fix api", "└later agent", "main", "├canvas", "└path"],
   );
   byId(tree, "pane-pane-t-agent-✳ Fix API").handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.commands.at(-1)), [
@@ -417,7 +417,7 @@ test("top breadcrumbs retain labels, checkout menus, local actions, and remote i
   const tree = h.render();
   assert.equal(text(byId(tree, "crumb-workspace")), "~/project");
   assert.equal(text(byId(tree, "crumb-space")), "main");
-  assert.equal(text(byId(tree, "crumb-tab")), "fix-api");
+  assert.equal(text(byId(tree, "crumb-tab")), "main");
   byId(tree, "crumb-workspace").handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.overlays.at(-1).props), { folder: "/project" });
   byId(tree, "crumb-space").handlers.on_click({}, h.cx);
@@ -427,7 +427,7 @@ test("top breadcrumbs retain labels, checkout menus, local actions, and remote i
     checkout: "main",
   });
   byId(tree, "crumb-tab").handlers.on_click({}, h.cx);
-  assert.equal(h.state.overlays.at(-1).props.target.name, "fix api");
+  assert.equal(h.state.overlays.at(-1).props.target.name, "main");
   h.state.spaces.forEach((space) => {
     space.active = space.machine === "build";
   });
@@ -460,6 +460,48 @@ test("each new render uses current titles and cwds without retaining live-data m
   assert.equal(text(byId(tree, "pane-pane-t-agent-✳ Fix API")), "├updated task");
   assert.ok(byId(tree, `group-${key("/different")}`));
   assert.deepEqual(h.state.calls, { spaces: 1, panes: 1, paneVisits: h.state.panes.length });
+});
+
+test("split tab labels and menus use their branch while pane labels keep their own names", async () => {
+  const h = await harness();
+  Object.assign(h.state.spaces[1], { branch: "feature/Login", named: true, name: "Custom space" });
+  const tree = h.render();
+  assert.equal(text(byId(tree, "tab-t-agent")), "feature/Login");
+  assert.equal(text(byId(tree, "pane-pane-t-agent-✳ Fix API")), "├fix api");
+  byId(tree, "tab-t-agent").handlers.on_mouse_down({}, h.cx);
+  assert.equal(h.state.overlays.at(-1).props.target.name, "feature/Login");
+  h.state.role = "top";
+  const top = h.render();
+  assert.equal(text(byId(top, "crumb-tab")), "feature-login");
+  byId(top, "crumb-tab").handlers.on_click({}, h.cx);
+  assert.equal(h.state.overlays.at(-1).props.target.name, "feature/Login");
+  assert.ok(!h.state.commands.some(([name]) => name === "tab.rename"));
+});
+
+test("split tab names fall back to their worktree folder, then the space name", async () => {
+  for (const [folder, expected] of [
+    ["/worktrees/Detached/", "Detached"],
+    ["C:\\worktrees\\Feature\\", "Feature"],
+    ["", "Checkout"],
+  ]) {
+    const h = await harness();
+    Object.assign(h.state.spaces[1], { branch: null, folder, name: "Checkout" });
+    assert.equal(text(byId(h.render(), "tab-t-agent")), expected);
+  }
+});
+
+test("a split worktree tab keeps its explicit name and returns to pane naming when unnamed and alone", async () => {
+  const h = await harness();
+  const worktree = h.state.spaces[0];
+  worktree.branch = "feature/Worktree";
+  h.state.panes.push(pane("t-worktree", worktree.folder, "Zsh", shell));
+  h.state.shared.set("frantss.collapsed", ["space:worktree:open"]);
+  assert.equal(text(byId(h.render(), "tab-t-worktree")), "Feature");
+  worktree.tabs[0].named = false;
+  assert.equal(text(byId(h.render(), "tab-t-worktree")), "feature/Worktree");
+  h.state.panes = h.state.panes.filter((each) => each.title !== "Zsh" || each.tab !== "t-worktree");
+  assert.equal(text(byId(h.render(), "space-worktree")), "feature");
+  assert.equal(worktree.tabs[0].name, "Feature");
 });
 
 test("pane headers retain their single pane lookup without workspace indexing", async () => {

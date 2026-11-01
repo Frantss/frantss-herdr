@@ -4,9 +4,19 @@ import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 
-type Pane = { pane: string; tab: string; terminal: string | null; focused: boolean; mod?: string };
+type Pane = {
+  pane: string;
+  tab: string;
+  terminal: string | null;
+  focused: boolean;
+  mod?: string;
+  title?: string;
+};
 
-async function closeFromShortcut({
+async function runShortcut({
+  command = "close-tab",
+  branch = "main",
+  folder = "/project",
   panes = [
     { pane: "p1", tab: "t1", terminal: "term1", focused: true },
     { pane: "p2", tab: "t1", terminal: "term2", focused: false },
@@ -18,14 +28,14 @@ async function closeFromShortcut({
   const commands: unknown[][] = [];
   const overlays: any[] = [];
   const tasks: (() => Promise<void>)[] = [];
-  const queue = ["close-tab"];
+  const queue = [command];
   const unused = () => assert.fail("Unexpected native call");
   const context = vm.createContext({ localStorage: { getItem: () => null } });
   const natives = {
     "gpui-kit": { View: class {}, div: unused, svg: unused },
     "gpui-base": { h_flex: unused, Button: { new: unused } },
     herdr: {
-      spaces: () => [{ id: "s1", active, tabs }],
+      spaces: () => [{ id: "s1", name: "Checkout", branch, folder, active, tabs }],
       panes: () => panes,
       focused: () => focus,
       run: (...args) => commands.push(args),
@@ -75,13 +85,13 @@ async function closeFromShortcut({
 }
 
 test("Cmd+W closes only the focused terminal pane in a split tab without a tab confirmation", async () => {
-  const { commands, overlays } = await closeFromShortcut();
+  const { commands, overlays } = await runShortcut();
   assert.deepEqual(commands, [["pane.close", { pane: "p2" }]]);
   assert.equal(overlays.length, 0);
 });
 
 test("Cmd+W closes a focused mod pane in a split tab", async () => {
-  const { commands, overlays } = await closeFromShortcut({
+  const { commands, overlays } = await runShortcut({
     panes: [
       { pane: "p1", tab: "t1", terminal: "term1", focused: false },
       { pane: "p2", tab: "t1", terminal: null, focused: true, mod: "frantss-files" },
@@ -92,7 +102,7 @@ test("Cmd+W closes a focused mod pane in a split tab", async () => {
 });
 
 test("Cmd+W keeps the lone-pane confirmation even when another tab has panes", async () => {
-  const { commands, overlays } = await closeFromShortcut({
+  const { commands, overlays } = await runShortcut({
     panes: [
       { pane: "p1", tab: "t1", terminal: "term1", focused: true },
       { pane: "p2", tab: "t2", terminal: "term2", focused: false },
@@ -119,7 +129,7 @@ test("Cmd+W asks before closing the active tab when pane focus is absent or stal
     { pane: "missing", tab: "t1" },
     { pane: "p2", tab: "t2" },
   ]) {
-    const { commands, overlays } = await closeFromShortcut({ focus });
+    const { commands, overlays } = await runShortcut({ focus });
     assert.deepEqual(commands, []);
     assert.equal(overlays.length, 1);
     assert.equal(overlays[0].props.command.name, "tab.close");
@@ -128,7 +138,7 @@ test("Cmd+W asks before closing the active tab when pane focus is absent or stal
 });
 
 test("Cmd+W never closes a pane belonging to a different tab", async () => {
-  const { commands, overlays } = await closeFromShortcut({
+  const { commands, overlays } = await runShortcut({
     panes: [
       { pane: "p1", tab: "t1", terminal: "term1", focused: false },
       { pane: "p2", tab: "t2", terminal: "term2", focused: true },
@@ -140,8 +150,46 @@ test("Cmd+W never closes a pane belonging to a different tab", async () => {
 
 test("Cmd+W does nothing without an active tab", async () => {
   for (const options of [{ active: false }, { tabs: [] }]) {
-    const { commands, overlays } = await closeFromShortcut(options);
+    const { commands, overlays } = await runShortcut(options);
     assert.deepEqual(commands, []);
     assert.equal(overlays.length, 0);
   }
+});
+
+test("the rename prompt starts with the split tab's branch or worktree folder", async () => {
+  for (const [branch, folder, expected] of [
+    ["feature/Login", "/worktrees/login", "feature/Login"],
+    [null, "/worktrees/Detached", "Detached"],
+  ]) {
+    const { commands, overlays } = await runShortcut({
+      command: "rename",
+      branch,
+      folder,
+      tabs: [{ id: "t1", name: "1", named: false, active: true }],
+    });
+    assert.deepEqual(commands, []);
+    assert.equal(overlays[0].props.value, expected);
+    assert.equal(overlays[0].props.command.name, "tab.rename");
+  }
+});
+
+test("the rename prompt preserves explicit names and the pane-based name of a lone pane", async () => {
+  const explicit = await runShortcut({ command: "rename" });
+  assert.equal(explicit.overlays[0].props.value, "Work");
+  const lone = await runShortcut({
+    command: "rename",
+    panes: [{ pane: "p1", tab: "t1", terminal: "term1", focused: true, title: "✳ Fix API" }],
+    tabs: [{ id: "t1", name: "1", named: false, active: true }],
+  });
+  assert.equal(lone.overlays[0].props.value, "fix api");
+});
+
+test("the tab close confirmation uses the split tab's branch when no pane has focus", async () => {
+  const { commands, overlays } = await runShortcut({
+    focus: null,
+    branch: "feature/Login",
+    tabs: [{ id: "t1", name: "1", named: false, active: true }],
+  });
+  assert.deepEqual(commands, []);
+  assert.equal(overlays[0].props.title, "Close feature/Login?");
 });

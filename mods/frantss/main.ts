@@ -33,6 +33,7 @@ import {
   type CoreTerminal,
 } from "./closed.ts";
 import { button } from "./button.ts";
+import { paneName, tabName, threadTitle } from "./tab-names.ts";
 import { hcOrToast } from "./agent-hc.ts";
 import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
 import { keepUnread, shownStatus } from "./unread.ts";
@@ -169,20 +170,6 @@ const statusDot = (t: Theme, status: string) =>
 const PLUS_WIDTH = 20;
 const URGENT = GROUPS.map((g) => g.status).filter((status) => status !== "idle");
 
-// What a program says it is doing, from its terminal title: Claude Code names its thread there
-// ("✳ Fix tab width"). Spinner glyphs go; paths, user@host and the program's own name aren't
-// telling (the agents mod's rule). Null when there is nothing telling.
-function threadTitle(title: string, program: Program) {
-  const live = (title ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
-  const telling =
-    live &&
-    live !== program?.name &&
-    live.toLowerCase() !== program?.key &&
-    !/^[~/]|^[A-Za-z]:\\/.test(live) &&
-    !live.includes("@");
-  return telling ? live : null;
-}
-
 const base = (path: string) => path.replace(/\/+$/, "").split("/").pop();
 // A repo's own folder from its git folder (`frantssb/.git`); a bare repo is its git folder (`frantssb.git`).
 const repoRoot = (gitDir: string) => gitDir.replace(/\/\.git$/, "");
@@ -256,7 +243,7 @@ function workspaceSnapshot(): WorkspaceSnapshot {
   const leadByTab = new Map<string, PaneInfo>();
   const panesByTab = new Map<string, PaneInfo[]>();
   const cwdBySpace = new Map<string, string>();
-  // Cwd follows the first pane in global order; tab names prefer the first agent pane.
+  // Cwd follows the first pane in global order; tab icons prefer the first agent pane.
   for (const pane of panes()) {
     const lead = leadByTab.get(pane.tab);
     if (!lead || (!lead.program?.agent && pane.program?.agent)) leadByTab.set(pane.tab, pane);
@@ -273,14 +260,6 @@ function workspaceSnapshot(): WorkspaceSnapshot {
   }
   return { spaces: all, leadByTab, panesByTab, cwdBySpace, placeBySpace };
 }
-
-// A pane is called after its agent's thread, else its program, in lower case.
-const paneName = (pane: PaneInfo | undefined) =>
-  (threadTitle(pane?.title, pane?.program) ?? pane?.program?.name ?? "terminal").toLowerCase();
-
-// An unnamed tab is called after its lead pane (its first agent, else its first pane), as the toolbar does.
-const tabName = (tab: TabInfo, lead: PaneInfo | undefined) =>
-  tab.named ? tab.name : paneName(lead);
 
 // "Personal herdr layout" -> "personal-herdr-layout", as the site's paths read.
 const slugify = (text: string) =>
@@ -677,12 +656,12 @@ export default class Frantss extends View {
         },
       tab && {
         id: "tab",
-        text: slugify(tabName(tab, snapshot.leadByTab.get(tab.id))),
+        text: slugify(tabName(tab, snapshot.panesByTab.get(tab.id) ?? [], space)),
         onClick: () =>
           menu("tab", {
             id: tab.id,
             space: space.id,
-            name: tabName(tab, snapshot.leadByTab.get(tab.id)),
+            name: tabName(tab, snapshot.panesByTab.get(tab.id) ?? [], space),
           }),
       },
     ].filter((crumb) => crumb?.text);
@@ -965,9 +944,7 @@ export default class Frantss extends View {
         }),
       ),
       collapsed: standsForTab(s) ? undefined : spaceClosed(s),
-      text: standsForTab(s)
-        ? tabName(s.tabs[0], snapshot.leadByTab.get(s.tabs[0].id))
-        : spaceName(s),
+      text: standsForTab(s) ? tabName(s.tabs[0], tabPanes(s.tabs[0]), s) : spaceName(s),
       onClick: () => (standsForTab(s) ? run("space.select", { id: s.id }) : toggleSpace(s)),
       onMenu: () =>
         menu("space", {
@@ -990,13 +967,13 @@ export default class Frantss extends View {
       small: true,
       lead: programIcon(t, snapshot.leadByTab.get(tab.id)?.program),
       end: dotEnd(tab.status),
-      text: tabName(tab, snapshot.leadByTab.get(tab.id)),
+      text: tabName(tab, tabPanes(tab), s),
       onClick: () => run("tab.select", { id: tab.id }),
       onMenu: () =>
         menu("tab", {
           id: tab.id,
           space: s.id,
-          name: tabName(tab, snapshot.leadByTab.get(tab.id)),
+          name: tabName(tab, tabPanes(tab), s),
         }),
     });
     const paneRows = (s: SpaceInfo, tab: TabInfo): RailRow[] =>
