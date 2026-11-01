@@ -22,6 +22,7 @@
     "#e8e8e8"
   ],
   "colors": {
+    "selection": "#6d28d91f",
     "surface": "#ffffff",
     "canvas": "#fafafa",
     "chrome": "#fafafa",

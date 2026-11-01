@@ -22,6 +22,7 @@
     "#e5e5e5"
   ],
   "colors": {
+    "selection": "#a78bfa33",
     "surface": "#111111",
     "canvas": "#0a0a0a",
     "chrome": "#0a0a0a",
