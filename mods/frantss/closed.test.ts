@@ -71,7 +71,7 @@ test("closed agents come latest first and skip live ones", () => {
 
 test("resume opens each agent's own session picker", () => {
   assert.deepEqual(resumeArgv("claude-code"), ["claude", "--resume"]);
-  assert.deepEqual(resumeArgv("codex"), ["codex", "resume"]);
+  assert.deepEqual(resumeArgv("codex"), ["codex", "--no-daemon", "resume"]);
   assert.equal(resumeArgv("pi"), null);
   assert.equal(resumeArgv(null), null);
 });

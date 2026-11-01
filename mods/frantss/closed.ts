@@ -61,7 +61,7 @@ export const closedAgents = (records: AgentRecord[]) =>
 
 const RESUME: Record<string, string[]> = {
   "claude-code": ["claude", "--resume"],
-  codex: ["codex", "resume"],
+  codex: ["codex", "--no-daemon", "resume"],
 };
 // The agent's own session picker, or null for an agent that has none.
 export const resumeArgv = (app: string | null) => RESUME[app] ?? null;

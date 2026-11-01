@@ -65,6 +65,11 @@ tab, written to `frantss-files/fresh-config.json` in Herdr's config folder. Stop
 to give it a changed theme.
 The app launcher uses macOS `open`. Other panels use Herdr's `hc` and native APIs.
 
+This layout's Codex launchers and Resume controls use `--no-daemon`, so `hc run`
+children belong to the agent that started them. In a Herdr shell, start Codex with
+`codex --no-daemon`. To move an existing daemon-backed session to this mode, exit
+Codex and use `codex --no-daemon resume`.
+
 The rail's **Usage** section shows Claude and Codex subscription quota consumed.
 Closed, it shows each subscription's most used window, with its reset time from
 90%; click it to see every window and its reset time. It reads the local CLI

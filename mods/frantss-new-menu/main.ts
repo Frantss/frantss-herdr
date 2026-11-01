@@ -1,6 +1,7 @@
 import type { AsyncContext, FocusHandle, Element } from "gpui-kit";
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
+import { agentArgv } from "./agent-launch.ts";
 import {
   theme,
   spaces,
@@ -91,7 +92,7 @@ export default class NewMenu extends View {
         const agent = /^[1-9]$/.test(e.key) ? installed[Number(e.key) - 1] : null;
         if (!agent && e.key !== "t" && e.key !== "n") return;
         closeOverlay(props().overlay);
-        if (agent) run("tab.new", { space: space?.id, argv: agent.run });
+        if (agent) run("tab.new", { space: space?.id, argv: agentArgv(agent.run) });
         else if (e.key === "t") run("tab.new", { space: space?.id });
         else run("space.new");
       })
@@ -116,7 +117,7 @@ export default class NewMenu extends View {
                 a.key,
                 a.tint ? svg(a.icon).size(14).text_color(t.foreground) : image(a.icon).size(14),
                 a.name,
-                () => run("tab.new", { space: space?.id, argv: a.run }),
+                () => run("tab.new", { space: space?.id, argv: agentArgv(a.run) }),
                 a.installed ? (i < 9 ? `${mod} ${i + 1}` : "") : "not installed",
                 a.installed,
               ),

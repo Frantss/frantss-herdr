@@ -6,6 +6,7 @@ import type { AsyncContext, FocusHandle } from "gpui-kit";
 
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
+import { agentArgv } from "./agent-launch.ts";
 import {
   theme,
   knownAgents,
@@ -63,7 +64,7 @@ export default class Thread extends View {
 
   local(agent: ThreadAgent) {
     const { space, folder } = props(),
-      argv = agent.run ? { argv: agent.run } : {};
+      argv = agent.run ? { argv: agentArgv(agent.run) } : {};
     closeOverlay(props().overlay);
     if (!space) return run("space.new", { folder, ...argv });
     run("space.select", { id: space });
@@ -83,7 +84,7 @@ export default class Thread extends View {
         ...(space ? { space } : { machine: machine ?? null }),
         folder,
         action: "new",
-        ...(agent.run ? { argv: agent.run } : {}),
+        ...(agent.run ? { argv: agentArgv(agent.run) } : {}),
       },
     });
   }

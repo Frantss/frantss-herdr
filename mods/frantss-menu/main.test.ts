@@ -196,3 +196,22 @@ test("closed menu actions open history and resume in the local folder, and only 
   assert.equal(overlays[0].mod, "confirm");
   assert.equal(overlays[0].props.command.name, "frantss.forget-history:t9");
 });
+
+test("resuming Codex from its context menu keeps terminal execution isolated", async () => {
+  const commands = [];
+  const module = await load({
+    props: () => ({
+      tab: "closed",
+      overlay: "menu-1",
+      target: { terminal: "t9", cwd: "/old", app: "codex" },
+    }),
+    run: (...args) => commands.push(JSON.parse(JSON.stringify(args))),
+    spaces: () => [{ id: "s1", folder: "/old", tabs: [] }],
+  });
+  const view = new module.default();
+  view.choose(1, {} as Parameters<typeof view.choose>[1]);
+  assert.deepEqual(commands, [
+    ["space.select", { id: "s1" }],
+    ["tab.new", { space: "s1", folder: "/old", argv: ["codex", "--no-daemon", "resume"] }],
+  ]);
+});

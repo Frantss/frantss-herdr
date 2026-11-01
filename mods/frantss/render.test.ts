@@ -856,7 +856,7 @@ test("the rail records local agents and lists closed ones with history, resume, 
   byId(tree, "resume-t7").handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.commands.at(-1)), [
     "space.new",
-    { folder: "/elsewhere", argv: ["codex", "resume"] },
+    { folder: "/elsewhere", argv: ["codex", "--no-daemon", "resume"] },
   ]);
   assert.ok(byId(tree, "forget-t8"));
   byId(tree, "closed-t8").handlers.on_mouse_down({}, h.cx);
