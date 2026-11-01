@@ -7,6 +7,7 @@ import { closeTab } from "./close-tab.ts";
 import {
   spaces,
   panes,
+  focused,
   run,
   openOverlay,
   theme,
@@ -103,7 +104,13 @@ export default class Toolbar extends View {
           tab = space?.tabs.find((c) => c.active);
         if (command === "rename" && tab) rename("tab", tab.id, tabName(tab));
         if (command === "rename-space" && space) rename("space", space.id, spaceName(space));
-        if (command === "close-tab" && tab) closeTab(tab.id, tabName(tab));
+        if (command === "close-tab" && tab) {
+          const focus = focused(),
+            tabPanes = panes().filter((pane) => pane.tab === tab.id);
+          const pane = focus?.tab === tab.id && tabPanes.find((pane) => pane.pane === focus.pane);
+          if (pane && tabPanes.length > 1) run("pane.close", { pane: pane.pane });
+          else closeTab(tab.id, tabName(tab, tabPanes));
+        }
       }
     });
   }
