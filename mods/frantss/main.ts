@@ -39,6 +39,7 @@ import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
 import { keepUnread, shownStatus } from "./unread.ts";
 import {
   SESSION_LABEL,
+  CONTEXT_LABEL,
   contextUsage,
   tokenCount,
   usageLineArgv,
@@ -362,9 +363,16 @@ export default class Frantss extends View {
   // `seq` changes as the agent works, so an idle agent's file isn't read again.
   refreshContext(cx: Context) {
     const agent = agents().find((a) => a.focused);
-    const transcript: string | undefined = agent
-      ? terminals().find((terminal) => terminal.address === agent.address)?.labels?.[SESSION_LABEL]
+    const labels = agent
+      ? terminals().find((terminal) => terminal.address === agent.address)?.labels
       : undefined;
+    if (agent?.app === "pi") {
+      this.contextKey = "";
+      const usage = contextUsage("pi", labels?.[CONTEXT_LABEL] ?? "");
+      this.context = usage ? { address: agent.address, usage } : null;
+      return;
+    }
+    const transcript = labels?.[SESSION_LABEL];
     const argv = transcript && usageLineArgv(agent.app, transcript);
     if (!argv) {
       if (this.context) this.context = null;
@@ -380,7 +388,8 @@ export default class Frantss extends View {
       try {
         const result = await exec(argv[0], argv.slice(1), { on }).catch((): null => null);
         const usage = result?.code === 0 ? contextUsage(agent.app, result.stdout.trim()) : null;
-        this.context = usage ? { address: agent.address, usage } : null;
+        if (this.contextKey === key)
+          this.context = usage ? { address: agent.address, usage } : null;
       } finally {
         this.contextReading = false;
         cx.notify();
@@ -1486,8 +1495,9 @@ export default class Frantss extends View {
     const list = agents();
     this.trackAgents(cx, list, snapshot);
     // A newly focused agent's context shows at once; the timer keeps it current after.
-    const focusedAddress = list.find((a) => a.focused)?.address ?? null;
-    if (focusedAddress !== this.contextFor) {
+    const focused = list.find((a) => a.focused);
+    const focusedAddress = focused?.address ?? null;
+    if (focusedAddress !== this.contextFor || focused?.app === "pi") {
       this.contextFor = focusedAddress;
       this.refreshContext(cx);
     }

@@ -36,6 +36,26 @@ test("Codex's context is its last turn against the model's window", () => {
   assert.equal(usedPercent(usage), 5);
 });
 
+test("Pi's context label supplies its current token count and model window", () => {
+  assert.deepEqual(contextUsage("pi", '{"tokens":42000,"window":200000}'), {
+    tokens: 42000,
+    window: 200000,
+  });
+  assert.deepEqual(contextUsage("pi", '{"tokens":0,"window":200000}'), {
+    tokens: 0,
+    window: 200000,
+  });
+  for (const value of [
+    { tokens: null, window: 200000 },
+    { tokens: -1, window: 200000 },
+    { tokens: "42000", window: 200000 },
+    { tokens: 42000, window: 0 },
+    { tokens: 42000, window: -1 },
+    { tokens: 42000, window: "200000" },
+  ])
+    assert.equal(contextUsage("pi", JSON.stringify(value)), null);
+});
+
 test("unreadable lines and other apps give no usage", () => {
   assert.equal(contextUsage("codex", "not json"), null);
   assert.equal(contextUsage("codex", JSON.stringify({ payload: { info: {} } })), null);

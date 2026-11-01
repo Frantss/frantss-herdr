@@ -1,7 +1,7 @@
-// How full an agent's context window is, from the last usage line in its session file. The
-// session-label hook (scripts/session-label.sh) puts that file's path on the agent's terminal.
+// Context usage comes from session files, or Pi's extension through a terminal label.
 
 export const SESSION_LABEL = "frantss.session";
+export const CONTEXT_LABEL = "frantss.context";
 
 // A line that has the usage, per app, to find the last one with grep.
 const USAGE_LINE: Record<string, string> = {
@@ -25,14 +25,23 @@ export const usageLineArgv = (app: string | null, transcript: string) =>
       ]
     : null;
 
-// Claude Code: what the last request sent (input and cache tokens). Codex: its last turn's total
-// and the model's window.
+// Claude Code reports input and cache tokens; Codex and Pi also provide the model's window.
 export function contextUsage(app: string | null, line: string): ContextUsage | null {
   let entry: any;
   try {
     entry = JSON.parse(line);
   } catch {
     return null;
+  }
+  if (app === "pi") {
+    if (
+      !Number.isFinite(entry?.tokens) ||
+      entry.tokens < 0 ||
+      !Number.isFinite(entry?.window) ||
+      entry.window <= 0
+    )
+      return null;
+    return { tokens: entry.tokens, window: entry.window };
   }
   if (app === "claude-code") {
     const usage = entry?.message?.usage;

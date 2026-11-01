@@ -781,6 +781,62 @@ test("the focused agent's row shows its context from its labeled session file", 
   assert.equal(h.state.tasks.length, 1);
 });
 
+test("Pi's focused row follows context labels without reading a transcript", async () => {
+  const h = await harness();
+  h.state.agents = [
+    {
+      address: "build/t1",
+      space: "build/remote",
+      space_name: "remote",
+      app: "pi",
+      status: "working",
+      program: { name: "Pi", key: "pi", agent: true },
+      title: "Pi task",
+      focused: true,
+      seq: 1,
+    },
+  ];
+  const labels = { "frantss.context": '{"tokens":95000,"window":100000}' };
+  h.state.terminals = [{ address: "build/t1", state: "live", labels }];
+  assert.equal(text(byId(h.render(), "agent-build/t1")), "pi task95%");
+  labels["frantss.context"] = '{"tokens":50000,"window":200000}';
+  assert.equal(text(byId(h.render(), "agent-build/t1")), "pi task25%");
+  labels["frantss.context"] = "";
+  assert.equal(text(byId(h.render(), "agent-build/t1")), "pi taskremote");
+  assert.equal(h.state.contextReads.length, 0);
+});
+
+test("a pending transcript read cannot replace Pi's context after focus changes", async () => {
+  const h = await harness();
+  h.state.agents = [{ address: "t1", space: "primary", app: "codex", focused: true, seq: 1 }];
+  h.state.terminals = [
+    { address: "t1", state: "live", labels: { "frantss.session": "/s/one.jsonl" } },
+  ];
+  h.state.contextLine = JSON.stringify({
+    payload: {
+      info: {
+        last_token_usage: { total_tokens: 95000 },
+        model_context_window: 100000,
+      },
+    },
+  });
+  h.view.refreshContext(h.cx);
+  h.state.agents = [{ address: "t2", space: "primary", app: "pi", focused: true, seq: 1 }];
+  h.state.terminals.push({
+    address: "t2",
+    state: "live",
+    labels: {
+      "frantss.context": '{"tokens":50000,"window":200000}',
+    },
+  });
+  h.view.refreshContext(h.cx);
+  await h.state.tasks[0](h.cx);
+  assert.deepEqual(plain(h.view.context), {
+    address: "t2",
+    usage: { tokens: 50000, window: 200000 },
+  });
+});
+
 test("the rail records local agents and lists closed ones with history, resume, and forget", async () => {
   const h = await harness();
   h.state.agents = [

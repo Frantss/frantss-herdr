@@ -79,12 +79,23 @@ a dash until refreshed.
 Sign in through each CLI if prompted. Claude uses the CLI's private usage endpoint,
 which may change; Codex requires a CLI with `account/rateLimits/read` support.
 
-The focused agent's row in the rail shows its context: a bar and percent for Codex,
+The focused agent's row in the rail shows its context: a bar and percent for Codex and Pi,
 and the token count for Claude Code, whose session file doesn't give the window.
-It needs `scripts/session-label.sh` (and `jq`) as a `SessionStart` command hook,
+Claude Code and Codex need `scripts/session-label.sh` (and `jq`) as a `SessionStart` command hook,
 by this checkout's absolute path, in `~/.claude/settings.json` and `~/.codex/hooks.json`.
 The hook labels the agent's terminal with its session file; agents started before
 it was added show no context until they restart or resume.
+
+For Pi, link this checkout's extension, then start Pi or run `/reload` in an existing session:
+
+```sh
+mkdir -p "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions"
+ln -s "$PWD/scripts/pi-context.ts" "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/frantss-context.ts"
+```
+
+Run these commands from this checkout. The extension reports Pi's own context estimate
+through `hc` terminal labels. Unknown usage after compaction stays hidden until Pi has
+a new estimate. Install the extension on each machine where Pi runs.
 
 `pnpm check` refreshes Herdr's generated API declarations in the ignored `types/`
 files, then checks formatting, linting and TypeScript types with Vite+. It uses
