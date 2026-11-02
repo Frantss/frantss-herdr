@@ -61,6 +61,7 @@ export const closedAgents = (records: AgentRecord[]) =>
 
 const RESUME: Record<string, string[]> = {
   pi: ["pi", "--resume"],
+  omp: ["omp", "--resume"],
   "claude-code": ["claude", "--resume"],
   codex: ["codex", "--no-daemon", "resume"],
 };

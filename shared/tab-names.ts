@@ -21,6 +21,10 @@ export function threadTitle(title: string, program: Program, cwd?: string) {
           : (/^(.*) - .+$/.exec(rest)?.[1] ?? "");
     return live || null;
   }
+  if (program?.key === "omp") {
+    live = live.replace(/^π(?:\s+[^\p{L}\p{N}\s]+|:)\s*/u, "");
+    if (live === "π") return null;
+  }
   const telling =
     live &&
     live !== program?.name &&

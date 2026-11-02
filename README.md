@@ -124,7 +124,7 @@ a dash until refreshed.
 Sign in through each CLI if prompted. Claude uses the CLI's private usage endpoint,
 which may change; Codex requires a CLI with `account/rateLimits/read` support.
 
-The focused agent's row in the rail shows its context: a bar and percent for Codex and Pi,
+The focused agent's row in the rail shows its context: a bar and percent for Codex, Pi and OMP,
 and the token count for Claude Code, whose session file doesn't give the window.
 Claude Code and Codex need `scripts/session-label.sh` (and `jq`) as a `SessionStart` command hook,
 by this checkout's absolute path, in `~/.claude/settings.json` and `~/.codex/hooks.json`.
@@ -145,11 +145,55 @@ line, limited to 80 characters; existing session names are kept. Use Pi's `/name
 change that name. Install the extension on each machine where Pi runs. Closed Pi sessions
 offer **Resume…**, which opens Pi's session selector in the original folder.
 
+## OMP
+
+OMP 18.15.0 reports its identity and working, blocked, done, idle and error states
+through the status protocol Herdr reads. Keep OMP's `terminal.programStatus` setting
+enabled. No status hook or replacement terminal launcher is needed.
+
+To add OMP to the agent menu, merge this entry into `programs` in
+`~/.config/herdr-app/programs.json` (or `$HERDR_APP_HOME/programs.json`). Keep existing entries:
+
+```json
+{
+  "programs": {
+    "omp": {
+      "name": "OMP",
+      "icon": "mods/frantss/omp.png",
+      "tint": false,
+      "run": ["omp"]
+    }
+  }
+}
+```
+
+For context usage, session naming and turn recording, run from this checkout:
+
+```sh
+mkdir -p "$HOME/.omp/agent/extensions"
+ln -s "$PWD/scripts/omp-herdr.ts" "$HOME/.omp/agent/extensions/frantss-herdr.ts"
+```
+
+Restart OMP after installing or changing the extension. Keep this checkout and its
+sibling recorder scripts available; do not copy the extension alone. Install it on
+each machine where OMP runs. Node.js, Git and `hc` must be on OMP's PATH. The link
+command installs the layout, not this extension or the program entry.
+
+Context updates at session and turn boundaries and within five seconds of idle
+model changes. Unavailable estimates are hidden. The extension names unnamed
+sessions from the first user message, preserves existing names and ignores internal
+subagents. Herdr uses OMP's own session selector for **Resume…** in the original folder.
+
+These commands use OMP's default config directory. For a named profile, its extension
+directory is `~/.omp/profiles/<name>/agent/extensions`; config-directory overrides can
+change those paths. The menu entry and **Resume…** use the default profile. Resume named
+profiles manually with `omp --profile <name> --resume`.
+
 ## Per-turn changes
 
 The Changes panel has one **View / turn** selector: **Working tree** keeps the
 normal staging and commit controls; **Turn changes** contains recorded requests
-from Pi, Claude Code and Codex in the followed worktree. Select a request to compare
+from Pi, OMP, Claude Code and Codex in the followed worktree. Select a request to compare
 its saved before and after file states. Previous/Next moves between recorded
 requests. Historical views are read-only, including review comments, and remain
 available after later edits or commits. Recording starts only after setup; old
@@ -162,6 +206,8 @@ Node.js and Git on that machine and runs only inside Herdr (`HC_TERMINAL_ID` mus
 be set). The panel reads recorded turns through a POSIX shell (`sh`), including
 for remote worktrees; it does not need Node.js in Herdr's own PATH. The link
 command installs the panel, not agent hooks.
+
+For OMP, recording is included in the extension installed under [OMP](#omp).
 
 For Pi, link the additional extension from this checkout, then start Pi or run
 `/reload`. Keep its sibling scripts in this checkout; do not copy the extension
@@ -228,7 +274,16 @@ path. Restart each CLI after changing its hooks. In Codex, use `/hooks` to revie
 and trust the configured hooks; `[features].hooks = false` disables them.
 
 Pi records from user-request start until `agent_settled`, including automatic
-continuations. Claude Code and Codex record from UserPromptSubmit to Stop. If
+continuations. OMP records from prompt preparation to the final `agent_end`, keeping
+retries, automatic continuations, background work and steering delivered during the
+active request in the same record. New input while that request awaits background
+work stays in its record too. Queued user batches that start after settlement get a
+new record. OMP dispatches end notifications without awaiting earlier extensions;
+long-running `agent_end` handlers loaded before this extension can delay the boundary
+and group overlapping requests incorrectly. Avoid that combination when recording.
+OMP shutdown capture has a shorter, 1.5-second child-process timeout
+to fit its extension shutdown budget; forced exits can leave a request Recording.
+Claude Code and Codex record from UserPromptSubmit to Stop. If
 another Stop hook requests more work, a later Stop with `stop_hook_active: true`
 updates the same request's snapshot; the earlier snapshot can appear until then.
 Claude Code has no interrupt hook: an unfinished request is closed as interrupted

@@ -10,7 +10,11 @@ import {
   type AgentRecord,
 } from "./closed.ts";
 
-const claude = { name: "Claude Code", key: "claude", agent: true } as AgentRecord["program"];
+const claude = {
+  name: "Claude Code",
+  key: "claude",
+  agent: true,
+} as AgentRecord["program"];
 const live = (address: string, title: string | null = null) => ({
   address,
   app: "claude-code",
@@ -53,7 +57,10 @@ test("settling keeps only the latest closed agents and every live one", () => {
     ...live(`t${i}`),
     closed: i,
   }));
-  const terminals = records.map((r) => ({ address: r.address, state: "finished" }));
+  const terminals = records.map((r) => ({
+    address: r.address,
+    state: "finished",
+  }));
   terminals.push({ address: "live", state: "live" });
   const settled = settleAgents([...records, live("live")], terminals, 0);
   assert.equal(settled.length, CLOSED_LIMIT + 1);
@@ -73,6 +80,7 @@ test("resume opens each agent's own session picker", () => {
   assert.deepEqual(resumeArgv("claude-code"), ["claude", "--resume"]);
   assert.deepEqual(resumeArgv("codex"), ["codex", "--no-daemon", "resume"]);
   assert.deepEqual(resumeArgv("pi"), ["pi", "--resume"]);
+  assert.deepEqual(resumeArgv("omp"), ["omp", "--resume"]);
   assert.equal(resumeArgv(null), null);
 });
 

@@ -4,7 +4,7 @@ import { trackedPreview } from "./preview.ts";
 
 export interface Turn {
   id: string;
-  agent: "pi" | "claude-code" | "codex";
+  agent: "pi" | "omp" | "claude-code" | "codex";
   session: string;
   terminal?: string;
   title: string;
@@ -38,7 +38,7 @@ export function parseTurn(value: unknown): Turn | null {
   const turn = value as Turn;
   if (
     !validTurnId(turn.id) ||
-    !["pi", "claude-code", "codex"].includes(turn.agent) ||
+    !["pi", "omp", "claude-code", "codex"].includes(turn.agent) ||
     typeof turn.session !== "string" ||
     !turn.session ||
     typeof turn.title !== "string" ||
@@ -109,7 +109,12 @@ export async function loadTurns(execute: Execute, place: TurnPlace) {
 }
 
 export function turnLabel(turn: Turn) {
-  const agent = { pi: "Pi", "claude-code": "Claude Code", codex: "Codex" }[turn.agent];
+  const agent = {
+    pi: "Pi",
+    omp: "OMP",
+    "claude-code": "Claude Code",
+    codex: "Codex",
+  }[turn.agent];
   const started = new Date(turn.startedAt).toISOString().slice(5, 19).replace("T", " ") + "Z";
   return [
     turn.terminal,

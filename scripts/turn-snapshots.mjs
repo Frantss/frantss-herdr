@@ -16,7 +16,7 @@ import { setTimeout } from "node:timers/promises";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
-const agents = new Set(["pi", "claude-code", "codex"]);
+const agents = new Set(["pi", "omp", "claude-code", "codex"]);
 const statuses = new Set(["recording", "complete", "interrupted", "error"]);
 const treeId = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const recordName = /^[a-f0-9]{64}-[a-f0-9-]{36}\.json$/;

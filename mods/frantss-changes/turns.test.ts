@@ -19,10 +19,17 @@ import {
 const run = promisify(execFile);
 const execute = async (command, args, options) => {
   try {
-    const result = await run(command, args, { cwd: options.cwd, maxBuffer: 8 * 1024 * 1024 });
+    const result = await run(command, args, {
+      cwd: options.cwd,
+      maxBuffer: 8 * 1024 * 1024,
+    });
     return { code: 0, ...result };
   } catch (error) {
-    return { code: error.code, stdout: error.stdout ?? "", stderr: error.stderr ?? error.message };
+    return {
+      code: error.code,
+      stdout: error.stdout ?? "",
+      stderr: error.stderr ?? error.message,
+    };
   }
 };
 const metadata = (overrides: Partial<Turn> = {}): Turn => ({
@@ -52,7 +59,13 @@ async function repository(callback) {
 }
 
 test("turn validation accepts engine IDs and SHA-1/SHA-256 trees, not refs or option injection", () => {
-  assert.ok(parseTurn(metadata({ id: `${"a".repeat(64)}-12345678-1234-1234-1234-123456789abc` })));
+  assert.ok(
+    parseTurn(
+      metadata({
+        id: `${"a".repeat(64)}-12345678-1234-1234-1234-123456789abc`,
+      }),
+    ),
+  );
   assert.ok(validTreeOid("F".repeat(64)));
   for (const oid of [
     "HEAD",
@@ -76,7 +89,12 @@ test("turn validation accepts engine IDs and SHA-1/SHA-256 trees, not refs or op
     assert.equal(parseTurn({ ...metadata(), ...patch }), null);
   assert.ok(
     parseTurn(
-      metadata({ status: "recording", before: undefined, after: undefined, endedAt: undefined }),
+      metadata({
+        status: "recording",
+        before: undefined,
+        after: undefined,
+        endedAt: undefined,
+      }),
     ),
   );
   assert.equal(turnLabel(metadata()), "t42 · Pi · 07-31 12:00:00Z · Add retry handling");
@@ -88,7 +106,10 @@ test("turn validation accepts engine IDs and SHA-1/SHA-256 trees, not refs or op
 
 test("metadata reader handles absent/corrupt records, ignores temporary files, and caps all agents at 100", async () => {
   await repository(async (place) => {
-    assert.deepEqual(await loadTurns(execute, place), { turns: [], skipped: 0 });
+    assert.deepEqual(await loadTurns(execute, place), {
+      turns: [],
+      skipped: 0,
+    });
     const dir = join(place.gitDir, "frantss-turns");
     await mkdir(dir);
     await writeFile(join(dir, "broken.json"), "{");
@@ -115,7 +136,7 @@ test("metadata reader handles absent/corrupt records, ignores temporary files, a
     const all = Array.from({ length: 105 }, (_, i) =>
       metadata({
         id: `turn-${i}`,
-        agent: (["pi", "claude-code", "codex"] as const)[i % 3],
+        agent: (["pi", "omp", "claude-code", "codex"] as const)[i % 4],
         startedAt: new Date(Date.UTC(2026, 6, 31, 12, i)).toISOString(),
       }),
     );
@@ -141,11 +162,17 @@ test("shell reader bounds bytes, keeps literal directory arguments, and needs no
     await symlink("/usr/bin/head", join(bin, "head"));
     await symlink("/usr/bin/tr", join(bin, "tr"));
     const base = metadata({ id: "exact-limit", title: "" });
-    const exact = { ...base, title: "x".repeat(65536 - JSON.stringify(base).length) };
+    const exact = {
+      ...base,
+      title: "x".repeat(65536 - JSON.stringify(base).length),
+    };
     await writeFile(join(dir, "exact-limit.json"), JSON.stringify(exact));
     const shellOnly = async (command, args, options) => {
       assert.equal(command, "sh");
-      const result = await run("/bin/sh", args, { cwd: options.cwd, env: { PATH: bin } });
+      const result = await run("/bin/sh", args, {
+        cwd: options.cwd,
+        env: { PATH: bin },
+      });
       return { code: 0, ...result };
     };
     const result = await loadTurns(shellOnly, { ...place, gitDir });

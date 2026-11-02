@@ -11,7 +11,7 @@ import { loadTurns, turnDiff, turnFiles } from "../mods/frantss-changes/turns.ts
 const run = promisify(execFile);
 const hookPath = fileURLToPath(new URL("turn-hooks.mjs", import.meta.url));
 
-for (const agent of ["pi", "claude-code", "codex"]) {
+for (const agent of ["pi", "omp", "claude-code", "codex"]) {
   test(`${agent} hook snapshots can be reviewed after later edits and a commit`, async () => {
     const cwd = await mkdtemp(join(tmpdir(), "herdr-turn-integration-"));
     const git = async (...args: string[]) => (await run("git", args, { cwd })).stdout.trim();
@@ -51,12 +51,12 @@ for (const agent of ["pi", "claude-code", "codex"]) {
       const beforeIndex = await readFile(join(cwd, ".git/index"));
       const beforeHead = await git("rev-parse", "HEAD");
       await hook(
-        agent === "pi" ? "before_agent_start" : "UserPromptSubmit",
+        agent === "pi" || agent === "omp" ? "before_agent_start" : "UserPromptSubmit",
         "Change request behavior",
       );
       await writeFile(join(cwd, "request.txt"), "this turn only\n");
       await writeFile(join(cwd, "new.txt"), "added during this turn\n");
-      await hook(agent === "pi" ? "agent_settled" : "Stop");
+      await hook(agent === "pi" || agent === "omp" ? "agent_settled" : "Stop");
       assert.deepEqual(await readFile(join(cwd, ".git/index")), beforeIndex);
       assert.equal(await git("rev-parse", "HEAD"), beforeHead);
 
@@ -66,13 +66,24 @@ for (const agent of ["pi", "claude-code", "codex"]) {
         options: { cwd: string; on: string | null },
       ) => {
         try {
-          const result = await run(command, args, { cwd: options.cwd, timeout: 20_000 });
+          const result = await run(command, args, {
+            cwd: options.cwd,
+            timeout: 20_000,
+          });
           return { code: 0, stdout: result.stdout, stderr: result.stderr };
         } catch (error) {
-          return { code: 1, stdout: error.stdout ?? "", stderr: error.stderr ?? String(error) };
+          return {
+            code: 1,
+            stdout: error.stdout ?? "",
+            stderr: error.stderr ?? String(error),
+          };
         }
       };
-      const place = { root: cwd, gitDir: await git("rev-parse", "--absolute-git-dir"), on: null };
+      const place = {
+        root: cwd,
+        gitDir: await git("rev-parse", "--absolute-git-dir"),
+        on: null,
+      };
       const { turns, skipped } = await loadTurns(execute, place);
       assert.equal(skipped, 0);
       assert.equal(turns.length, 1);

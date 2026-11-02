@@ -1,7 +1,8 @@
-// Context usage comes from session files, or Pi's extension through a terminal label.
+// Context usage comes from session files, or Pi's or OMP's extension through a terminal label.
 
 export const SESSION_LABEL = "frantss.session";
 export const CONTEXT_LABEL = "frantss.context";
+export const usesContextLabel = (app: string | null) => app === "pi" || app === "omp";
 
 // A line that has the usage, per app, to find the last one with grep.
 const USAGE_LINE: Record<string, string> = {
@@ -25,7 +26,7 @@ export const usageLineArgv = (app: string | null, transcript: string) =>
       ]
     : null;
 
-// Claude Code reports input and cache tokens; Codex and Pi also provide the model's window.
+// Claude Code reports input and cache tokens; Codex, Pi, and OMP also provide the model's window.
 export function contextUsage(app: string | null, line: string): ContextUsage | null {
   let entry: any;
   try {
@@ -33,7 +34,7 @@ export function contextUsage(app: string | null, line: string): ContextUsage | n
   } catch {
     return null;
   }
-  if (app === "pi") {
+  if (usesContextLabel(app)) {
     if (
       !Number.isFinite(entry?.tokens) ||
       entry.tokens < 0 ||

@@ -5,30 +5,28 @@ import { fileURLToPath } from "node:url";
 export async function handleTurnHook(agent, payload, { env = process.env, engine } = {}) {
   try {
     const terminal = env.HC_TERMINAL_ID;
-    if (!terminal || !["pi", "claude-code", "codex"].includes(agent)) return;
+    if (!terminal || !["pi", "omp", "claude-code", "codex"].includes(agent)) return;
     if (!payload || typeof payload !== "object" || payload.agent_id) return;
     const { cwd, session_id: session, hook_event_name: event } = payload;
     if (typeof cwd !== "string" || !isAbsolute(cwd)) return;
     if (typeof session !== "string" || !session.trim()) return;
 
-    const start = agent === "pi" ? event === "before_agent_start" : event === "UserPromptSubmit";
+    const normalized = agent === "pi" || agent === "omp";
+    const start = normalized ? event === "before_agent_start" : event === "UserPromptSubmit";
     let status;
     if (start) {
       if (typeof payload.prompt !== "string") return;
-      if (agent === "pi" && payload.messageType !== "user") return;
-    } else if (
-      (agent === "pi" && event === "agent_settled") ||
-      (agent !== "pi" && event === "Stop")
-    ) {
+      if (normalized && payload.messageType !== "user") return;
+    } else if ((normalized && event === "agent_settled") || (!normalized && event === "Stop")) {
       status =
-        agent === "pi" && (payload.aborted === true || payload.outcome === "aborted")
+        normalized && (payload.aborted === true || payload.outcome === "aborted")
           ? "interrupted"
-          : agent === "pi" && payload.outcome === "error"
+          : normalized && payload.outcome === "error"
             ? "error"
             : "complete";
     } else if (
-      (agent !== "pi" && event === "SessionEnd") ||
-      (agent === "pi" && event === "session_shutdown") ||
+      (!normalized && event === "SessionEnd") ||
+      (normalized && event === "session_shutdown") ||
       (agent === "codex" && event === "Interrupt")
     ) {
       status = "interrupted";
@@ -64,7 +62,10 @@ export async function handleTurnHook(agent, payload, { env = process.env, engine
 }
 
 async function main() {
-  if (!process.env.HC_TERMINAL_ID || !["pi", "claude-code", "codex"].includes(process.argv[2]))
+  if (
+    !process.env.HC_TERMINAL_ID ||
+    !["pi", "omp", "claude-code", "codex"].includes(process.argv[2])
+  )
     return;
   let timer = setTimeout(() => process.exit(0), 15_000);
   try {

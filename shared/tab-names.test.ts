@@ -19,6 +19,18 @@ test("Pi's native title exposes the session name without its prefix or folder", 
   assert.equal(paneName(pane("π - gasty")), "pi");
 });
 
+test("OMP titles hide native run-state separators without changing Pi titles", () => {
+  const omp = { key: "omp", name: "OMP", agent: true } as Program;
+  for (const prefix of ["π > ", "π ⠋ ", "π : ", "π ! ", "π: "]) {
+    assert.equal(threadTitle(`${prefix}Fix OMP titles`, omp), "Fix OMP titles");
+    assert.equal(threadTitle(`${prefix}/repo/gasty`, omp), null);
+    assert.equal(threadTitle(prefix.trimEnd(), omp), null);
+  }
+  assert.equal(threadTitle("π", omp), null);
+  assert.equal(threadTitle("Chosen title", omp), "Chosen title");
+  assert.equal(threadTitle("omp", omp), null);
+});
+
 test("Pi task titles follow unnamed tabs while manual names and split-tab branch names stay intact", () => {
   const tab = { named: false, name: "1" } as TabInfo;
   const space = { folder: "/repo/gasty", branch: "feature/pi" } as SpaceInfo;

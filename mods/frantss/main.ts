@@ -47,6 +47,7 @@ import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
 import {
   SESSION_LABEL,
   CONTEXT_LABEL,
+  usesContextLabel,
   contextUsage,
   tokenCount,
   usageLineArgv,
@@ -446,9 +447,9 @@ export default class Frantss extends View {
     const labels = agent
       ? terminals().find((terminal) => terminal.address === agent.address)?.labels
       : undefined;
-    if (agent?.app === "pi") {
+    if (usesContextLabel(agent?.app ?? null)) {
       this.contextKey = "";
-      const usage = contextUsage("pi", labels?.[CONTEXT_LABEL] ?? "");
+      const usage = contextUsage(agent.app, labels?.[CONTEXT_LABEL] ?? "");
       this.context = usage ? { address: agent.address, usage } : null;
       return;
     }
@@ -2170,7 +2171,7 @@ export default class Frantss extends View {
     // A newly focused agent's context shows at once; the timer keeps it current after.
     const focused = list.find((a) => a.focused);
     const focusedAddress = focused?.address ?? null;
-    if (focusedAddress !== this.contextFor || focused?.app === "pi") {
+    if (focusedAddress !== this.contextFor || usesContextLabel(focused?.app ?? null)) {
       this.contextFor = focusedAddress;
       this.refreshContext(cx);
     }

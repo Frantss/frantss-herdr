@@ -20,14 +20,21 @@ const codexLine = JSON.stringify({
     type: "token_count",
     info: {
       total_token_usage: { total_tokens: 90000 },
-      last_token_usage: { input_tokens: 25445, output_tokens: 188, total_tokens: 25633 },
+      last_token_usage: {
+        input_tokens: 25445,
+        output_tokens: 188,
+        total_tokens: 25633,
+      },
       model_context_window: 475000,
     },
   },
 });
 
 test("Claude Code's context is its last request's input and cache tokens, with no window", () => {
-  assert.deepEqual(contextUsage("claude-code", claudeLine), { tokens: 211638, window: null });
+  assert.deepEqual(contextUsage("claude-code", claudeLine), {
+    tokens: 211638,
+    window: null,
+  });
 });
 
 test("Codex's context is its last turn against the model's window", () => {
@@ -61,6 +68,10 @@ test("unreadable lines and other apps give no usage", () => {
   assert.equal(contextUsage("codex", JSON.stringify({ payload: { info: {} } })), null);
   assert.equal(contextUsage("claude-code", JSON.stringify({ message: {} })), null);
   assert.equal(contextUsage("pi", claudeLine), null);
+  assert.deepEqual(contextUsage("omp", '{"tokens":42000,"window":200000}'), {
+    tokens: 42000,
+    window: 200000,
+  });
   assert.equal(usageLineArgv("pi", "/session.jsonl"), null);
 });
 

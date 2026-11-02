@@ -43,7 +43,10 @@ function harness(terminal = "t7") {
       fail = true;
     },
     send: (agent: string, payload: unknown) =>
-      handleTurnHook(agent, payload, { env: { HC_TERMINAL_ID: terminal }, engine }),
+      handleTurnHook(agent, payload, {
+        env: { HC_TERMINAL_ID: terminal },
+        engine,
+      }),
   };
 }
 
@@ -102,9 +105,21 @@ for (const [agent, prompt] of [
   test(`${agent} finalizes Stop even when already continued by another Stop hook`, async () => {
     const h = harness();
     await h.send(agent, prompt);
-    await h.send(agent, { ...prompt, hook_event_name: "Stop", stop_hook_active: false });
-    await h.send(agent, { ...prompt, hook_event_name: "Stop", stop_hook_active: true });
-    await h.send(agent, { ...prompt, hook_event_name: "Stop", stop_hook_active: true });
+    await h.send(agent, {
+      ...prompt,
+      hook_event_name: "Stop",
+      stop_hook_active: false,
+    });
+    await h.send(agent, {
+      ...prompt,
+      hook_event_name: "Stop",
+      stop_hook_active: true,
+    });
+    await h.send(agent, {
+      ...prompt,
+      hook_event_name: "Stop",
+      stop_hook_active: true,
+    });
     assert.equal(h.calls.filter(({ method }) => method === "beginTurn").length, 1);
     assert.deepEqual(
       h.calls.slice(1).map(({ args }) => [args.status, args.continued]),
@@ -140,7 +155,11 @@ test("Codex interrupt and official session-end payloads close active work as int
     hook_event_name: "SessionEnd",
     reason: "other",
   });
-  await h.send("claude-code", { ...claudePrompt, hook_event_name: "SessionEnd", reason: "clear" });
+  await h.send("claude-code", {
+    ...claudePrompt,
+    hook_event_name: "SessionEnd",
+    reason: "clear",
+  });
   assert.deepEqual(
     h.calls.map(({ args }) => args.status),
     ["interrupted", "interrupted", "interrupted"],
@@ -160,32 +179,41 @@ test("Claude API failure closes the request; the next prompt replaces an interru
   await h.send("claude-code", claudePrompt);
   await h.send("claude-code", { ...claudePrompt, prompt: "Retry the task" });
   assert.ok(h.calls.slice(1).every(({ args }) => args.replaceActive === true));
-  await h.send("claude-code", { ...claudePrompt, hook_event_name: "Interrupt" });
+  await h.send("claude-code", {
+    ...claudePrompt,
+    hook_event_name: "Interrupt",
+  });
   assert.equal(h.calls.length, 3);
 });
 
-test("Pi settled outcomes and shutdown use the shared engine without model context output", async () => {
-  const h = harness();
-  const payload = {
-    cwd: "/workspace",
-    session_id: "pi-session",
-    prompt: "Fix it",
-    messageType: "user",
-  };
-  await h.send("pi", { ...payload, hook_event_name: "before_agent_start" });
-  for (const [extra, expected] of [
-    [{}, "complete"],
-    [{ aborted: true }, "interrupted"],
-    [{ outcome: "aborted" }, "interrupted"],
-    [{ outcome: "error" }, "error"],
-  ] as const) {
-    await h.send("pi", { ...payload, hook_event_name: "agent_settled", ...extra });
-    assert.equal(h.calls.at(-1).args.status, expected);
-  }
-  await h.send("pi", { ...payload, hook_event_name: "session_shutdown" });
-  assert.equal(h.calls.at(-1).args.status, "interrupted");
-  assert.equal(h.calls.length, 6);
-});
+for (const agent of ["pi", "omp"]) {
+  test(`${agent} settled outcomes and shutdown use the shared engine without model context output`, async () => {
+    const h = harness();
+    const payload = {
+      cwd: "/workspace",
+      session_id: `${agent}-session`,
+      prompt: "Fix it",
+      messageType: "user",
+    };
+    await h.send(agent, { ...payload, hook_event_name: "before_agent_start" });
+    for (const [extra, expected] of [
+      [{}, "complete"],
+      [{ aborted: true }, "interrupted"],
+      [{ outcome: "aborted" }, "interrupted"],
+      [{ outcome: "error" }, "error"],
+    ] as const) {
+      await h.send(agent, {
+        ...payload,
+        hook_event_name: "agent_settled",
+        ...extra,
+      });
+      assert.equal(h.calls.at(-1).args.status, expected);
+    }
+    await h.send(agent, { ...payload, hook_event_name: "session_shutdown" });
+    assert.equal(h.calls.at(-1).args.status, "interrupted");
+    assert.equal(h.calls.length, 6);
+  });
+}
 
 test("adapters fail open for engine errors, invalid payloads, subagents, and execution outside Herdr", async () => {
   const h = harness();
@@ -269,7 +297,11 @@ test("CLI reads official stdin JSON, loads only its sibling engine, and stays si
       "null",
       JSON.stringify({ ...codexPrompt, hook_event_name: "Stop" }),
     ]) {
-      assert.deepEqual(await invoke(script, input), { code: 0, stdout: "", stderr: "" });
+      assert.deepEqual(await invoke(script, input), {
+        code: 0,
+        stdout: "",
+        stderr: "",
+      });
     }
     assert.deepEqual(await invoke(script, JSON.stringify(codexPrompt), ""), {
       code: 0,
