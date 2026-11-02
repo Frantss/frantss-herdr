@@ -936,6 +936,13 @@ export default class Frantss extends View {
         .child(branchIcon())
         .child(dotted ?? div().w(6 + 8 + PLUS_WIDTH));
     };
+    const paneMenu = (pane: PaneInfo) => menu("pane", { pane: pane.pane, terminal: pane.terminal });
+    const tabMenu = (s: SpaceInfo, tab: TabInfo) => {
+      const panes = tabPanes(tab);
+      return panes.length === 1
+        ? paneMenu(panes[0])
+        : menu("tab", { id: tab.id, space: s.id, name: tabName(tab, panes, s) });
+    };
     const spaceRow = (s: SpaceInfo): RailRow => ({
       id: `space-${s.id}`,
       current: s.active && standsForTab(s),
@@ -956,11 +963,13 @@ export default class Frantss extends View {
       text: standsForTab(s) ? tabName(s.tabs[0], tabPanes(s.tabs[0]), s) : spaceName(s),
       onClick: () => (standsForTab(s) ? run("space.select", { id: s.id }) : toggleSpace(s)),
       onMenu: () =>
-        menu("space", {
-          id: s.id,
-          name: spaceName(s),
-          checkout: this.checkouts?.[snapshot.placeBySpace.get(s.id)],
-        }),
+        standsForTab(s)
+          ? tabMenu(s, s.tabs[0])
+          : menu("space", {
+              id: s.id,
+              name: spaceName(s),
+              checkout: this.checkouts?.[snapshot.placeBySpace.get(s.id)],
+            }),
     });
     const tabRows = (s: SpaceInfo): RailRow[] =>
       standsForTab(s) || spaceClosed(s)
@@ -978,12 +987,7 @@ export default class Frantss extends View {
       end: dotEnd(tab.status),
       text: tabName(tab, tabPanes(tab), s),
       onClick: () => run("tab.select", { id: tab.id }),
-      onMenu: () =>
-        menu("tab", {
-          id: tab.id,
-          space: s.id,
-          name: tabName(tab, tabPanes(tab), s),
-        }),
+      onMenu: () => tabMenu(s, tab),
     });
     const paneRows = (s: SpaceInfo, tab: TabInfo): RailRow[] =>
       (split(tab) ? tabPanes(tab) : []).map((pane, index, all) => ({
@@ -997,7 +1001,7 @@ export default class Frantss extends View {
         end: dotEnd(pane.status),
         text: paneName(pane),
         onClick: () => run("pane.focus", { pane: pane.pane }),
-        onMenu: () => menu("pane", { pane: pane.pane, terminal: pane.terminal }),
+        onMenu: () => paneMenu(pane),
       }));
     const withTabs = (s: SpaceInfo) => [spaceRow(s), ...tabRows(s)];
     // A group row is a workspace: its open spaces (its own checkout and worktrees) are under it, unless

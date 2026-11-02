@@ -322,12 +322,14 @@ test("rail keeps workspace order, global-first cwd, tab names, worktree marks, a
     repo: true,
   });
   byId(tree, "space-worktree").handlers.on_mouse_down({}, h.cx);
-  assert.equal(h.state.overlays.at(-1).props.target.checkout, "linked");
+  assert.deepEqual(plain(h.state.overlays.at(-1).props), {
+    tab: "pane",
+    target: { pane: "pane-t-worktree-✳ Feature", terminal: null },
+  });
   byId(tree, "tab-t-named").handlers.on_mouse_down({}, h.cx);
-  assert.deepEqual(plain(h.state.overlays.at(-1).props.target), {
-    id: "t-named",
-    space: "primary",
-    name: "Keep CASE",
+  assert.deepEqual(plain(h.state.overlays.at(-1).props), {
+    tab: "pane",
+    target: { pane: "pane-t-named-Ignored title", terminal: null },
   });
   byId(hoverRender(h, `group-${remoteGroup}`), `new-${remoteGroup}`).handlers.on_click({}, h.cx);
   assert.deepEqual(plain(h.state.overlays.at(-1).props), {
@@ -412,6 +414,69 @@ test("rail lists a tab's panes under it when it has more than one", async () => 
   byId(tree, "pane-pane-t-agent-Zsh").handlers.on_mouse_down({}, h.cx);
   assert.equal(h.state.overlays.at(-1).props.tab, "pane");
   assert.equal(h.state.overlays.at(-1).props.target.pane, "pane-t-agent-Zsh");
+});
+
+test("rail rows representing lone panes open that pane's menu without selecting it", async () => {
+  const h = await harness();
+  for (const target of h.state.panes) target.terminal = `terminal-${target.pane}`;
+  const tree = h.render();
+  for (const [row, tabId] of [
+    ["tab-t-named", "t-named"],
+    ["tab-t-program", "t-program"],
+    ["tab-t-cwd", "t-cwd"],
+    ["space-worktree", "t-worktree"],
+    ["space-build/remote", "build/t-remote"],
+  ]) {
+    const target = h.state.panes.find((pane) => pane.tab === tabId);
+    byId(tree, row).handlers.on_mouse_down({}, h.cx);
+    assert.deepEqual(plain(h.state.overlays.at(-1).props), {
+      tab: "pane",
+      target: { pane: target.pane, terminal: target.terminal },
+    });
+  }
+  assert.deepEqual(h.state.commands, []);
+});
+
+test("rail rows without panes retain the represented tab's menu", async () => {
+  const h = await harness();
+  const tree = h.render();
+  for (const [row, id, space] of [
+    ["tab-t-empty", "t-empty", "primary"],
+    ["space-outside", "t-outside", "outside"],
+  ]) {
+    byId(tree, row).handlers.on_mouse_down({}, h.cx);
+    assert.deepEqual(plain(h.state.overlays.at(-1).props), {
+      tab: "tab",
+      target: { id, space, name: "terminal" },
+    });
+  }
+});
+
+test("rail menus follow a lone pane as it splits and collapses back into its space", async () => {
+  const h = await harness();
+  const original = h.state.panes.find((pane) => pane.tab === "t-worktree");
+  const added = pane("t-worktree", "/project/live", "Zsh", shell, { terminal: "t-shell" });
+  h.state.panes.push(added);
+  h.state.shared.set("frantss.collapsed", ["space:worktree:open"]);
+  const split = h.render();
+  byId(split, "space-worktree").handlers.on_mouse_down({}, h.cx);
+  assert.deepEqual(plain(h.state.overlays.at(-1).props), {
+    tab: "space",
+    target: { id: "worktree", name: "main", checkout: "linked" },
+  });
+  byId(split, "tab-t-worktree").handlers.on_mouse_down({}, h.cx);
+  assert.deepEqual(plain(h.state.overlays.at(-1).props), {
+    tab: "tab",
+    target: { id: "t-worktree", space: "worktree", name: "Feature" },
+  });
+  h.state.panes = h.state.panes.filter((pane) => pane !== original);
+  const collapsed = h.render();
+  assert.equal(byId(collapsed, "tab-t-worktree"), null);
+  byId(collapsed, "space-worktree").handlers.on_mouse_down({}, h.cx);
+  assert.deepEqual(plain(h.state.overlays.at(-1).props), {
+    tab: "pane",
+    target: { pane: added.pane, terminal: "t-shell" },
+  });
 });
 
 test("a hovered space row's + starts a thread as a new tab in that space", async () => {
