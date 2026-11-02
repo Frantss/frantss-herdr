@@ -304,6 +304,44 @@ contents. Ignoring a file does not exclude it if it is already tracked.
 Use separate worktrees for concurrent agents: snapshots record all changes made
 in the worktree during a request, including manual edits and other agents' work.
 
+## Agent pull requests
+
+An agent row in the rail shows a chip with its open pull requests, colored by the most urgent
+state: failed checks, changes requested or conflicts, then open comments, running checks, ready.
+Click it to open the GitHub panel's **Agents** tab, which lists each agent's pull requests,
+merged and closed ones included. An agent counts a pull request it created with `gh pr create`
+or the GitHub MCP server, one the GitHub panel started it for, and an open or merged pull request
+whose branch it pushed to GitHub (except the default branch). Closed agents keep their list until
+the rail forgets them. States refresh with the GitHub panel's poll: every minute while it shows,
+else every five minutes. Lookups use the local `gh`; agents on other machines are not tracked.
+
+For Claude Code and Codex, add this hook next to the turn hooks, with the same `/ABS/CHECKOUT`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash|.*create_pull_request",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/ABS/CHECKOUT/scripts/pr-hooks.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+For Pi, link the extension from this checkout, then start Pi or run `/reload`:
+
+```sh
+ln -s "$PWD/scripts/pi-prs.ts" "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/frantss-prs.ts"
+```
+
 ## Checks
 
 `pnpm check` refreshes Herdr's generated API declarations in the ignored `types/`

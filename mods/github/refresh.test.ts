@@ -137,6 +137,7 @@ async function harness() {
       },
       hc: unused,
       run: unused,
+      openOverlay: unused,
       theme: () => ({}),
       settings: () => ({ dark: true }),
       layout: () => state.layout,

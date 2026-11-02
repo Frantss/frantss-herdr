@@ -45,6 +45,17 @@ import { paneName, tabName, threadTitle, prunePaneNames } from "./pane-names.ts"
 import { hcOrToast } from "./agent-hc.ts";
 import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
 import {
+  AGENT_PRS,
+  CLOSED_AGENTS,
+  PR_STATES,
+  SHOW_AGENT_PRS,
+  isOpen,
+  mostUrgentPr,
+  prLinks,
+  type AgentPr,
+  type PrLink,
+} from "./agent-prs.ts";
+import {
   SESSION_LABEL,
   CONTEXT_LABEL,
   usesContextLabel,
@@ -270,8 +281,13 @@ const workspaceColors = () => (shared(WORKSPACE_COLORS) as Record<string, string
 const STATUS_STAMPS = "statusStamps";
 // The local agents the rail has seen, kept in shared state (persisted) so the rail lists them after
 // their tab closes (see closed.ts).
-const CLOSED_AGENTS = "frantss.closedAgents";
 const agentRecords = () => (shared(CLOSED_AGENTS) as AgentRecord[] | null) ?? [];
+// Opens the GitHub panel's Agents tab on the agent; `at` makes each click a change.
+const showAgentPrs = (address: string) => {
+  setShared(SHOW_AGENT_PRS, { address, at: Date.now() });
+  run("layout.select", { stack: "panel", child: "github" });
+  run("layout.show", { id: "panel" });
+};
 const saveRecords = (records: AgentRecord[]) => {
   if (JSON.stringify(records) !== JSON.stringify(agentRecords())) setShared(CLOSED_AGENTS, records);
 };
@@ -346,8 +362,8 @@ export default class Frantss extends View {
   declare checkouts: Record<string, "main" | "linked" | null>;
   declare marks: Record<string, number>;
   declare terminalsKey: string;
-  // The local agents shown since the rail last recorded them, by address.
-  declare seenAgents: Map<string, AgentInfo>;
+  // The local agents shown since the rail last recorded them, by address, with their PR links.
+  declare seenAgents: Map<string, AgentInfo & { prs: PrLink[] }>;
   declare settling: Task;
   declare hovered: string | null;
   // The focused agent's context, read from its session file: what was read (`key`) and for whom.
@@ -532,7 +548,10 @@ export default class Frantss extends View {
     const remote = new Set(snapshot.spaces.filter((s) => s.machine).map((s) => s.id));
     const local = list.filter((a) => !remote.has(a.space));
     this.seenAgents ??= new Map();
-    for (const a of local) this.seenAgents.set(a.address, a);
+    // Read while the agent lives: mods see only live terminals' labels.
+    const labels = new Map(terminals().map((terminal) => [terminal.address, terminal.labels]));
+    for (const a of local)
+      this.seenAgents.set(a.address, { ...a, prs: prLinks(labels.get(a.address)) });
     const shown = [
       ...local.map((a) => a.address),
       ...[...snapshot.panesByTab.values()].flat().map((pane) => pane.terminal),
@@ -555,6 +574,7 @@ export default class Frantss extends View {
             app: a.app,
             program: a.program,
             title: threadTitle(a.title, a.program),
+            prs: a.prs,
           }));
           const records = settleAgents(recordAgents(agentRecords(), seen), terminals, Date.now());
           saveRecords(records);
@@ -596,6 +616,7 @@ export default class Frantss extends View {
   closedRow(t: Theme, record: AgentRecord, now: number): RailRow {
     const text = (record.title ?? record.program?.name ?? "agent").toLowerCase();
     const resume = resumeArgv(record.app);
+    const prChip = this.prChip(t, record.address);
     return {
       id: `closed-${record.address}`,
       dim: true,
@@ -605,6 +626,7 @@ export default class Frantss extends View {
       end: h_flex()
         .gap(4)
         .items_center()
+        .when(Boolean(prChip), (e) => e.child(prChip))
         .when(Boolean(resume), (e) =>
           e.child(
             this.control(
@@ -1293,11 +1315,51 @@ export default class Frantss extends View {
     }).text_color(t.dim);
   }
 
-  // An agent row's hover controls: peek, and interrupt while it works.
+  // An agent's open pull requests as one chip in their most urgent state's color, from what the
+  // GitHub mod shares. Clicking it shows them in the GitHub panel.
+  prChip(t: Theme, address: string) {
+    const all = (shared(AGENT_PRS) as Record<string, AgentPr[]> | null)?.[address] ?? [];
+    const prs = all.filter(isOpen),
+      state = mostUrgentPr(prs);
+    if (!state) return null;
+    const { label, color } = PR_STATES[state];
+    return h_flex()
+      .id(`prs-${address}`)
+      .h(16)
+      .px(5)
+      .gap(4)
+      .items_center()
+      .flex_none()
+      .rounded(8)
+      .border_1()
+      .border_color(t.input)
+      .text_size(10)
+      .text_color(t.muted)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip(`${label}. Show in GitHub`)
+      .accessibility_label(`${prs.length} open pull requests, ${label}`)
+      .on_click((_event, cx) => {
+        cx.stop_propagation();
+        showAgentPrs(address);
+      })
+      .child(
+        div()
+          .size(6)
+          .rounded(3)
+          .flex_none()
+          .bg(t[color] ?? t.dim),
+      )
+      .child(`${prs.length} PR${prs.length > 1 ? "s" : ""}`);
+  }
+
+  // An agent row's hover controls: its PR chip, peek, and interrupt while it works.
   agentControls(t: Theme, a: AgentInfo) {
+    const chip = this.prChip(t, a.address);
     return h_flex()
       .gap(4)
       .items_center()
+      .when(Boolean(chip), (e) => e.child(chip))
       .child(
         this.control(t, `peek-${a.address}`, "Peek", svg("mods/github/eye.svg").size(10), () =>
           run("terminal.peek", { terminal: a.address }),
@@ -1783,6 +1845,7 @@ export default class Frantss extends View {
               a.focused && this.context?.address === a.address
                 ? this.contextMeter(t, this.context.usage)
                 : since(a),
+            end: this.prChip(t, a.address),
             onClick: () => run("agent.focus", { terminal: a.address }),
             onMenu: () => menu("pane", { pane: a.pane, terminal: a.address }),
             hoverEnd: this.agentControls(t, a),

@@ -1,6 +1,7 @@
 import type { AsyncContext, Context, Element, Color } from "gpui-kit";
 import type { ExecResult, SpaceInfo } from "herdr";
-import type { InboxGroup, InboxItem, PullRequest, PullRequests } from "./github.ts";
+import type { InboxGroup, InboxItem, LinkedPrs, PullRequest, PullRequests } from "./github.ts";
+import type { AgentRecord } from "./closed.ts";
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -22,14 +23,52 @@ import {
   setShared,
 } from "herdr";
 import { button } from "./button.ts";
-import { ACTIONS, buildInbox, findCheckout, loadPullRequests, squash, taskFor } from "./github.ts";
+import {
+  ACTIONS,
+  agentPullRequests,
+  buildInbox,
+  findCheckout,
+  loadLinkedPrs,
+  loadPullRequests,
+  squash,
+  taskFor,
+} from "./github.ts";
 import { followedPane, panelShown } from "./panel.ts";
+import {
+  AGENT_PRS,
+  CLOSED_AGENTS,
+  PR_STATES,
+  SHOW_AGENT_PRS,
+  URGENCY,
+  isOpen,
+  mostUrgentPr,
+  prLinks,
+  type AgentPr,
+  type PrLink,
+} from "./agent-prs.ts";
+import { age, resumeArgv } from "./closed.ts";
+import { openAgentTab } from "./closed-agent-actions.ts";
 
 interface Location {
   cwd: string | null;
   on: string | null;
 }
 type Theme = Record<string, Color>;
+// An agent with pull request links: live, or closed and kept in the rail's records.
+interface TrackedAgent {
+  address: string;
+  name: string;
+  status: string | null;
+  closed: number | null;
+  cwd: string | null;
+  app: string | null;
+  links: PrLink[];
+}
+const SOURCES: Record<PrLink["source"], string> = {
+  created: "created by the agent",
+  pushed: "pushed branch",
+  panel: "started from this panel",
+};
 
 const POLL_MS = 60000;
 // While the panel is hidden, results refresh less often: only the GitHub button's count shows them.
@@ -117,6 +156,14 @@ export default class GitHub extends View {
   declare inboxSource: PullRequests | null;
   declare inboxBusy: Set<string>;
   declare polledAt: number;
+  declare tab: "inbox" | "agents";
+  // The agent the rail last asked to show, and when.
+  declare shownAgent: string | null;
+  declare shownAt: number;
+  declare agentPrs: Record<string, AgentPr[]>;
+  declare agentLinksKey: string | null;
+  declare resolving: boolean;
+  declare agentErrors: Map<string, string>;
 
   init(_props, cx: AsyncContext) {
     this.pendingInitialRefresh = true;
@@ -132,6 +179,13 @@ export default class GitHub extends View {
     this.errors = new Map();
     this.agentOptions = [];
     this.agentKey = localStorage.getItem("agent");
+    this.tab = localStorage.getItem("tab") === "agents" ? "agents" : "inbox";
+    this.shownAgent = null;
+    this.shownAt = (shared(SHOW_AGENT_PRS) as { at?: number } | null)?.at ?? 0;
+    this.agentPrs = (shared(AGENT_PRS) as Record<string, AgentPr[]> | null) ?? {};
+    this.agentLinksKey = null;
+    this.resolving = false;
+    this.agentErrors = new Map();
     // Saved results show at once after a restart or a code reload; a load replaces them.
     let saved: { cache?: [string, PullRequests][]; repos?: [string, string | null][] } = {};
     try {
@@ -148,7 +202,10 @@ export default class GitHub extends View {
       this.collapsed = new Set();
     }
     cx.timer.every(POLL_MS, (cx) => {
-      if (this.visible() || Date.now() - this.polledAt >= HIDDEN_POLL_MS) this.refreshAll(cx);
+      if (this.visible() || Date.now() - this.polledAt >= HIDDEN_POLL_MS) {
+        this.refreshAll(cx);
+        this.resolveAgentPrs(cx);
+      }
     });
     if (this.visible()) this.refreshAll(cx);
   }
@@ -935,8 +992,277 @@ export default class GitHub extends View {
       );
   }
 
+  // Local agents with links: the live ones from their labels, the closed ones from the rail's records.
+  trackedAgents(): TrackedAgent[] {
+    const live = terminals().filter((t) => t.state === "live" && !t.address.includes("/"));
+    const byAddress = new Map(agents().map((a) => [a.address, a]));
+    const tracked: TrackedAgent[] = live.flatMap((t) => {
+      const links = prLinks(t.labels),
+        agent = byAddress.get(t.address);
+      if (!links.length) return [];
+      return [
+        {
+          address: t.address,
+          name: agent?.title || agent?.program?.name || t.program?.name || t.address,
+          status: agent?.status ?? null,
+          closed: null,
+          cwd: t.cwd ?? null,
+          app: agent?.app ?? null,
+          links,
+        },
+      ];
+    });
+    const liveAddresses = new Set(tracked.map((a) => a.address));
+    for (const record of (shared(CLOSED_AGENTS) as AgentRecord[] | null) ?? [])
+      if (record.closed !== undefined && record.prs?.length && !liveAddresses.has(record.address))
+        tracked.push({
+          address: record.address,
+          name: record.title ?? record.program?.name ?? record.address,
+          status: null,
+          closed: record.closed,
+          cwd: record.cwd ?? null,
+          app: record.app,
+          links: record.prs,
+        });
+    return tracked;
+  }
+
+  // Looks the pull requests up again when an agent's links change; the poll refreshes their states.
+  syncAgentPrs(cx: Context) {
+    const key = JSON.stringify(this.trackedAgents().map((a) => [a.address, a.links]));
+    if (key !== this.agentLinksKey) this.resolveAgentPrs(cx);
+  }
+
+  // One query per repository, then shares each agent's pull requests for the rail.
+  resolveAgentPrs(cx: Context) {
+    if (this.resolving) return;
+    const tracked = this.trackedAgents();
+    this.agentLinksKey = JSON.stringify(tracked.map((a) => [a.address, a.links]));
+    const byRepo = new Map<string, { numbers: Set<number>; branches: Set<string> }>();
+    for (const link of tracked.flatMap((a) => a.links)) {
+      const wanted = byRepo.get(link.repo) ?? { numbers: new Set(), branches: new Set() };
+      if (link.number !== undefined) wanted.numbers.add(link.number);
+      else wanted.branches.add(link.branch);
+      byRepo.set(link.repo, wanted);
+    }
+    this.resolving = true;
+    cx.spawn(async (cx) => {
+      const lookups = new Map<string, LinkedPrs>();
+      try {
+        for (const [repo, wanted] of byRepo) {
+          try {
+            lookups.set(
+              repo,
+              await loadLinkedPrs(
+                (args) => exec("gh", args),
+                repo,
+                [...wanted.numbers],
+                [...wanted.branches],
+              ),
+            );
+            this.agentErrors.delete(repo);
+          } catch (error) {
+            this.agentErrors.set(repo, errorText(error));
+          }
+        }
+        const result: Record<string, AgentPr[]> = {};
+        for (const agent of tracked) {
+          // A repository that failed keeps its last results.
+          const kept = (this.agentPrs[agent.address] ?? []).filter((pr) => !lookups.has(pr.repo));
+          const prs = [...agentPullRequests(agent.links, lookups, URGENCY), ...kept];
+          if (prs.length) result[agent.address] = prs;
+        }
+        this.agentPrs = result;
+        if (JSON.stringify(shared(AGENT_PRS) ?? {}) !== JSON.stringify(result))
+          setShared(AGENT_PRS, result);
+      } finally {
+        this.resolving = false;
+        cx.notify();
+      }
+    });
+  }
+
+  setTab(tab: "inbox" | "agents", cx: Context) {
+    this.tab = tab;
+    try {
+      localStorage.setItem("tab", tab);
+    } catch {
+      /* Memory still has it. */
+    }
+    cx.notify();
+  }
+
+  tabButton(id: "inbox" | "agents", label: string, t: Theme) {
+    const active = this.tab === id;
+    return h_flex()
+      .id(`github-tab-${id}`)
+      .h(22)
+      .px(8)
+      .items_center()
+      .flex_none()
+      .rounded(3)
+      .cursor_pointer()
+      .text_color(active ? t.foreground : t.muted)
+      .when(active, (el) => el.bg(t.selected))
+      .when(!active, (el) => el.hover((s) => s.bg(t.hover).text_color(t.foreground)))
+      .role("tab")
+      .accessibility_label(`${label}${active ? ", selected" : ""}`)
+      .on_click((_e, cx) => this.setTab(id, cx))
+      .child(label);
+  }
+
+  // Each agent's pull requests, the agent the rail asked for first, then the most urgent.
+  agentsBody(t: Theme) {
+    const tracked = this.trackedAgents().filter((a) => this.agentPrs[a.address]?.length);
+    const rank = (a: TrackedAgent) =>
+      a.address === this.shownAgent
+        ? -1
+        : URGENCY.indexOf(mostUrgentPr(this.agentPrs[a.address].filter(isOpen)) ?? "closed");
+    tracked.sort((a, b) => rank(a) - rank(b) || (a.closed ?? Infinity) - (b.closed ?? Infinity));
+    const errors = [...this.agentErrors].map(([repo, message]) =>
+      div().px(10).py(4).text_size(10).text_color(t.blocked).child(`${repo}: ${message}`),
+    );
+    const empty = this.resolving
+      ? "Looking up pull requests…"
+      : "No agent has created a pull request or pushed a branch yet.";
+    return v_flex()
+      .id("github-agents")
+      .flex_1()
+      .min_h(0)
+      .overflow_y_scrollbar()
+      .py(6)
+      .gap(10)
+      .children(errors)
+      .children(
+        tracked.length
+          ? tracked.map((a) => this.agentGroup(a, t))
+          : [div().p(10).text_color(t.muted).child(empty)],
+      );
+  }
+
+  agentGroup(a: TrackedAgent, t: Theme) {
+    const resume = a.closed !== null && a.cwd ? resumeArgv(a.app) : null;
+    const shown = a.address === this.shownAgent;
+    const action =
+      a.closed === null
+        ? this.button(`agent-show-${a.address}`, "Show", () =>
+            run("agent.focus", { terminal: a.address }),
+          )
+        : resume
+          ? this.button(`agent-resume-${a.address}`, "Resume…", () => openAgentTab(a.cwd, resume))
+          : null;
+    return v_flex()
+      .id(`agent-prs-${a.address}`)
+      .mx(6)
+      .flex_none()
+      .rounded(3)
+      .border_1()
+      .border_color(shown ? t.accent : t.border)
+      .overflow_hidden()
+      .child(
+        h_flex()
+          .h(32)
+          .px(8)
+          .gap(8)
+          .items_center()
+          .child(
+            div()
+              .size(8)
+              .flex_none()
+              .rounded(4)
+              .when(a.closed === null, (el) => el.bg(t[a.status] ?? t.idle))
+              .when(a.closed !== null, (el) => el.border_1().border_color(t.dim)),
+          )
+          .child(div().flex_1().min_w(0).truncate().font_semibold().child(a.name))
+          .when(a.closed !== null, (el) =>
+            el.child(
+              div()
+                .flex_none()
+                .text_size(10)
+                .text_color(t.muted)
+                .child(`closed ${age(Date.now() - a.closed)}`),
+            ),
+          )
+          .when(Boolean(action), (el) => el.child(action)),
+      )
+      .children(this.agentPrs[a.address].map((pr) => this.agentPrRow(a, pr, t)));
+  }
+
+  agentPrRow(a: TrackedAgent, pr: AgentPr, t: Theme) {
+    const { label, color } = PR_STATES[pr.state];
+    const done = !isOpen(pr);
+    const name = pr.repo === this.data?.repo ? `#${pr.number}` : `${pr.repo}#${pr.number}`;
+    return h_flex()
+      .id(`agent-pr-${a.address}-${pr.repo}-${pr.number}`)
+      .px(8)
+      .py(6)
+      .gap(8)
+      .items_start()
+      .border_t(1)
+      .border_color(t.border)
+      .cursor_pointer()
+      .hover((el) => el.bg(t.hover))
+      .tooltip("Open on GitHub")
+      .role("list_item")
+      .accessibility_label(`${name} ${pr.title}, ${label}`)
+      .on_click(() => this.openInBrowser(pr.url))
+      .child(
+        h_flex()
+          .h(18)
+          .items_center()
+          .flex_none()
+          .child(
+            div()
+              .size(6)
+              .rounded(3)
+              .bg(t[color] ?? t.dim),
+          ),
+      )
+      .child(
+        v_flex()
+          .flex_1()
+          .min_w(0)
+          .gap(2)
+          .child(
+            h_flex()
+              .h(18)
+              .gap(6)
+              .items_center()
+              .min_w(0)
+              .child(
+                div()
+                  .flex_none()
+                  .text_color(done ? t.muted : t.accent)
+                  .child(name),
+              )
+              .child(
+                div()
+                  .flex_1()
+                  .min_w(0)
+                  .truncate()
+                  .text_color(done ? t.muted : t.foreground)
+                  .child(pr.title),
+              ),
+          )
+          .child(
+            div()
+              .truncate()
+              .text_size(10)
+              .text_color(t.muted)
+              .child([label, pr.branch, SOURCES[pr.source]].join(" · ")),
+          ),
+      );
+  }
+
   render(cx: Context) {
     this.publishInboxCount();
+    this.syncAgentPrs(cx);
+    const asked = shared(SHOW_AGENT_PRS) as { address?: string; at?: number } | null;
+    if (asked?.at && asked.at > this.shownAt) {
+      this.shownAt = asked.at;
+      this.shownAgent = asked.address ?? null;
+      this.tab = "agents";
+    }
     if (!this.visible()) return div();
     if (this.pendingInitialRefresh) this.refreshAll(cx);
     else if (contextKey(location()) !== this.context) this.refresh(cx, false);
@@ -1004,7 +1330,22 @@ export default class GitHub extends View {
             ),
           ),
       )
-      .child(this.body(t))
-      .child(this.footer(t));
+      .child(
+        h_flex()
+          .h(30)
+          .px(6)
+          .gap(2)
+          .items_center()
+          .flex_none()
+          .border_b(1)
+          .border_color(t.border)
+          .role("tab_list")
+          .child(this.tabButton("inbox", "Inbox", t))
+          .child(
+            this.tabButton("agents", `Agents ${Object.keys(this.agentPrs).length || ""}`.trim(), t),
+          ),
+      )
+      .child(this.tab === "agents" ? this.agentsBody(t) : this.body(t))
+      .when(this.tab === "inbox", (el) => el.child(this.footer(t)));
   }
 }

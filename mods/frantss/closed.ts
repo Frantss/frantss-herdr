@@ -1,6 +1,7 @@
 // The agents the rail has seen, kept so it can list them after their tab closes. Herdr's core keeps
 // a closed tab's terminals as "finished" with their history, but forgets which agent ran in them.
 import type { Program } from "herdr";
+import type { PrLink } from "./agent-prs.ts";
 
 export type AgentRecord = {
   address: string;
@@ -11,22 +12,26 @@ export type AgentRecord = {
   cwd?: string;
   // When the rail found its terminal finished.
   closed?: number;
+  // The pull requests and branches its terminal's labels named, kept after the terminal closes.
+  prs?: PrLink[];
 };
-export type LiveAgent = Pick<AgentRecord, "address" | "app" | "program" | "title">;
+export type LiveAgent = Pick<AgentRecord, "address" | "app" | "program" | "title" | "prs">;
 // A terminal as `hc ls --all --json` lists it.
 export type CoreTerminal = { address: string; state: string; cwd?: string };
 
 export const CLOSED_LIMIT = 20;
 
-// Adds the agents it hasn't seen and keeps each one's latest program and telling title.
+// Adds the agents it hasn't seen and keeps each one's latest program, telling title and links.
 export function recordAgents(records: AgentRecord[], live: LiveAgent[]): AgentRecord[] {
   const byAddress = new Map(records.map((record) => [record.address, record]));
   for (const agent of live) {
     const known = byAddress.get(agent.address);
+    const { prs, ...rest } = agent;
     byAddress.set(agent.address, {
       ...known,
-      ...agent,
+      ...rest,
       title: agent.title ?? known?.title ?? null,
+      ...(prs?.length ? { prs } : {}),
     });
   }
   return [...byAddress.values()];

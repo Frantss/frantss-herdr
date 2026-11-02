@@ -1,4 +1,5 @@
 import type { ExecResult } from "herdr";
+import type { AgentPr, PrLink, PrState } from "./agent-prs.ts";
 
 export type GitHubExecutor = (
   args: string[],
@@ -318,4 +319,129 @@ export function findCheckout(porcelain: string, branch: string): string | null {
       return lines.find((line) => line.startsWith("worktree "))?.slice(9) ?? null;
   }
   return null;
+}
+
+interface LinkedNode {
+  number: number;
+  title: string;
+  url: string;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  headRefName: string;
+  isDraft: boolean;
+  reviewDecision: string | null;
+  mergeable?: string;
+  commits: { nodes: { commit: { statusCheckRollup?: { state: string } | null } }[] };
+  reviewThreads: { nodes: { isResolved: boolean; isOutdated: boolean }[] };
+}
+
+// A pull request's most urgent state, in the inbox's terms.
+export function prState(node: LinkedNode): PrState {
+  if (node.state === "MERGED") return "merged";
+  if (node.state === "CLOSED") return "closed";
+  const checks = node.commits.nodes[0]?.commit.statusCheckRollup?.state ?? null;
+  if (failedConclusions.has(checks)) return "failing";
+  if (node.reviewDecision === "CHANGES_REQUESTED") return "changes";
+  if (node.mergeable === "CONFLICTING") return "conflicts";
+  if (node.reviewThreads.nodes.some((t) => !t.isResolved && !t.isOutdated)) return "comments";
+  if (pendingStates.has(checks)) return "pending";
+  if (!node.isDraft && node.reviewDecision === "APPROVED" && checks === "SUCCESS") return "ready";
+  return "open";
+}
+
+const LINKED_FIELDS = `fragment F on PullRequest {
+  number title url state headRefName isDraft reviewDecision mergeable
+  commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+  reviewThreads(first: 100) { nodes { isResolved isOutdated } }
+}`;
+
+export type LinkedPr = Omit<AgentPr, "source">;
+export interface LinkedPrs {
+  byNumber: Map<number, LinkedPr>;
+  byBranch: Map<string, LinkedPr[]>;
+}
+
+// One query for a repository's linked pull requests: by number, and the open or merged ones whose
+// head is a linked branch other than the default branch.
+export async function loadLinkedPrs(
+  gh: GitHubExecutor,
+  repo: string,
+  numbers: number[],
+  branches: string[],
+): Promise<LinkedPrs> {
+  const [owner, name] = repo.split("/");
+  const fields = [
+    ...numbers.map((n) => `n${n}: pullRequest(number: ${n}) { ...F }`),
+    ...branches.map(
+      (_, i) =>
+        `b${i}: pullRequests(headRefName: $b${i}, first: 3, states: [OPEN, MERGED], orderBy: { field: CREATED_AT, direction: DESC }) { nodes { ...F } }`,
+    ),
+  ];
+  const variables = branches.map((_, i) => `, $b${i}: String!`).join("");
+  const query = `query($owner: String!, $name: String!${variables}) {
+  repository(owner: $owner, name: $name) { defaultBranchRef { name } ${fields.join("\n")} }
+}
+${LINKED_FIELDS}`;
+  const result = await gh([
+    "api",
+    "graphql",
+    "-f",
+    `query=${query}`,
+    "-f",
+    `owner=${owner}`,
+    "-f",
+    `name=${name}`,
+    ...branches.flatMap((branch, i) => ["-f", `b${i}=${branch}`]),
+  ]);
+  // A missing pull request fails only its own field: gh exits 1 but still prints the rest.
+  let repository: Record<string, unknown> | null = null;
+  try {
+    repository = JSON.parse(result.stdout ?? "").data?.repository ?? null;
+  } catch {
+    /* Reported below. */
+  }
+  if (!repository)
+    throw new Error(result.stderr?.trim() || `Couldn't look up pull requests in ${repo}.`);
+  const linked = (node: LinkedNode): LinkedPr => ({
+    repo,
+    number: node.number,
+    title: node.title,
+    url: node.url,
+    branch: node.headRefName,
+    state: prState(node),
+  });
+  const base = (repository.defaultBranchRef as { name?: string } | null)?.name;
+  const byNumber = new Map<number, LinkedPr>();
+  for (const n of numbers) {
+    const node = repository[`n${n}`] as LinkedNode | null;
+    if (node) byNumber.set(n, linked(node));
+  }
+  const byBranch = new Map<string, LinkedPr[]>();
+  branches.forEach((branch, i) => {
+    const nodes = (repository[`b${i}`] as { nodes: LinkedNode[] } | null)?.nodes ?? [];
+    if (branch !== base) byBranch.set(branch, nodes.map(linked));
+  });
+  return { byNumber, byBranch };
+}
+
+// An agent's pull requests from its links, each once, most urgent first. A pull request it created
+// counts as created even when it also pushed the branch.
+export function agentPullRequests(
+  links: PrLink[],
+  lookups: Map<string, LinkedPrs>,
+  urgency: PrState[],
+): AgentPr[] {
+  const found = new Map<string, AgentPr>();
+  const add = (pr: LinkedPr | undefined, source: PrLink["source"]) => {
+    const key = `${pr?.repo}#${pr?.number}`;
+    if (pr && (!found.has(key) || found.get(key).source === "pushed"))
+      found.set(key, { ...pr, source });
+  };
+  for (const link of links) {
+    const lookup = lookups.get(link.repo);
+    if (link.number !== undefined) add(lookup?.byNumber.get(link.number), link.source);
+    else for (const pr of lookup?.byBranch.get(link.branch) ?? []) add(pr, link.source);
+  }
+  return [...found.values()].sort(
+    (a, b) => urgency.indexOf(a.state) - urgency.indexOf(b.state) || b.number - a.number,
+  );
 }

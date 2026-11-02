@@ -90,3 +90,11 @@ test("age names the largest whole unit", () => {
   assert.equal(age(3 * 3_600_000 + 1), "3h");
   assert.equal(age(2 * 86_400_000), "2d");
 });
+
+test("recording keeps an agent's PR links after its labels are gone", () => {
+  const prs = [{ repo: "o/r", number: 4, source: "created" as const }];
+  const recorded = recordAgents([], [{ ...live("t1"), prs }]);
+  assert.deepEqual(recorded, [{ ...live("t1"), prs }]);
+  assert.deepEqual(recordAgents(recorded, [{ ...live("t1"), prs: [] }]), recorded);
+  assert.deepEqual(recordAgents([], [{ ...live("t2"), prs: [] }]), [live("t2")]);
+});
