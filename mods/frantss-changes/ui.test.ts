@@ -24,6 +24,9 @@ async function harness(refresh = false) {
     elements: 0,
     highlights: [],
     sent: [],
+    turnRecords: [],
+    turnReads: [],
+    gitCalls: [],
     hostReads: { spaces: 0, panes: 0, focused: 0, paneRecords: 0 },
   };
   const input = () => {
@@ -71,7 +74,7 @@ async function harness(refresh = false) {
             node.handlers[name] = args.at(-1);
           } else if (name === "when") {
             if (args[0]) args[1](proxy);
-          } else if (name === "child") node.childNodes.push(args[0]);
+          } else if (name === "child" || name === "content") node.childNodes.push(args[0]);
           else if (name === "children") node.childNodes.push(...args[0]);
           else {
             node.styles.push([name, ...args]);
@@ -106,6 +109,9 @@ async function harness(refresh = false) {
       h_flex: element,
       v_resizable: element,
       Button: { new: (id) => element().id(id) },
+      Select: { new: (id) => element().id(id) },
+      Popup: { new: (id, trigger) => element().id(id).child(trigger) },
+      VirtualListScrollHandle: { new: () => ({ scroll_to_item() {} }) },
       resizable_panel: element,
       Scrollbar: { vertical: element },
       InputState: {},
@@ -175,6 +181,31 @@ async function harness(refresh = false) {
   };
   if (refresh) {
     natives.herdr.exec = async (command, args, options) => {
+      if (command === "sh" && args[2] === "turns") {
+        state.turnReads.push({ args, options });
+        if (state.turnBlock) await state.turnBlock;
+        if (state.turnError) throw new Error(state.turnError);
+        return {
+          code: 0,
+          stdout: state.turnRecords
+            .map((turn) => `${turn.id}.json\0${JSON.stringify(turn)}\0`)
+            .join(""),
+          stderr: "",
+        };
+      }
+      if (command === "git") state.gitCalls.push({ args, options });
+      if (args.includes("--literal-pathspecs")) {
+        if (state.historyBlock) await state.historyBlock;
+        if (state.historyError) return { code: 128, stdout: "", stderr: state.historyError };
+        const before = args.find((arg) => /^[a-f0-9]{40}$/.test(arg));
+        const history = state.histories?.[before] ?? {};
+        const stdout = args.includes("--name-status")
+          ? (history.names ?? "M\0file.ts\0")
+          : args.includes("--numstat")
+            ? (history.stats ?? "1\t1\tfile.ts\0")
+            : (history.diff ?? "@@ -1 +1 @@\n-before turn\n+after turn\n");
+        return { code: 0, stdout, stderr: "" };
+      }
       if (command === "sh" && args[2] === "trash") {
         state.indexCalls = [...(state.indexCalls ?? []), ["trash", ...args.slice(3)]];
         return state.trashResult ?? { code: 0, stdout: "", stderr: "" };
@@ -227,6 +258,7 @@ async function harness(refresh = false) {
       if (args[0] === "log") return { code: 0, stdout: state.lastMessage ?? "", stderr: "" };
       if (["add", "reset", "restore", "commit", "stash"].includes(args[0])) {
         state.indexCalls = [...(state.indexCalls ?? []), args];
+        if (state.indexBlock) await state.indexBlock;
         return state.indexResult ?? { code: 0, stdout: "", stderr: "" };
       }
       throw new Error(`Unexpected Git args ${args}`);
@@ -261,6 +293,21 @@ async function harness(refresh = false) {
   const Changes = (module.namespace as { default: new () => any }).default;
   const changes = new Changes();
   Object.assign(changes, {
+    selectedTurn: null,
+    turns: [],
+    turnsError: null,
+    turnsWarning: null,
+    turnsLoading: false,
+    working: null,
+    revision: 0,
+    selectOpen: false,
+    selectIndex: 0,
+    selectFocus: { focus() {} },
+    optionsFocus: { focus() {} },
+    turnScroll: {
+      scroll_to_item: (index, strategy) =>
+        (state.scrolls = [...(state.scrolls ?? []), [index, strategy]]),
+    },
     files: [],
     rows: [],
     plainRows: [],
@@ -607,7 +654,7 @@ test("Changes reuses synchronous context snapshots while keeping async context g
   await h.drain();
   assert.equal(h.changes.root, "/repo");
   assert.equal(h.changes.files[0].path, "file.ts");
-  assert.deepEqual(h.state.hostReads, { spaces: 6, panes: 6, focused: 6, paneRecords: 6000 });
+  assert.deepEqual(h.state.hostReads, { spaces: 7, panes: 7, focused: 7, paneRecords: 7000 });
 
   const previousFiles = h.changes.files,
     heldStatus = deferred(),
@@ -1447,4 +1494,417 @@ test("the agent menu names agents by tab, shows their icons, and sends to the on
   h.changes.sendReview(h.cx);
   await h.drain();
   assert.equal(h.state.sent.at(-1)[1], "t1");
+});
+
+const turn = (id = "turn-1", patch = {}) => ({
+  id,
+  agent: "pi",
+  session: "session",
+  terminal: "t42",
+  title: "Saved work",
+  startedAt: "2026-07-31T12:00:00.000Z",
+  endedAt: "2026-07-31T12:01:00.000Z",
+  status: "complete",
+  before: "a".repeat(40),
+  after: "b".repeat(40),
+  ...patch,
+});
+async function historyHarness(records = [turn()]) {
+  const h = await harness(true);
+  h.state.turnRecords = records;
+  h.changes.refresh(h.cx);
+  await h.drain();
+  return h;
+}
+
+test("single native view selector groups all agents' turns and supports pointer, arrows, Home/End, confirmation and dismissal", async () => {
+  const records = [
+    turn(),
+    turn("turn-2", {
+      agent: "claude-code",
+      terminal: "t43",
+      title: "Fix retries",
+      before: "c".repeat(40),
+    }),
+    turn("turn-3", { agent: "codex", terminal: "t44" }),
+  ];
+  const h = await historyHarness(records);
+  const root = h.render();
+  assert.ok(byId(root, "changes-view"));
+  assert.equal(text(byId(root, "changes-view-trigger")), "Working tree ");
+  byId(root, "changes-view").handlers.on_open_change(true, h.cx);
+  const menu = byId(h.render(), "changes-view-options");
+  assert.ok(text(menu).includes("Working tree Turn changes"));
+  const choices = h.state.lists.findLast((list) => list.id === "changes-turn-options");
+  const items = h.range(choices, 0, choices.count);
+  assert.ok(text(items[0]).includes("t42 · Pi · 07-31 12:00:00Z · Saved work"));
+  assert.ok(text(items[1]).includes("t43 · Claude Code · 07-31 12:00:00Z · Fix retries"));
+  assert.ok(text(items[2]).includes("t44 · Codex"));
+  assert.equal(h.changes.selectIndex, 0);
+  menu.handlers.on_key_down({ key: "down" }, h.cx);
+  assert.equal(h.changes.selectIndex, 1);
+  menu.handlers.on_key_down({ key: "end" }, h.cx);
+  assert.equal(h.changes.selectIndex, 3);
+  assert.deepEqual(h.state.scrolls.at(-1), [2, "center"]);
+  byId(h.render(), "changes-view").handlers.on_confirm({}, h.cx);
+  await h.drain();
+  assert.equal(h.changes.selectedTurn, "turn-3");
+  h.changes.setSelectOpen(true, h.cx);
+  assert.deepEqual(h.state.scrolls.at(-1), [2, "center"]);
+  byId(h.render(), "changes-view-options").handlers.on_key_down({ key: "home" }, h.cx);
+  assert.equal(h.changes.selectIndex, 0);
+  byId(h.render(), "changes-view").handlers.on_dismiss({}, h.cx);
+  assert.equal(h.changes.selectOpen, false);
+  assert.equal(h.changes.selectedTurn, "turn-3");
+  h.changes.setSelectOpen(true, h.cx);
+  h.render();
+  h.state.lists
+    .findLast((list) => list.id === "changes-turn-options")
+    .node.handlers.on_item_click("turn-2", h.cx);
+  await h.drain();
+  assert.equal(h.changes.selectedTurn, "turn-2");
+  byId(h.render(), "changes-turn-previous").handlers.on_click({}, h.cx);
+  await h.drain();
+  assert.equal(h.changes.selectedTurn, "turn-1");
+  assert.ok(disabled(byId(h.render(), "changes-turn-previous")));
+  byId(h.render(), "changes-turn-next").handlers.on_click({}, h.cx);
+  await h.drain();
+  assert.equal(h.changes.selectedTurn, "turn-2");
+  h.changes.panelWidth = 180;
+  h.changes.setSelectOpen(true, h.cx);
+  assert.ok(
+    byId(h.render(), "changes-view-options").styles.some(
+      ([name, value]) => name === "w" && value === 164,
+    ),
+  );
+});
+
+test("a selector without turns shows one compact disabled row and keeps keyboard selection on Working tree", async () => {
+  const h = await historyHarness([]);
+  for (const [loading, error, message, explanation] of [
+    [false, null, "No recorded turns yet", "recording is enabled"],
+    [true, null, "Loading recorded turns…", "Checking this worktree"],
+    [false, "offline", "Could not load recorded turns", "retry automatically"],
+  ] as const) {
+    h.changes.turnsLoading = loading;
+    h.changes.turnsError = error;
+    h.changes.setSelectOpen(true, h.cx);
+    const root = h.render(),
+      menu = byId(root, "changes-view-options"),
+      unavailable = byId(menu, "changes-turn-empty");
+    assert.ok(disabled(unavailable));
+    assert.equal(text(unavailable), "Turn changes");
+    assert.equal(text(menu).split("Turn changes").length, 2);
+    assert.ok(
+      unavailable.styles.some(
+        ([name, value]) =>
+          name === "tooltip" && value.includes(message) && value.includes(explanation),
+      ),
+    );
+    assert.equal(unavailable.handlers.on_click, undefined);
+    assert.equal(byId(root, "changes-turn-options"), undefined);
+    for (const key of ["down", "end", "up", "home"]) {
+      menu.handlers.on_key_down({ key }, h.cx);
+      assert.equal(h.changes.selectIndex, 0);
+    }
+    byId(root, "changes-view").handlers.on_confirm({}, h.cx);
+    assert.equal(h.changes.selectedTurn, null);
+    assert.equal(h.changes.selectOpen, false);
+    assert.ok(byId(h.render(), "commit"));
+  }
+});
+
+test("history reuses file list/diff but never working content, highlight, expansion, review or mutation controls", async () => {
+  const { h, comment } = await reviewing();
+  comment(2, "Working review only");
+  h.state.turnRecords = [turn()];
+  h.changes.refreshTurns(h.cx);
+  await h.drain();
+  const savedComments = plain(h.changes.comments),
+    savedRows = h.changes.rows;
+  h.changes.commitMessage = "draft stays";
+  h.state.highlights = [];
+  h.changes.selectTurn("turn-1", h.cx);
+  await h.drain();
+  assert.deepEqual(plain(h.changes.rows.map((row) => row.text)), [
+    "@@ -1 +1 @@",
+    "before turn",
+    "after turn",
+  ]);
+  assert.equal(h.changes.fileLines, null);
+  assert.deepEqual(h.state.highlights, []);
+  const root = h.render();
+  assert.ok(text(root).includes("Read-only"));
+  for (const id of [
+    "commit",
+    "commit-amend",
+    "changes-sync",
+    "changes-stash",
+    "changes-pop",
+    "review-send",
+    "review-note",
+    "review-agent",
+  ])
+    assert.equal(byId(root, id), undefined, id);
+  const list = h.state.lists.findLast((list) => list.id === "changes-files");
+  assert.equal(byId(h.range(list, 1, 2)[0], "actions-unstaged:file.ts"), undefined);
+  h.changes.pressRight = (BUTTONS_RIGHT + 10) * h.state.zoom;
+  h.changes.clickListRow("unstaged:file.ts", h.cx);
+  await h.drain();
+  assert.equal(h.state.indexCalls, undefined);
+  h.changes.pick("unstaged:file.ts", h.cx);
+  await h.drain();
+  for (const action of [
+    () => h.changes.run([["git", ["stash", "pop"]]], h.cx),
+    () => h.changes.discard(h.changes.files, h.cx),
+    () => h.changes.commit(h.cx),
+    () => h.changes.sync(h.cx),
+    () => h.changes.setAmending(true, h.cx),
+    () => h.changes.clickRow(2, h.cx),
+    () => h.changes.saveComment(h.cx),
+    () => h.changes.removeComment(h.cx),
+    () => h.changes.discardReview(h.cx),
+    () => h.changes.sendReview(h.cx),
+    () => h.changes.chooseAgent("wrong", h.cx),
+  ])
+    action();
+  await h.drain();
+  assert.equal(h.state.indexCalls, undefined);
+  assert.equal(h.state.sent.length, 0);
+  assert.equal(h.changes.target, null);
+  assert.equal(h.changes.canCommit(), false);
+  assert.equal(h.changes.agentAddress, null);
+  assert.ok(h.changes.rows.every((row) => row.spans === undefined && row.gap === undefined));
+  h.changes.selectTurn(null, h.cx);
+  assert.deepEqual(plain(h.changes.rows), plain(savedRows));
+  assert.deepEqual(plain(h.changes.comments), savedComments);
+  assert.equal(h.changes.commitMessage, "draft stays");
+  await h.drain();
+  assert.ok(byId(h.render(), "commit"));
+});
+
+test("history preserves per-place selection and working drafts through a root refresh", async () => {
+  const h = await historyHarness();
+  h.changes.commitMessage = "repo draft";
+  h.changes.selectTurn("turn-1", h.cx);
+  await h.drain();
+  const rows = h.changes.rows;
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.selectedTurn, "turn-1");
+  assert.equal(h.changes.rows, rows);
+  h.state.cwd = "/other";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.selectedTurn, null);
+  h.changes.commitMessage = "other draft";
+  h.state.cwd = "/repo";
+  h.changes.refresh(h.cx);
+  await h.drain();
+  assert.equal(h.changes.selectedTurn, "turn-1");
+  assert.ok(text(h.render()).includes("Read-only"));
+  h.changes.selectTurn(null, h.cx);
+  await h.drain();
+  assert.equal(h.changes.commitMessage, "repo draft");
+});
+
+test("recording, missing, empty and failed snapshots never display live changes and can reload", async () => {
+  for (const patch of [
+    { status: "recording", after: undefined },
+    { status: "recording" },
+    { before: undefined },
+    { after: undefined, status: "error", error: "capture failed" },
+  ]) {
+    const h = await historyHarness([turn("turn-1", patch)]);
+    h.changes.selectTurn("turn-1", h.cx);
+    await h.drain();
+    assert.equal(h.changes.files.length, 0);
+    assert.equal(h.changes.rows.length, 0);
+    assert.ok(
+      text(h.render()).includes(
+        patch.status === "recording" ? "recording" : "No before/after snapshot",
+      ),
+    );
+    assert.equal(
+      h.state.gitCalls.filter((call) => call.args.includes("--literal-pathspecs")).length,
+      0,
+    );
+  }
+  const h = await historyHarness();
+  h.state.histories = { ["a".repeat(40)]: { names: "", stats: "" } };
+  h.changes.selectTurn("turn-1", h.cx);
+  assert.ok(text(h.render()).includes("Loading saved snapshot"));
+  await h.drain();
+  assert.ok(text(h.render()).includes("No changes in this turn"));
+  h.state.historyError = "bad object: snapshot removed";
+  byId(h.render(), "changes-turn-retry").handlers.on_click({}, h.cx);
+  await h.drain();
+  assert.ok(text(h.render()).includes("Cannot load saved snapshot"));
+  assert.equal(h.changes.files.length, 0);
+  h.state.historyError = null;
+  h.state.histories = {};
+  byId(h.render(), "changes-turn-retry").handlers.on_click({}, h.cx);
+  await h.drain();
+  assert.equal(h.changes.files.length, 1);
+  assert.match(h.changes.rows.at(-1).text, /after turn/);
+});
+
+test("turn metadata refreshes on the timer despite an active Git-ignoring watcher and updates recording turns", async () => {
+  const h = await historyHarness([turn("turn-1", { status: "recording", after: undefined })]);
+  h.changes.watched = "/repo";
+  h.changes.selectTurn("turn-1", h.cx);
+  const before = h.state.queryStarts.length,
+    reads = h.state.turnReads.length;
+  h.state.turnRecords = [turn()];
+  h.changes.poll(h.cx);
+  await h.drain();
+  assert.equal(h.state.queryStarts.length, before);
+  assert.ok(h.state.turnReads.length > reads);
+  assert.equal(h.changes.files.length, 1);
+  h.state.turnError = "permission denied";
+  h.changes.poll(h.cx);
+  await h.drain();
+  assert.ok(text(h.render()).includes("Cannot read recorded turns"));
+  assert.equal(h.changes.selectedTurn, "turn-1");
+});
+
+test("late working refreshes and colors cannot replace the historical snapshot", async () => {
+  const h = await historyHarness();
+  const pending = deferred();
+  h.state.queryBlocks.set("status", pending.promise);
+  h.changes.refresh(h.cx);
+  await ticks();
+  h.changes.selectTurn("turn-1", h.cx);
+  await ticks();
+  pending.resolve();
+  await h.drain();
+  assert.equal(h.changes.selectedTurn, "turn-1");
+  assert.equal(h.changes.rows.at(-1).text, "after turn");
+  assert.equal(h.changes.loading, false);
+});
+
+test("late historical list, file and failed preview results cannot replace another view/place/file", async () => {
+  for (const destination of ["working", "turn", "place", "file"]) {
+    const h = await historyHarness([
+      turn(),
+      turn("turn-2", { before: "c".repeat(40), after: "d".repeat(40) }),
+    ]);
+    h.state.histories = {
+      ["a".repeat(40)]: {
+        names: "M\0file.ts\0M\0other.ts\0",
+        stats: "1\t1\tfile.ts\x001\t1\tother.ts\0",
+      },
+      ["c".repeat(40)]: { diff: "@@ -1 +1 @@\n-second before\n+second after\n" },
+    };
+    h.changes.selectTurn("turn-1", h.cx);
+    await h.drain();
+    const block = deferred();
+    h.state.historyBlock = block.promise;
+    h.changes.pick("unstaged:other.ts", h.cx);
+    await ticks();
+    h.state.historyBlock = null;
+    if (destination === "working") h.changes.selectTurn(null, h.cx);
+    else if (destination === "turn") h.changes.selectTurn("turn-2", h.cx);
+    else if (destination === "place") {
+      h.state.cwd = "/other";
+      h.changes.refresh(h.cx);
+    } else h.changes.pick("unstaged:file.ts", h.cx);
+    await ticks();
+    block.resolve();
+    await h.drain();
+    if (destination === "working" || destination === "place")
+      assert.ok(h.changes.rows.some((row) => row.text === "new"));
+    else if (destination === "turn") assert.equal(h.changes.rows.at(-1).text, "second after");
+    else assert.equal(h.changes.open, "unstaged:file.ts");
+    assert.equal(h.changes.note, null);
+  }
+});
+
+test("confirmed commands queued before selecting history are stopped before execution and between commands", async () => {
+  const h = await historyHarness();
+  h.changes.run([["git", ["stash", "pop"]]], h.cx);
+  h.changes.selectTurn("turn-1", h.cx);
+  await h.drain();
+  assert.equal(h.state.indexCalls, undefined);
+  h.changes.selectTurn(null, h.cx);
+  await h.drain();
+  h.changes.commitMessage = "commit all";
+  const block = deferred();
+  h.state.indexBlock = block.promise;
+  h.changes.commit(h.cx);
+  await ticks();
+  assert.deepEqual(plain(h.state.indexCalls), [["add", "-A"]]);
+  h.changes.selectTurn("turn-1", h.cx);
+  block.resolve();
+  await h.drain();
+  assert.deepEqual(plain(h.state.indexCalls), [["add", "-A"]]);
+  h.changes.selectTurn(null, h.cx);
+  await h.drain();
+  assert.equal(h.changes.commitMessage, "commit all");
+});
+
+test("historical file-list and metadata responses from an old view or place are ignored", async () => {
+  for (const destination of ["working", "turn", "place"]) {
+    const h = await historyHarness([
+      turn(),
+      turn("turn-2", { before: "c".repeat(40), after: "d".repeat(40) }),
+    ]);
+    const blocked = deferred();
+    h.state.historyBlock = blocked.promise;
+    h.changes.selectTurn("turn-1", h.cx);
+    await ticks();
+    h.state.historyBlock = null;
+    if (destination === "working") h.changes.selectTurn(null, h.cx);
+    else if (destination === "turn") h.changes.selectTurn("turn-2", h.cx);
+    else {
+      h.state.cwd = "/other";
+      h.changes.refresh(h.cx);
+    }
+    await ticks();
+    blocked.resolve();
+    await h.drain();
+    assert.equal(h.changes.selectedTurn, destination === "turn" ? "turn-2" : null);
+    assert.equal(h.changes.loading, false);
+    if (destination !== "turn") assert.ok(h.changes.rows.some((row) => row.text === "new"));
+  }
+  const h = await historyHarness();
+  const metadata = deferred();
+  h.state.turnBlock = metadata.promise;
+  h.changes.refreshTurns(h.cx);
+  await ticks();
+  h.state.cwd = "/other";
+  h.state.turnBlock = null;
+  h.state.turnRecords = [turn("other-turn")];
+  h.changes.refresh(h.cx);
+  await ticks();
+  metadata.resolve();
+  await h.drain();
+  assert.equal(h.changes.context, JSON.stringify({ cwd: "/other", on: null }));
+  assert.deepEqual(plain(h.changes.turns.map((turn) => turn.id)), ["other-turn"]);
+});
+
+test("failed historical previews keep an explicit error instead of current file contents", async () => {
+  const h = await historyHarness();
+  h.changes.selectTurn("turn-1", h.cx);
+  await h.drain();
+  h.state.historyError = "snapshot unreadable";
+  h.changes.pick("unstaged:file.ts", h.cx);
+  h.changes.pick("unstaged:file.ts", h.cx);
+  await h.drain();
+  assert.match(h.changes.rows[0].text, /Cannot read saved diff.*snapshot unreadable/);
+  assert.equal(h.changes.fileLines, null);
+  assert.equal(h.state.indexCalls, undefined);
+});
+
+test("a queued working review send is cancelled after switching to historical lines", async () => {
+  const { h, comment } = await reviewing();
+  h.state.agents = [{ address: "t1", space: "s1", seq: 1, program: { name: "Pi" } }];
+  comment(2, "Only current lines");
+  h.state.turnRecords = [turn()];
+  h.changes.refreshTurns(h.cx);
+  await h.drain();
+  h.changes.sendReview(h.cx);
+  h.changes.selectTurn("turn-1", h.cx);
+  await h.drain();
+  assert.equal(h.state.sent.length, 0);
 });

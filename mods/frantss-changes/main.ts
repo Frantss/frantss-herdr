@@ -16,6 +16,9 @@ import {
   TextareaState,
   Textarea,
   Scrollbar,
+  Select,
+  Popup,
+  VirtualListScrollHandle,
   v_virtual_list,
   v_resizable,
   resizable_panel,
@@ -68,11 +71,13 @@ import {
   type Section,
 } from "./status.ts";
 
+import { loadTurns, turnFiles, turnDiff, turnLabel, type Turn, type TurnPlace } from "./turns.ts";
+
 type Theme = Record<string, Color>;
 
 // A section's header row leads its files in the list.
 type ListRow = (TreeRow<ChangedFile> | { kind: "section"; count: number }) & { section: Section };
-type Snapshot = Pick<
+type WorkingSnapshot = Pick<
   Changes,
   | "root"
   | "gitDir"
@@ -102,6 +107,8 @@ type Snapshot = Pick<
   | "commitDraft"
 >;
 
+type Snapshot = WorkingSnapshot &
+  Pick<Changes, "selectedTurn" | "turns" | "turnsError" | "turnsWarning" | "working">;
 const key = () => JSON.stringify(followedPlace());
 const TRASH = "mods/frantss-changes/trash.svg",
   CHEVRON = "mods/workspace-chrome/chevron-down.svg",
@@ -163,6 +170,14 @@ const SNAPSHOT = [
   "amending",
   "commitDraft",
 ] as const;
+const PLACE_SNAPSHOT = [
+  ...SNAPSHOT,
+  "selectedTurn",
+  "turns",
+  "turnsError",
+  "turnsWarning",
+  "working",
+] as const;
 const KEPT_PLACES = 20;
 // Numbers each diff line once, so a frame only draws the rows on screen.
 function diffRows(lines: string[]): DiffRow[] {
@@ -209,6 +224,22 @@ const sameRows = (left: DiffRow[], right: DiffRow[]) =>
   );
 
 export default class Changes extends View {
+  declare selectedTurn: string | null;
+  declare turns: Turn[];
+  declare turnsError: string | null;
+  declare turnsWarning: string | null;
+  declare turnsLoading: boolean;
+  declare turnsRequest: object | null;
+  declare working: WorkingSnapshot | null;
+  declare revision: number;
+  declare previewRequest: object | null;
+  declare historyLoaded: boolean;
+  declare turnScroll: VirtualListScrollHandle;
+  declare panelWidth: number;
+  declare selectOpen: boolean;
+  declare selectIndex: number;
+  declare selectFocus: FocusHandle;
+  declare optionsFocus: FocusHandle;
   declare files: ChangedFile[];
   declare totals: { files: ChangedFile[]; count: number; add: number; del: number } | null;
   // Show the files as a folder tree instead of a flat list; folder rows hold the collapsed paths.
@@ -285,6 +316,19 @@ export default class Changes extends View {
   declare behind: number;
 
   init(_props: unknown, cx: AsyncContext) {
+    this.selectedTurn = null;
+    this.turns = [];
+    this.turnsError = null;
+    this.turnsWarning = null;
+    this.turnsLoading = false;
+    this.working = null;
+    this.revision = 0;
+    this.selectOpen = false;
+    this.selectIndex = 0;
+    this.selectFocus = cx.focus_handle();
+    this.optionsFocus = cx.focus_handle();
+    this.turnScroll = VirtualListScrollHandle.new();
+    this.panelWidth = 320;
     this.files = [];
     this.tree = localStorage.getItem(TREE_SETTING) === "true";
     this.listSize = Number(localStorage.getItem(SPLIT_SETTING)) || 200;
@@ -340,9 +384,428 @@ export default class Changes extends View {
     cx.timer.every(10000, (cx) => this.poll(cx));
   }
 
+  turnPlace(): TurnPlace | null {
+    return this.root && this.gitDir ? { root: this.root, gitDir: this.gitDir, on: this.on } : null;
+  }
+
+  refreshTurns(cx: Context) {
+    const place = this.turnPlace();
+    if (!place || this.turnsLoading || !panelShown("changes")) return;
+    const context = this.context,
+      request = {};
+    this.turnsRequest = request;
+    this.turnsLoading = true;
+    cx.spawn(async (cx) => {
+      try {
+        const result = await loadTurns(exec, place);
+        if (this.turnsRequest !== request || key() !== context) return;
+        const previous = this.turns?.find((turn) => turn.id === this.selectedTurn);
+        const changed = JSON.stringify(this.turns ?? []) !== JSON.stringify(result.turns);
+        const warning = result.skipped ? `${result.skipped} unreadable turn records skipped` : null;
+        const notify = changed || this.turnsError || this.turnsWarning !== warning;
+        this.turns = result.turns;
+        this.turnsError = null;
+        this.turnsWarning = warning;
+        if (
+          this.selectedTurn &&
+          JSON.stringify(previous) !==
+            JSON.stringify(this.turns.find((turn) => turn.id === this.selectedTurn))
+        )
+          this.refreshHistorical(cx);
+        if (notify) cx.notify();
+      } catch (error) {
+        if (this.turnsRequest !== request || key() !== context) return;
+        const message = `Cannot read recorded turns: ${error}`;
+        if (this.turnsError !== message) {
+          this.turnsError = message;
+          cx.notify();
+        }
+      } finally {
+        if (this.turnsRequest === request) {
+          this.turnsLoading = false;
+          if (this.selectOpen) cx.notify();
+        }
+      }
+    });
+  }
+
+  selectTurn(id: string | null, cx: Context) {
+    if (id !== null && !this.turns?.some((turn) => turn.id === id)) return;
+    this.selectOpen = false;
+    if ((this.selectedTurn ?? null) === id) return;
+    this.closeComment();
+    if (!this.selectedTurn)
+      this.working = Object.fromEntries(
+        SNAPSHOT.map((name) => [name, this[name]]),
+      ) as WorkingSnapshot;
+    this.selectedTurn = id;
+    this.revision = (this.revision ?? 0) + 1;
+    this.previewRequest = null;
+    this.loading = false;
+    this.again = false;
+    this.armed = null;
+    this.choosingAgent = false;
+    this.typing = null;
+    this.note = null;
+    if (id) {
+      this.comments = [];
+      this.closed = false;
+      this.open = null;
+      this.refreshHistorical(cx);
+    } else {
+      if (this.working) Object.assign(this, this.working);
+      this.working = null;
+      this.noteInput.set_value(this.reviewNote);
+      this.commitInput.set_value(this.commitMessage);
+      this.refresh(cx);
+    }
+    cx.notify();
+  }
+
+  refreshHistorical(cx: Context) {
+    if (!this.selectedTurn) return;
+    const turn = this.turns?.find((turn) => turn.id === this.selectedTurn),
+      place = this.turnPlace();
+    const revision = (this.revision = (this.revision ?? 0) + 1),
+      context = this.context;
+    this.previewRequest = null;
+    this.historyLoaded = true;
+    this.files = [];
+    this.setLines([]);
+    this.error = null;
+    this.note = null;
+    this.limited = false;
+    if (!turn) {
+      this.open = null;
+      this.error =
+        "This recorded turn is no longer available. Select another turn or Working tree.";
+      this.loading = false;
+      cx.notify();
+      return;
+    }
+    if (turn.status === "recording" || !turn.before || !turn.after || !place) {
+      this.open = null;
+      this.error =
+        turn.status === "recording"
+          ? "This turn is recording. Its saved diff will be available when the turn ends."
+          : `No before/after snapshot recorded for this turn.${turn.error ? ` ${turn.error}` : ""}`;
+      this.loading = false;
+      cx.notify();
+      return;
+    }
+    this.loading = true;
+    cx.spawn(async (cx) => {
+      try {
+        const files = await turnFiles(exec, place, turn);
+        if (this.revision !== revision || key() !== context) return;
+        this.files = files;
+        if (!files.some((file) => entryKey(file) === this.open))
+          this.open = !this.closed && files.length ? entryKey(files[0]) : null;
+        if (this.open) await this.loadHistoricalDiff(this.open, cx);
+      } catch (error) {
+        if (this.revision !== revision || key() !== context) return;
+        this.open = null;
+        this.error = `Cannot load saved snapshot: ${error}. Retry or select another turn.`;
+      } finally {
+        if (this.revision === revision && key() === context) {
+          this.loading = false;
+          cx.notify();
+        }
+      }
+    });
+    cx.notify();
+  }
+
+  async loadHistoricalDiff(open: string, cx: Context) {
+    const file = this.openFile(),
+      place = this.turnPlace(),
+      turn = this.turns?.find((turn) => turn.id === this.selectedTurn),
+      revision = this.revision,
+      context = this.context,
+      request = {};
+    if (!file || !turn || !place || open !== this.open) return;
+    this.previewRequest = request;
+    this.setLines(["Loading saved diff…"]);
+    try {
+      const lines = await turnDiff(exec, place, turn, file);
+      if (
+        this.revision !== revision ||
+        this.previewRequest !== request ||
+        key() !== context ||
+        this.open !== open
+      )
+        return;
+      this.setLines(lines);
+    } catch (error) {
+      if (
+        this.revision !== revision ||
+        this.previewRequest !== request ||
+        key() !== context ||
+        this.open !== open
+      )
+        return;
+      this.setLines([`Cannot read saved diff: ${error}. Retry or select another file.`]);
+    }
+    cx.notify();
+  }
+
+  setSelectOpen(open: boolean, cx: Context) {
+    this.selectOpen = open;
+    if (open) {
+      this.selectIndex = Math.max(
+        0,
+        (this.turns ?? []).findIndex((turn) => turn.id === this.selectedTurn) + 1,
+      );
+      this.turnScroll.scroll_to_item(Math.max(0, this.selectIndex - 1), "center");
+      this.optionsFocus.focus();
+    } else this.selectFocus.focus();
+    cx.notify();
+  }
+
+  confirmTurn(cx: Context) {
+    const id = this.selectIndex === 0 ? null : this.turns?.[this.selectIndex - 1]?.id;
+    if (id !== undefined) this.selectTurn(id, cx);
+    this.selectOpen = false;
+    this.selectFocus.focus();
+    cx.notify();
+  }
+
+  turnSelector(t: Theme) {
+    const turns = this.turns ?? [],
+      selected = turns.find((turn) => turn.id === this.selectedTurn),
+      position = turns.findIndex((turn) => turn.id === this.selectedTurn),
+      emptyMessage = this.turnsLoading
+        ? "Loading recorded turns…"
+        : this.turnsError
+          ? "Could not load recorded turns"
+          : "No recorded turns yet",
+      emptyHelp = this.turnsLoading
+        ? "Checking this worktree for recorded requests."
+        : this.turnsError
+          ? "Working tree is still available. The turn list will retry automatically."
+          : "Completed requests appear here when turn recording is enabled for your agent.";
+    const option = (id: string | null, label: string, index: number, clickable = true) =>
+      div()
+        .id(`changes-view-option-${id ?? "working"}`)
+        .tooltip(`${label}${id ? ` · ${turns.find((turn) => turn.id === id)!.startedAt}` : ""}`)
+        .accessibility_label(
+          `${label}${id ? ` · ${turns.find((turn) => turn.id === id)!.startedAt}` : ""}`,
+        )
+        .role("list_box_option")
+        .aria_selected(id === (this.selectedTurn ?? null))
+        .when(index === this.selectIndex, (e) => e.aria_active_descendant().bg(t.selected))
+        .h(28)
+        .flex_none()
+        .px(8)
+        .flex()
+        .items_center()
+        .rounded(3)
+        .text_color(t.foreground)
+        .cursor_pointer()
+        .hover((s) => s.bg(t.hover))
+        .when(clickable, (e) =>
+          e.on_click((_e, cx) => {
+            this.selectTurn(id, cx);
+            this.selectOpen = false;
+            this.selectFocus.focus();
+            cx.notify();
+          }),
+        )
+        .child(div().min_w(0).truncate().child(label));
+    const label = this.selectedTurn
+      ? selected
+        ? turnLabel(selected)
+        : "Unavailable turn"
+      : "Working tree";
+    const trigger = h_flex()
+      .id("changes-view-trigger")
+      .tooltip(`${label}${selected ? ` · ${selected.startedAt}` : ""}`)
+      .h(28)
+      .w_full()
+      .min_w(0)
+      .px(8)
+      .gap(8)
+      .items_center()
+      .rounded(3)
+      .border_1()
+      .border_color(t.input)
+      .bg(t.surface)
+      .focus((s) => s.border_color(t.accent))
+      .cursor_pointer()
+      .on_click((_e, cx) => this.setSelectOpen(!this.selectOpen, cx))
+      .child(div().flex_1().min_w(0).truncate().child(label))
+      .child(svg(CHEVRON).size(12).flex_none());
+    const options = () =>
+      v_flex()
+        .id("changes-view-options")
+        .role("list_box")
+        .track_focus(this.optionsFocus)
+        .w(Math.max(1, Math.min(360, (this.panelWidth ?? 320) - 16)))
+        .p(4)
+        .rounded(3)
+        .border_1()
+        .border_color(t.input)
+        .bg(t.raised)
+        .on_key_down((e, cx) => {
+          if (["up", "down", "home", "end"].includes(e.key)) {
+            this.selectIndex =
+              e.key === "home"
+                ? 0
+                : e.key === "end"
+                  ? turns.length
+                  : Math.max(
+                      0,
+                      Math.min(turns.length, this.selectIndex + (e.key === "down" ? 1 : -1)),
+                    );
+            this.turnScroll.scroll_to_item(Math.max(0, this.selectIndex - 1), "center");
+            cx.stop_propagation();
+            cx.notify();
+          } else if (e.key === "space") {
+            this.confirmTurn(cx);
+            cx.stop_propagation();
+          }
+        })
+        .child(option(null, "Working tree", 0))
+        .when(turns.length > 0, (e) =>
+          e.child(
+            v_flex()
+              .role("group")
+              .accessibility_label("Turn changes")
+              .child(div().px(8).py(6).text_color(t.muted).child("Turn changes"))
+              .child(
+                v_virtual_list(
+                  "changes-turn-options",
+                  turns.length,
+                  28 * zoom(),
+                  (index) => turns[index].id,
+                  (range) =>
+                    turns
+                      .slice(range.start, range.end)
+                      .map((turn, i) =>
+                        option(turn.id, turnLabel(turn), range.start + i + 1, false),
+                      ),
+                )
+                  .h(Math.min(252, turns.length * 28))
+                  .w_full()
+                  .track_scroll(this.turnScroll)
+                  .on_item_click((id, cx) => {
+                    this.selectTurn(id, cx);
+                    this.selectOpen = false;
+                    this.selectFocus.focus();
+                    cx.notify();
+                  }),
+              ),
+          ),
+        )
+        .when(!turns.length, (e) =>
+          e.child(
+            v_flex()
+              .id("changes-turn-empty")
+              .role("list_box_option")
+              .aria_selected(false)
+              .disabled(true)
+              .accessibility_label(`Turn changes. ${emptyMessage}. ${emptyHelp}`)
+              .tooltip(`${emptyMessage}. ${emptyHelp}`)
+              .h(28)
+              .justify_center()
+              .px(8)
+              .text_color(t.muted)
+              .child(div().child("Turn changes")),
+          ),
+        );
+    return v_flex()
+      .id("changes-turn-controls")
+      .flex_none()
+      .min_w(0)
+      .p(8)
+      .gap(6)
+      .border_b(1)
+      .border_color(t.border)
+      .child(
+        Select.new("changes-view")
+          .accessibility_label("View / turn")
+          .open(Boolean(this.selectOpen))
+          .track_focus(this.selectFocus)
+          .content_focus_handle(this.optionsFocus)
+          .on_open_change((open, cx) => this.setSelectOpen(open, cx))
+          .on_confirm((_e, cx) => this.confirmTurn(cx))
+          .on_dismiss((_e, cx) => {
+            this.selectOpen = false;
+            cx.notify();
+          })
+          .child(
+            Popup.new("changes-view-popup", trigger)
+              .anchor("bottom_left")
+              .when(Boolean(this.selectOpen), (e) => e.content(options())),
+          ),
+      )
+      .when(Boolean(this.turnsError || this.turnsWarning), (e) =>
+        e.child(
+          div()
+            .text_color(t.muted)
+            .child(this.turnsError || this.turnsWarning),
+        ),
+      )
+      .when(Boolean(this.selectedTurn), (e) =>
+        e
+          .child(
+            h_flex()
+              .gap(8)
+              .items_center()
+              .child(
+                button(
+                  "changes-turn-previous",
+                  "‹ Previous",
+                  (cx) => {
+                    if (position > 0) this.selectTurn(turns[position - 1].id, cx);
+                  },
+                  { disabled: position <= 0, tooltip: "Previous turn" },
+                ),
+              )
+              .child(
+                div()
+                  .flex_1()
+                  .min_w(0)
+                  .text_color(t.muted)
+                  .child(
+                    position >= 0 ? `Turn ${position + 1} of ${turns.length}` : "Unavailable turn",
+                  ),
+              )
+              .child(
+                button(
+                  "changes-turn-next",
+                  "Next ›",
+                  (cx) => {
+                    if (position >= 0 && position < turns.length - 1)
+                      this.selectTurn(turns[position + 1].id, cx);
+                  },
+                  { disabled: position < 0 || position >= turns.length - 1, tooltip: "Next turn" },
+                ),
+              ),
+          )
+          .child(div().text_color(t.muted).child("Before turn → After turn · Read-only"))
+          .when(Boolean(selected?.error), (e) =>
+            e.child(div().text_color(t.muted).child(selected!.error)),
+          )
+          .child(
+            button(
+              "changes-turn-retry",
+              "Reload snapshot",
+              (cx) => {
+                this.refreshTurns(cx);
+                this.refreshHistorical(cx);
+              },
+              { disabled: this.loading },
+            ),
+          ),
+      );
+  }
+
   // The watcher reports changes in the repository. Without it (a remote place, a stopped watcher,
   // no repository yet) or with a Git folder outside it (a worktree), the timer looks again.
   poll(cx: Context) {
+    this.refreshTurns(cx);
+    if (this.selectedTurn) return;
     if (this.watched !== this.root || !this.gitDir?.startsWith(this.root + "/")) this.refresh(cx);
   }
 
@@ -371,6 +834,11 @@ export default class Changes extends View {
     // Switch places before waiting on any git still running for the last one: its results check the place.
     if (context !== this.context) this.switchTo(context);
     if (!cwd) return;
+    if (this.selectedTurn) {
+      this.refreshTurns(cx);
+      if (!this.historyLoaded) this.refreshHistorical(cx);
+      return;
+    }
     // A refresh asked for while one runs follows it, so a stage or unstage always shows.
     if (this.loading) {
       this.again = true;
@@ -381,7 +849,10 @@ export default class Changes extends View {
       this.stale = true;
       return;
     }
-    const previous = Object.fromEntries(SNAPSHOT.map((name) => [name, this[name]])) as Snapshot;
+    const previous = Object.fromEntries(
+      SNAPSHOT.map((name) => [name, this[name]]),
+    ) as WorkingSnapshot;
+    const revision = this.revision;
     this.loading = true;
     this.loadingRendered = false;
     cx.spawn(async (cx) => {
@@ -393,7 +864,7 @@ export default class Changes extends View {
             cwd,
             on,
           });
-          if (key() !== context) return;
+          if (key() !== context || this.revision !== revision) return;
           if (top.code !== 0) {
             this.root = null;
             this.gitDir = null;
@@ -421,7 +892,7 @@ export default class Changes extends View {
           numstat("--cached"),
           numstat(),
         ]);
-        if (key() !== context) return;
+        if (key() !== context || this.revision !== revision) return;
         for (const result of results) if (result.code !== 0) throw new Error(result.stderr);
         const [status, staged, unstaged] = results.map((result) => result.stdout),
           { hasHead, branch, upstream, ahead, behind, entries } = parseStatus(status),
@@ -439,6 +910,7 @@ export default class Changes extends View {
         this.limited = entries.length > 1000;
         this.error = null;
         this.watch(root, cx);
+        this.refreshTurns(cx);
         // A file staged or unstaged while shown stays shown in the section it moved to.
         if (this.open && !files.some((f) => entryKey(f) === this.open)) {
           const path = this.open.slice(this.open.indexOf(":") + 1),
@@ -453,35 +925,37 @@ export default class Changes extends View {
           try {
             await this.load(open, context, cx);
           } catch {
-            if (key() === context && this.open === open)
+            if (key() === context && this.revision === revision && this.open === open)
               this.setLines(["Cannot preview this diff (too large or unreadable)"]);
           }
         }
       } catch (e) {
-        if (key() === context) this.error = String(e);
+        if (key() === context && this.revision === revision) this.error = String(e);
       } finally {
-        const currentKey = key(),
-          current = this.context === context && currentKey === context;
-        let changed = !current;
-        if (current) {
-          const filesEqual = sameFiles(previous.files, this.files),
-            rowsEqual = sameRows(previous.rows, this.rows);
-          changed =
-            !filesEqual ||
-            !rowsEqual ||
-            SNAPSHOT.some(
-              (name) => name !== "files" && name !== "rows" && this[name] !== previous[name],
-            );
-          if (filesEqual) this.files = previous.files;
-          // A discard confirmed after the files changed could discard what its row did not show.
-          else this.armed = null;
-          if (rowsEqual) this.rows = previous.rows;
+        if (this.revision === revision) {
+          const currentKey = key(),
+            current = this.context === context && currentKey === context;
+          let changed = !current;
+          if (current) {
+            const filesEqual = sameFiles(previous.files, this.files),
+              rowsEqual = sameRows(previous.rows, this.rows);
+            changed =
+              !filesEqual ||
+              !rowsEqual ||
+              SNAPSHOT.some(
+                (name) => name !== "files" && name !== "rows" && this[name] !== previous[name],
+              );
+            if (filesEqual) this.files = previous.files;
+            // A discard confirmed after the files changed could discard what its row did not show.
+            else this.armed = null;
+            if (rowsEqual) this.rows = previous.rows;
+          }
+          const notify = changed || this.loadingRendered;
+          this.loading = false;
+          // The place changed while git ran: refresh the one now shown.
+          if (currentKey !== context || this.again) this.refresh(cx);
+          if (notify) cx.notify();
         }
-        const notify = changed || this.loadingRendered;
-        this.loading = false;
-        // The place changed while git ran: refresh the one now shown.
-        if (currentKey !== context || this.again) this.refresh(cx);
-        if (notify) cx.notify();
       }
     });
   }
@@ -493,17 +967,29 @@ export default class Changes extends View {
       this.kept.delete(this.context);
       this.kept.set(
         this.context,
-        Object.fromEntries(SNAPSHOT.map((name) => [name, this[name]])) as Snapshot,
+        Object.fromEntries(PLACE_SNAPSHOT.map((name) => [name, this[name]])) as Snapshot,
       );
       if (this.kept.size > KEPT_PLACES) this.kept.delete(this.kept.keys().next().value);
     }
     const kept = this.kept.get(context);
     this.context = context;
+    this.revision = (this.revision ?? 0) + 1;
+    this.loading = false;
+    this.turnsRequest = null;
+    this.turnsLoading = false;
+    this.previewRequest = null;
+    this.historyLoaded = false;
+    this.selectOpen = false;
     this.note = null;
     this.armed = null;
     this.watched = null;
     if (kept) Object.assign(this, kept);
     else {
+      this.selectedTurn = null;
+      this.turns = [];
+      this.turnsError = null;
+      this.turnsWarning = null;
+      this.working = null;
       this.root = null;
       this.gitDir = null;
       this.branch = null;
@@ -527,6 +1013,8 @@ export default class Changes extends View {
 
   // The staged diff runs from HEAD to the index; the unstaged one from the index to the files.
   async load(open: string, context: string, cx: Context) {
+    if (this.selectedTurn) return this.loadHistoricalDiff(open, cx);
+    const revision = this.revision;
     const file = this.files.find((f) => entryKey(f) === open),
       root = this.root,
       on = this.on;
@@ -574,7 +1062,7 @@ export default class Changes extends View {
       lines = trackedPreview(r.stdout, Boolean(file.binary));
       text = current;
     }
-    if (key() !== context || this.open !== open) return;
+    if (key() !== context || this.open !== open || this.revision !== revision) return;
     const rows = diffRows(lines);
     // An unchanged diff keeps its expanded gaps and colors without running bat again.
     if (sameRows(this.plainRows, rows)) return;
@@ -590,7 +1078,9 @@ export default class Changes extends View {
 
   // Shows the plain rows first and colors them when bat answers.
   highlight({ path, fresh, section }: ChangedFile, rows: DiffRow[], cx: Context) {
+    if (this.selectedTurn) return;
     const context = this.context,
+      revision = this.revision,
       open = this.open,
       staged = section === "staged",
       source = (script: string, ...args: string[]) =>
@@ -602,7 +1092,14 @@ export default class Changes extends View {
         fresh || (staged && !this.hasHead) ? null : source(REVISION_SOURCE, staged ? "HEAD:" : ":"),
         staged ? source(REVISION_SOURCE, ":") : source(NEW_SOURCE),
       ]);
-      if (key() !== context || this.open !== open || this.plainRows !== rows) return;
+      if (
+        key() !== context ||
+        this.revision !== revision ||
+        this.selectedTurn ||
+        this.open !== open ||
+        this.plainRows !== rows
+      )
+        return;
       if (old?.code === 127 || next?.code === 127) {
         if (!this.note) {
           this.note = "Install bat for syntax colors";
@@ -629,6 +1126,14 @@ export default class Changes extends View {
   }
 
   show() {
+    if (this.selectedTurn) {
+      this.rows = this.plainRows;
+      this.diffWidth = this.rows.reduce(
+        (width, row) => Math.max(width, row.text.length * 7 + 57),
+        300,
+      );
+      return;
+    }
     this.rows = withComposer(
       withComments(
         colorRows(
@@ -650,6 +1155,7 @@ export default class Changes extends View {
   // A gap row expands, a comment row opens for editing, a line opens a new comment, and the
   // comment box's trash deletes the comment it edits.
   clickRow(index: number, cx: Context) {
+    if (this.selectedTurn) return;
     const row = this.rows[index];
     if (!row || !this.open) return;
     if (row.kind === "compose") {
@@ -691,7 +1197,7 @@ export default class Changes extends View {
 
   // An emptied comment is removed.
   saveComment(cx: Context) {
-    if (!this.target) return;
+    if (this.selectedTurn || !this.target) return;
     const { index, ...line } = this.target,
       text = this.commentInput.value().trim(),
       comments = [...this.comments];
@@ -706,11 +1212,13 @@ export default class Changes extends View {
   }
 
   removeComment(cx: Context) {
+    if (this.selectedTurn) return;
     this.commentInput.set_value("");
     this.saveComment(cx);
   }
 
   discardReview(cx: Context) {
+    if (this.selectedTurn) return;
     this.comments = [];
     this.reviewNote = DEFAULT_NOTE;
     this.noteInput.set_value(DEFAULT_NOTE);
@@ -719,14 +1227,17 @@ export default class Changes extends View {
   }
 
   sendReview(cx: Context) {
+    if (this.selectedTurn) return;
     const agent = pickAgent(agents(), focused()?.space, this.agentAddress);
     if (!agent || !this.comments.length || this.sending) return;
     const message = reviewMessage(this.comments, this.reviewNote),
-      context = this.context;
+      context = this.context,
+      revision = this.revision;
     this.sending = true;
     this.note = null;
     cx.spawn(async (cx) => {
       try {
+        if (this.selectedTurn || this.revision !== revision || key() !== context) return;
         const r = await hc(["send", agent.address, message]);
         if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim());
         if (key() === context) this.discardReview(cx);
@@ -754,13 +1265,14 @@ export default class Changes extends View {
     this.setLines([]);
     this.note = null;
     this.closed = !this.open;
-    const context = this.context;
+    const context = this.context,
+      revision = this.revision;
     if (this.open)
       cx.spawn(async (cx) => {
         try {
           await this.load(open, context, cx);
         } catch (e) {
-          if (key() === context && this.open === open)
+          if (key() === context && this.revision === revision && this.open === open)
             this.note = `Cannot preview this diff (too large or unreadable): ${e}`;
         }
         cx.notify();
@@ -841,7 +1353,7 @@ export default class Changes extends View {
                 .join(" · ")
             : text,
         );
-    const commentable = lineSide(row) !== null;
+    const commentable = !this.selectedTurn && lineSide(row) !== null;
     return (
       h_flex()
         .relative()
@@ -914,7 +1426,9 @@ export default class Changes extends View {
         depth === undefined ? f.path.split("/") : [f.path.slice(f.path.lastIndexOf("/") + 1)],
       name = parts.pop(),
       open = entryKey(f),
-      comments = this.comments.filter((comment) => entryKey(comment) === open).length;
+      comments = this.selectedTurn
+        ? 0
+        : this.comments.filter((comment) => entryKey(comment) === open).length;
     return h_flex()
       .id(`change-${open}`)
       .relative()
@@ -960,7 +1474,7 @@ export default class Changes extends View {
         e.child(div().text_size(11).text_color(t.accent).child(`✎ ${comments}`)),
       )
       .child(this.counts(f, t))
-      .child(this.rowActions(open, f.section, t));
+      .when(!this.selectedTurn, (e) => e.child(this.rowActions(open, f.section, t)));
   }
 
   // Names the file the diff below shows.
@@ -1031,7 +1545,9 @@ export default class Changes extends View {
       )
       .child(div().flex_1().min_w(0).truncate().child(row.name))
       .child(this.counts(row, t))
-      .child(this.rowActions(`${section}:${row.path}/`, section, t));
+      .when(!this.selectedTurn, (e) =>
+        e.child(this.rowActions(`${section}:${row.path}/`, section, t)),
+      );
   }
 
   sectionRow({ section, count }: Extract<ListRow, { kind: "section" }>, t: Theme) {
@@ -1047,15 +1563,21 @@ export default class Changes extends View {
       .text_size(11)
       .text_color(t.muted)
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
-      .child(div().flex_1().min_w(0).truncate().child(SECTION_TITLE[section]))
+      .child(
+        div()
+          .flex_1()
+          .min_w(0)
+          .truncate()
+          .child(this.selectedTurn ? "Turn changes" : SECTION_TITLE[section]),
+      )
       .child(h_flex().w(COUNTS).flex_none().justify_end().text_size(10).child(String(count)))
-      .child(this.rowActions(`${section}:`, section, t));
+      .when(!this.selectedTurn, (e) => e.child(this.rowActions(`${section}:`, section, t)));
   }
 
   // What discard restores for a list row in the Changes section: a file row its own file, a
   // folder row those under it, the section's row all; a conflict needs more than a restore.
   discardable(key: string) {
-    if (!key.startsWith("unstaged:")) return [];
+    if (this.selectedTurn || !key.startsWith("unstaged:")) return [];
     const path = key.slice("unstaged:".length).replace(/\/$/, "");
     return this.files.filter(
       (file) =>
@@ -1125,6 +1647,12 @@ export default class Changes extends View {
   // button arms it, and a second press there, not part of a double-click, discards. Elsewhere a
   // section's row does nothing, a folder's opens or closes it, and a file's shows its diff.
   clickListRow(key: string, cx: Context) {
+    if (this.selectedTurn) {
+      const path = key.slice(key.indexOf(":") + 1);
+      if (path.endsWith("/")) this.toggleFolder(key.slice(0, -1), cx);
+      else if (path) this.pick(key, cx);
+      return;
+    }
     const armed = this.armed === key,
       // How far the press landed left of where the buttons start; the counts are right of it.
       right = this.pressRight / zoom() - ACTIONS_RIGHT,
@@ -1158,6 +1686,7 @@ export default class Changes extends View {
   // Untracked files go to the trash first, so a place without one discards nothing; tracked ones
   // go back to what the index holds, which keeps their staged changes.
   discard(files: ChangedFile[], cx: Context) {
+    if (this.selectedTurn) return;
     const untracked = files.filter((file) => file.fresh).map((file) => `${this.root}/${file.path}`),
       tracked = files.filter((file) => !file.fresh).map((file) => file.path),
       commands: [string, string[]][] = [];
@@ -1175,12 +1704,14 @@ export default class Changes extends View {
     done?: () => void,
   ) {
     const { root, on, context } = this;
-    if (this.acting || !root || !commands.length) return;
+    if (this.selectedTurn || this.acting || !root || !commands.length) return;
+    const revision = this.revision;
     this.acting = action;
     this.note = null;
     cx.spawn(async (cx) => {
       try {
         for (const [command, args] of commands) {
+          if (this.selectedTurn || this.revision !== revision || key() !== context) return;
           const r = await exec(command, args, { cwd: root, on });
           if (r.code === 127 && command === "sh")
             throw new Error("This machine has no trash command, so nothing was discarded");
@@ -1188,7 +1719,8 @@ export default class Changes extends View {
         }
         done?.();
       } catch (e) {
-        if (key() === context) this.note = String(e);
+        if (key() === context && !this.selectedTurn && this.revision === revision)
+          this.note = String(e);
       } finally {
         this.acting = null;
         this.refresh(cx);
@@ -1202,6 +1734,7 @@ export default class Changes extends View {
   // the message.
   canCommit() {
     return (
+      !this.selectedTurn &&
       !this.acting &&
       Boolean(this.commitMessage.trim()) &&
       (this.amending ? this.hasHead : this.files.length > 0)
@@ -1237,7 +1770,11 @@ export default class Changes extends View {
         const cleared = { commitMessage: "", amending: false, commitDraft: "" };
         if (key() !== context) {
           const kept = this.kept.get(context);
-          if (kept) Object.assign(kept, cleared);
+          if (kept) Object.assign(kept.working ?? kept, cleared);
+          return;
+        }
+        if (this.selectedTurn) {
+          if (this.working) Object.assign(this.working, cleared);
           return;
         }
         Object.assign(this, cleared);
@@ -1248,15 +1785,23 @@ export default class Changes extends View {
 
   // Amend shows the last commit's message to edit; turning it off brings back the draft.
   setAmending(amending: boolean, cx: Context) {
+    if (this.selectedTurn) return;
     this.amending = amending;
     if (amending) {
       this.commitDraft = this.commitMessage;
-      const { root, on, context } = this;
+      const { root, on, context, revision } = this;
       cx.spawn(async (cx) => {
         const r = await exec("git", ["log", "-1", "--format=%B"], { cwd: root, on }).catch(
           (): null => null,
         );
-        if (key() !== context || !this.amending || r?.code !== 0) return;
+        if (
+          key() !== context ||
+          this.selectedTurn ||
+          this.revision !== revision ||
+          !this.amending ||
+          r?.code !== 0
+        )
+          return;
         this.commitMessage = r.stdout.trim();
         this.commitInput.set_value(this.commitMessage);
         cx.notify();
@@ -1319,6 +1864,7 @@ export default class Changes extends View {
 
   // Sync pulls then pushes, as of a fresh fetch; a branch without an upstream publishes instead.
   sync(cx: Context) {
+    if (this.selectedTurn) return;
     this.run(
       this.upstream
         ? [
@@ -1458,11 +2004,15 @@ export default class Changes extends View {
             .text_color(t.dim)
             .child(
               this.error ||
-                (this.loading
-                  ? "Loading changes…"
-                  : this.root
-                    ? "No uncommitted changes"
-                    : "No folder"),
+                (this.selectedTurn
+                  ? this.loading
+                    ? "Loading saved snapshot…"
+                    : "No changes in this turn"
+                  : this.loading
+                    ? "Loading changes…"
+                    : this.root
+                      ? "No uncommitted changes"
+                      : "No folder"),
             ),
         ),
       )
@@ -1548,6 +2098,12 @@ export default class Changes extends View {
       openFile = this.openFile();
     return v_flex()
       .id("changes")
+      .on_size_change((size, cx) => {
+        if (this.panelWidth !== size.width) {
+          this.panelWidth = size.width;
+          cx.notify();
+        }
+      })
       .size_full()
       .min_h(0)
       .rounded(3)
@@ -1582,7 +2138,7 @@ export default class Changes extends View {
           .border_color(t.border)
           .child(div().child("Changes"))
           .child(div().text_size(10).text_color(t.muted).child(`${count} files`))
-          .when(this.comments.length > 0, (e) =>
+          .when(!this.selectedTurn && this.comments.length > 0, (e) =>
             e.child(
               div()
                 .text_size(10)
@@ -1593,7 +2149,7 @@ export default class Changes extends View {
             ),
           )
           .child(div().flex_1())
-          .when(Boolean(this.root), (e) =>
+          .when(!this.selectedTurn && Boolean(this.root), (e) =>
             e
               .child(
                 button(
@@ -1637,7 +2193,8 @@ export default class Changes extends View {
           .child(div().text_size(11).text_color(t.ansi2).child(`+${add}`))
           .child(div().text_size(11).text_color(t.ansi1).child(`−${del}`)),
       )
-      .when(Boolean(this.root), (e) => e.child(this.commitBar(t)))
+      .child(this.turnSelector(t))
+      .when(!this.selectedTurn && Boolean(this.root), (e) => e.child(this.commitBar(t)))
       .child(
         openFile
           ? v_resizable("changes-split")
@@ -1657,7 +2214,7 @@ export default class Changes extends View {
       .when(Boolean(this.note), (e) =>
         e.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)),
       )
-      .when(this.comments.length > 0, (e) => e.child(this.reviewBar(t)));
+      .when(!this.selectedTurn && this.comments.length > 0, (e) => e.child(this.reviewBar(t)));
   }
 
   field(id: string, input: InputState, name: Changes["typing"], t: Theme) {
@@ -1688,6 +2245,7 @@ export default class Changes extends View {
   }
 
   chooseAgent(address: string, cx: Context) {
+    if (this.selectedTurn) return;
     this.agentAddress = address;
     this.choosingAgent = false;
     cx.notify();

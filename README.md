@@ -101,6 +101,112 @@ line, limited to 80 characters; existing session names are kept. Use Pi's `/name
 change that name. Install the extension on each machine where Pi runs. Closed Pi sessions
 offer **Resume…**, which opens Pi's session selector in the original folder.
 
+## Per-turn changes
+
+The Changes panel has one **View / turn** selector: **Working tree** keeps the
+normal staging and commit controls; **Turn changes** contains recorded requests
+from Pi, Claude Code and Codex in the followed worktree. Select a request to compare
+its saved before and after file states. Previous/Next moves between recorded
+requests. Historical views are read-only, including review comments, and remain
+available after later edits or commits. Recording starts only after setup; old
+transcripts cannot reconstruct these snapshots.
+
+### Enable recording
+
+Keep this checkout available on each machine where agents run. Recording needs
+Node.js and Git on that machine and runs only inside Herdr (`HC_TERMINAL_ID` must
+be set). The panel reads recorded turns through a POSIX shell (`sh`), including
+for remote worktrees; it does not need Node.js in Herdr's own PATH. The link
+command installs the panel, not agent hooks.
+
+For Pi, link the additional extension from this checkout, then start Pi or run
+`/reload`. Keep its sibling scripts in this checkout; do not copy the extension
+on its own.
+
+```sh
+mkdir -p "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions"
+ln -s "$PWD/scripts/pi-turns.ts" "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/frantss-turns.ts"
+```
+
+For Claude Code and Codex, merge the following hook entries into the relevant
+configuration. Keep existing hooks, including the context SessionStart hook.
+Replace `/ABS/CHECKOUT` with this checkout's absolute path and `AGENT` as follows:
+
+| Agent                                                | Configuration             | Replace `AGENT` with |
+| ---------------------------------------------------- | ------------------------- | -------------------- |
+| [Claude Code](https://code.claude.com/docs/en/hooks) | `~/.claude/settings.json` | `claude-code`        |
+| [Codex](https://developers.openai.com/codex/hooks)   | `~/.codex/hooks.json`     | `codex`              |
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/ABS/CHECKOUT/scripts/turn-hooks.mjs\" AGENT",
+            "timeout": 16
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/ABS/CHECKOUT/scripts/turn-hooks.mjs\" AGENT",
+            "timeout": 16
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"/ABS/CHECKOUT/scripts/turn-hooks.mjs\" AGENT",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Also register the same command under **StopFailure** for Claude Code (timeout
+16), and under **Interrupt** for Codex (timeout 3). No matcher is needed. If Node
+is not available in the hook's PATH, replace `node` with its absolute executable
+path. Restart each CLI after changing its hooks. In Codex, use `/hooks` to review
+and trust the configured hooks; `[features].hooks = false` disables them.
+
+Pi records from user-request start until `agent_settled`, including automatic
+continuations. Claude Code and Codex record from UserPromptSubmit to Stop. If
+another Stop hook requests more work, a later Stop with `stop_hook_active: true`
+updates the same request's snapshot; the earlier snapshot can appear until then.
+Claude Code has no interrupt hook: an unfinished request is closed as interrupted
+on the next request in that session or on SessionEnd. A forced kill can leave a
+request marked Recording. Hook failures do not block the agent or print into its
+context. Normal capture has a 15-second budget; shutdown capture has 2.5 seconds,
+so a large or busy repository can have a missing or failed snapshot.
+
+Snapshots include tracked files and nonignored untracked files, but not the
+contents of nested submodules. Capture uses a separate temporary index and
+private `refs/frantss/` refs, without changing HEAD, branches, or the staging
+index. File contents remain in the local Git object store; metadata, including
+the first prompt line, is under `frantss-turns/` in the worktree's Git directory.
+The recorder retains 100 completed requests per worktree and removes their
+private refs as they age out; Git garbage collection controls when unreferenced
+objects disappear. `git push --mirror` includes these refs and their saved file
+contents. Ignoring a file does not exclude it if it is already tracked.
+Use separate worktrees for concurrent agents: snapshots record all changes made
+in the worktree during a request, including manual edits and other agents' work.
+
+## Checks
+
 `pnpm check` refreshes Herdr's generated API declarations in the ignored `types/`
 files, then checks formatting, linting and TypeScript types with Vite+. It uses
 Herdr's existing non-strict-null contracts. Use `pnpm fmt` to format files,
