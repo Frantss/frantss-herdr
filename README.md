@@ -5,7 +5,7 @@ dark themes. TypeScript sources build into the JavaScript that Herdr loads.
 
 ## Use the checkout live
 
-Requires Node.js 22.18+, 24.11+, or 26+, pnpm, and the Herdr app. From this repository:
+Requires Herdr 0.1.12 or newer, Node.js 22.18+, 24.11+, or 26+, and pnpm. From this repository:
 
 ```sh
 pnpm install
@@ -17,8 +17,8 @@ pnpm dev
 
 `pnpm run link` builds first, then installs everything from `dist/` into
 `~/.config/herdr-app`: it links the layout and themes and copies the custom mod
-directories. Mods are copies, not links, because Herdr 0.1.7 does not load mod
-images through symbolic links. Set `HERDR_APP_HOME` for another Herdr config folder.
+directories. Mods are copies, not links, because Herdr does not load mod assets
+through symbolic links to locations outside its config folder. Set `HERDR_APP_HOME` for another Herdr config folder.
 When the command replaces an existing entry, restart Herdr once. Its core keeps the
 terminals running. The output is ignored by Git; edit TypeScript and assets in
 the source directories, not the installed copies.
@@ -70,6 +70,20 @@ This layout's Codex launchers and Resume controls use `--no-daemon`, so `hc run`
 children belong to the agent that started them. In a Herdr shell, start Codex with
 `codex --no-daemon`. To move an existing daemon-backed session to this mode, exit
 Codex and use `codex --no-daemon resume`.
+
+## Panel navigation and agent attention
+
+With Herdr's default macOS bindings, use Cmd+Option+Arrow to move between
+terminal panes and the visible Files, Changes, or Git History panel. These
+panels follow your `pane.go` bindings; the layout does not replace them.
+
+An agent's context menu offers **Pin** or **Unpin**. Pinned agents appear above
+the status groups in the rail, and agent navigation follows that order.
+**Mark as unread** and pins use Herdr's shared terminal state, so they follow
+the agent across connected Herdr clients. Reading an agent on another client
+clears its shared unread status. Pins end when the terminal ends.
+
+## Agent usage
 
 The rail's **Usage** section shows Claude and Codex subscription quota consumed.
 Closed, it shows each subscription's most used window, with its reset time from
@@ -215,9 +229,10 @@ is in `vite.config.ts`. `AGENTS.md` and `ORCHESTRATION.md` stay excluded from
 formatting so they remain exact copies of their source.
 
 `pnpm check:mods` builds and renders every emitted mod with Herdr's native checker.
-Set `HERDR_APP_BIN` if `herdr-app` is not on PATH. Herdr 0.1.7's checker can abort
-inside GPUI for `frantss` and `frantss-changes`, including the original mods.
-Use `herdr-app status` to check errors in the running app after edits.
+Set `HERDR_APP_BIN` if `herdr-app` is not on PATH. The native checker validates
+initial rendering, not laid-out geometry or later interactions. Use
+`herdr-app status` to check errors in the running app after edits, and verify
+changed interactions in the app.
 
 ## Restore the original files
 

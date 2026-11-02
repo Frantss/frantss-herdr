@@ -838,6 +838,190 @@ test("the rail lists agent groups and navigates agents in the order they need at
   assert.deepEqual(plain(h.state.agentOrder), ["blocked", "done", "working", "idle"]);
 });
 
+const railAgent = (address: string, status: string, other = {}) => ({
+  address,
+  pane: `pane-${address}`,
+  space: "primary",
+  space_name: "primary",
+  status,
+  program: agent,
+  title: address,
+  pinned: false,
+  focused: false,
+  ...other,
+});
+const agentRows = (tree) =>
+  descendants(tree)
+    .map((node) => node?.elementId)
+    .filter((id) => id?.startsWith("agent-"))
+    .map((id) => id.slice("agent-".length));
+
+test("native pins lead every status group without duplicates and retain snapshot order", async () => {
+  const h = await harness();
+  h.state.agents = ["idle", "working", "done", "blocked"].flatMap((status) => [
+    railAgent(`${status}-first`, status),
+    railAgent(`${status}-pin`, status, { pinned: true }),
+    railAgent(`${status}-last`, status),
+  ]);
+  const tree = h.render();
+  const expected = [
+    "idle-pin",
+    "working-pin",
+    "done-pin",
+    "blocked-pin",
+    "blocked-first",
+    "blocked-last",
+    "done-first",
+    "done-last",
+    "working-first",
+    "working-last",
+    "idle-first",
+    "idle-last",
+  ];
+  assert.deepEqual(agentRows(tree), expected);
+  assert.deepEqual(plain(h.state.agentOrder), expected);
+  const headers = descendants(tree)
+    .map((node) => node?.elementId)
+    .filter((id) => id?.startsWith("header-"));
+  assert.deepEqual(headers, [
+    "header-spaces",
+    "header-pinned",
+    "header-blocked",
+    "header-done",
+    "header-working",
+    "header-idle",
+    "header-usage",
+  ]);
+  assert.equal(text(byId(tree, "header-pinned")), "PINNED4");
+});
+
+test("pinned rows retain each native status while unpinned rows keep their existing appearance", async () => {
+  const h = await harness();
+  const labels = { blocked: "NEEDS YOU", done: "UNREAD", working: "WORKING", idle: "IDLE" };
+  const palette = { blocked: "#ff0000", done: "#00ff00", working: "#0000ff", idle: "#888888" };
+  h.state.agents = Object.keys(labels).flatMap((status) => [
+    railAgent(`${status}-pin`, status, { pinned: true }),
+    railAgent(`${status}-normal`, status),
+  ]);
+  let tree = h.view.rail(palette, h.state.agents, {
+    spaces: [],
+    leadByTab: new Map(),
+    panesByTab: new Map(),
+    cwdBySpace: new Map(),
+    placeBySpace: new Map(),
+  });
+  for (const [status, label] of Object.entries(labels)) {
+    const indicator = byId(tree, `status-${status}-pin`);
+    assert.ok(indicator, `${status} pin has a status indicator`);
+    assert.ok(indicator.styles.some(([name, value]) => name === "bg" && value === palette[status]));
+    assert.ok(indicator.styles.some(([name, value]) => name === "size" && value === 6));
+    assert.ok(indicator.styles.some(([name, value]) => name === "tooltip" && value === label));
+    assert.ok(
+      indicator.styles.some(([name, value]) => name === "accessibility_label" && value === label),
+    );
+    assert.equal(
+      indicator.styles.some(([name]) => name === "loop"),
+      status === "blocked",
+    );
+    assert.equal(byId(tree, `status-${status}-normal`), null);
+    const normal = byId(tree, `agent-${status}-normal`);
+    assert.equal(text(normal), `${status}-normalprimary`);
+    assert.equal(
+      descendants(normal).some((node) => node?.styles?.some(([name]) => name === "tooltip")),
+      false,
+    );
+  }
+  h.view.hovered = "agent-working-pin";
+  tree = h.render();
+  assert.ok(byId(tree, "status-working-pin"));
+  assert.ok(byId(tree, "interrupt-working-pin"));
+});
+
+test("native pin and unpin snapshots move existing rows while retaining their menus and controls", async () => {
+  const h = await harness();
+  const initial = [
+    railAgent("t1", "idle"),
+    railAgent("build/t2", "working"),
+    railAgent("t3", "blocked"),
+  ];
+  h.state.agents = initial;
+  const before = h.render();
+  assert.equal(byId(before, "header-pinned"), null);
+  assert.deepEqual(agentRows(before), ["t3", "build/t2", "t1"]);
+  h.state.agents = initial.map((a) => ({ ...a, pinned: a.address === "build/t2" }));
+  const pinned = hoverRender(h, "agent-build/t2");
+  assert.deepEqual(agentRows(pinned), ["build/t2", "t3", "t1"]);
+  assert.deepEqual(plain(h.state.agentOrder), agentRows(pinned));
+  byId(pinned, "agent-build/t2").handlers.on_mouse_down({}, h.cx);
+  assert.deepEqual(plain(h.state.overlays.at(-1).props), {
+    tab: "pane",
+    target: { pane: "pane-build/t2", terminal: "build/t2" },
+  });
+  assert.ok(byId(pinned, "peek-build/t2"));
+  assert.ok(byId(pinned, "interrupt-build/t2"));
+  byId(pinned, "agent-build/t2").handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands.at(-1)), ["agent.focus", { terminal: "build/t2" }]);
+  h.state.agents = initial.map((a) => ({ ...a, pinned: false }));
+  const unpinned = h.render();
+  assert.equal(byId(unpinned, "header-pinned"), null);
+  assert.deepEqual(agentRows(unpinned), ["t3", "build/t2", "t1"]);
+  assert.deepEqual(plain(h.state.agentOrder), agentRows(unpinned));
+});
+
+test("folded pinned and status sections retain the existing grouped navigation order", async () => {
+  const h = await harness();
+  h.state.agents = [
+    railAgent("t1", "idle", { pinned: true }),
+    railAgent("t2", "blocked"),
+    railAgent("t3", "working"),
+  ];
+  const tree = h.render();
+  byId(tree, "header-pinned").handlers.on_click({}, h.cx);
+  byId(tree, "header-blocked").handlers.on_click({}, h.cx);
+  const folded = h.render();
+  assert.equal(text(byId(folded, "header-pinned")), "PINNED1");
+  assert.deepEqual(agentRows(folded), ["t3"]);
+  assert.deepEqual(plain(h.state.agentOrder), ["t1", "t2", "t3"]);
+  byId(folded, "header-pinned").handlers.on_click({}, h.cx);
+  const expanded = h.render();
+  assert.deepEqual(agentRows(expanded), ["t1", "t3"]);
+  assert.deepEqual(plain(h.state.agentOrder), ["t1", "t2", "t3"]);
+});
+
+test("terminated pins disappear and leave no empty pinned section or stale navigation entry", async () => {
+  const h = await harness();
+  h.state.agents = [railAgent("t1", "blocked", { pinned: true }), railAgent("t2", "idle")];
+  assert.ok(byId(h.render(), "header-pinned"));
+  h.state.agents = [railAgent("t2", "idle")];
+  const tree = h.render();
+  assert.equal(byId(tree, "header-pinned"), null);
+  assert.equal(byId(tree, "agent-t1"), null);
+  assert.deepEqual(plain(h.state.agentOrder), ["t2"]);
+  h.state.agents = [];
+  assert.deepEqual(agentRows(h.render()), []);
+  assert.deepEqual(plain(h.state.agentOrder), []);
+});
+
+test("native statuses honor cross-client seen changes and ignore obsolete custom unread marks", async () => {
+  const h = await harness();
+  const oldMarks = ["t1", "t2"];
+  h.state.shared.set("frantss.unread", oldMarks);
+  h.state.agents = [railAgent("t1", "idle"), railAgent("t2", "working"), railAgent("t3", "done")];
+  const tree = h.render();
+  assert.deepEqual(agentRows(tree), ["t3", "t2", "t1"]);
+  assert.equal(text(byId(tree, "header-done")), "UNREAD1");
+  assert.equal(text(byId(tree, "header-idle")), "IDLE1");
+  assert.equal(h.state.shared.get("frantss.unread"), oldMarks);
+  h.state.agents = h.state.agents.map((a) => ({
+    ...a,
+    status: a.address === "t3" ? "idle" : a.status,
+  }));
+  const seen = h.render();
+  assert.equal(byId(seen, "header-done"), null);
+  assert.deepEqual(agentRows(seen), ["t2", "t1", "t3"]);
+  assert.deepEqual(plain(h.state.agentOrder), agentRows(seen));
+});
+
 test("the focused agent's row shows its context from its labeled session file", async () => {
   const h = await harness();
   const codex = (address, focused, seq) => ({

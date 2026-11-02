@@ -1,33 +1,24 @@
-// Agents you marked unread. Herdr's core owns agent status and has no way to set it, so the mark is
-// kept in shared state (persisted) and the frantss rail lists a marked idle agent as done (UNREAD).
-// Mods can't import outside their own folder, so each mod that uses it links this file as ./unread.ts.
-import { setShared, shared } from "herdr";
+import { hc, notify } from "herdr";
+import { hcOrToast } from "./agent-hc.ts";
 
-type Agent = { address: string; status: string; focused: boolean };
-
-const UNREAD = "frantss.unread";
-export const unreadAgents = () => (shared(UNREAD) as string[] | null) ?? [];
-
-export function markUnread(address: string) {
-  if (!unreadAgents().includes(address)) setShared(UNREAD, [...unreadAgents(), address]);
-}
-
-// The marks that stay: an agent stays unread while it is idle and until you go to it. Marking the
-// agent you are on keeps it unread until you leave it and come back, as Herdr's done does.
-export function keptUnread(marks: string[], list: Agent[], focusedBefore: string | null) {
-  return marks.filter((address) => {
-    const agent = list.find((a) => a.address === address);
-    return agent?.status === "idle" && !(agent.focused && address !== focusedBefore);
-  });
-}
-
-export const shownStatus = (agent: Agent, marks: string[]) =>
-  agent.status === "idle" && marks.includes(agent.address) ? "done" : agent.status;
-
-// Writes only when the marks change: a shared write re-renders every mod.
-export function keepUnread(list: Agent[], focusedBefore: string | null) {
-  const marks = unreadAgents();
-  const kept = keptUnread(marks, list, focusedBefore);
-  if (kept.length !== marks.length) setShared(UNREAD, kept);
-  return kept;
+export async function markUnread(address: string) {
+  const failure = "Could not mark the agent unread";
+  try {
+    // Read at action time: AgentInfo.seq is recency, not the core turn counter.
+    const result = await hc(["get", address]);
+    if (result.code !== 0) throw new Error(result.stderr.trim() || "Could not read the terminal");
+    const terminal = JSON.parse(result.stdout);
+    if (
+      terminal?.address !== address ||
+      terminal.state !== "live" ||
+      !["idle", "done"].includes(terminal.status?.state) ||
+      !Number.isSafeInteger(terminal.turn) ||
+      terminal.turn < 0
+    )
+      throw new Error("The terminal is no longer an idle agent or its turn is unavailable.");
+    if (terminal.turn === 0) return;
+    await hcOrToast(["label", address, `herdr.seen=${terminal.turn - 1}`], failure);
+  } catch (error) {
+    notify({ title: failure, body: String(error), level: "error" });
+  }
 }

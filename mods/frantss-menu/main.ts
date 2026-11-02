@@ -60,7 +60,24 @@ type MenuTarget = {
   app?: string | null;
 };
 type MenuProps = { tab?: string; target?: MenuTarget; overlay?: string };
-type MenuItem = [label: string, command: string, args: Record<string, string>];
+type MenuArgs = Partial<
+  Record<
+    | "terminal"
+    | "cwd"
+    | "text"
+    | "id"
+    | "pane"
+    | "space"
+    | "direction"
+    | "to"
+    | "name"
+    | "app"
+    | "action"
+    | "what",
+    string
+  >
+> & { pinned?: boolean };
+type MenuItem = [label: string, command: string, args: MenuArgs];
 
 const copyItems = (terminal: string, cwd: string): MenuItem[] => [
   ["Copy address", "copy", { text: terminal }],
@@ -68,16 +85,26 @@ const copyItems = (terminal: string, cwd: string): MenuItem[] => [
 ];
 
 // What the menu does to an agent, before the pane items.
-const agentItems = (terminal: string, cwd: string): MenuItem[] => [
-  ["Peek", "terminal.peek", { terminal }],
-  ...(agents().find((a) => a.address === terminal)?.status === "idle"
-    ? [["Mark as unread", "unread", { terminal }] as MenuItem]
-    : []),
-  ["Reply…", "reply", { terminal }],
-  ["Interrupt", "interrupt", { terminal }],
-  ...copyItems(terminal, cwd),
-  ["Kill…", "kill", { terminal }],
-];
+const agentItems = (terminal: string, cwd: string): MenuItem[] => {
+  const agent = agents().find((a) => a.address === terminal);
+  return [
+    ["Peek", "terminal.peek", { terminal }],
+    ...(agent?.status === "idle" ? [["Mark as unread", "unread", { terminal }] as MenuItem] : []),
+    ...(agent
+      ? [
+          [
+            agent.pinned ? "Unpin" : "Pin",
+            "terminal.pin",
+            { terminal, pinned: !agent.pinned },
+          ] as MenuItem,
+        ]
+      : []),
+    ["Reply…", "reply", { terminal }],
+    ["Interrupt", "interrupt", { terminal }],
+    ...copyItems(terminal, cwd),
+    ["Kill…", "kill", { terminal }],
+  ];
+};
 
 const renameItem = (what: string, tg: MenuTarget): MenuItem =>
   tg.name === undefined
@@ -196,7 +223,9 @@ const AGENT_ICONS: Record<string, string> = {
   "forget-history": "mods/frantss-files/trash.svg",
 };
 
-function menuIcon(command: string, args: Record<string, string>) {
+function menuIcon(command: string, args: MenuArgs) {
+  if (command === "terminal.pin")
+    return `mods/workspace-chrome/${args.pinned ? "pin" : "pin-off"}.svg`;
   if (command === "pane.split" && args.direction === "down") return "mods/frantss/split-down.svg";
   if (AGENT_ICONS[command]) return AGENT_ICONS[command];
   const name = command.endsWith(".close")
@@ -220,7 +249,7 @@ function menuIcon(command: string, args: Record<string, string>) {
 }
 
 // The key bound to a command, for the hint on the right.
-function shortcut(name: string, args: Record<string, string>) {
+function shortcut(name: string, args: MenuArgs) {
   // `pane.split:right` binds pane.split with { direction: "right" }.
   const value = args && Object.values(args)[0];
   const k = keys().find(
@@ -262,7 +291,7 @@ export default class Menu extends View {
       openAgentTab(it[2].cwd, historyArgv(it[2].terminal), `${it[2].name} history`);
     else if (it[1] === "resume") openAgentTab(it[2].cwd, resumeArgv(it[2].app));
     else if (it[1] === "forget-history") confirmForgetHistory(it[2].terminal, it[2].name);
-    else if (it[1] === "unread") markUnread(it[2].terminal);
+    else if (it[1] === "unread") cx.spawn(() => markUnread(it[2].terminal));
     else if (it[1] === "reply")
       openOverlay({ mod: "frantss-reply", kind: "dialog", width: 480, height: 300, props: it[2] });
     else if (it[1] === "interrupt")

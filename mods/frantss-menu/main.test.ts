@@ -105,6 +105,7 @@ test("the pane context menu gives Split down its downward-arrow icon", async () 
 test("an agent's pane menu starts with its actions and can send it back", async () => {
   assert.deepEqual(await paneMenu("t1"), [
     ["Peek", "terminal.peek", { terminal: "t1" }],
+    ["Pin", "terminal.pin", { terminal: "t1", pinned: true }],
     ["Reply…", "reply", { terminal: "t1" }],
     ["Interrupt", "interrupt", { terminal: "t1" }],
     ["Copy address", "copy", { text: "t1" }],
@@ -142,6 +143,88 @@ test("an idle agent's menu can mark it unread", async () => {
   assert.deepEqual(menu[1], ["Mark as unread", "unread", { terminal: "t1" }]);
 });
 
+test("Pin and Unpin use the native command for the clicked remote agent", async () => {
+  for (const tab of ["pane", "terminal"]) {
+    for (const pinned of [false, true]) {
+      const commands = [];
+      const target = { pane: "remote/p1", terminal: "remote/t1" };
+      const module = await load({
+        props: () => ({ tab, target }),
+        agents: () => [{ address: target.terminal, status: "idle", pinned }],
+        terminals: () => [{ address: target.terminal, cwd: "/repo" }],
+        run: (...args) => commands.push(JSON.parse(JSON.stringify(args))),
+        setShared: () => assert.fail("Pinning must not write local state"),
+        hc: () => assert.fail("Pinning uses the native app command"),
+      });
+      const menu = module.items({ tab, target }, null);
+      const index = menu.findIndex(([, command]) => command === "terminal.pin");
+      assert.equal(menu[index][0], pinned ? "Unpin" : "Pin");
+      const view = new module.default();
+      view.choose(index, {} as Parameters<typeof view.choose>[1]);
+      assert.deepEqual(commands, [
+        ["terminal.pin", { terminal: target.terminal, pinned: !pinned }],
+      ]);
+    }
+  }
+});
+
+test("unread uses a fresh core turn and leaves status and local state to Herdr", async () => {
+  const calls = [];
+  const tasks: Promise<unknown>[] = [];
+  const agent = { address: "remote/t1", status: "idle", seq: 999, pinned: false };
+  const target = { terminal: agent.address, pane: "remote/p1" };
+  const module = await load({
+    props: () => ({ tab: "pane", target }),
+    agents: () => [agent],
+    terminals: () => [{ address: agent.address, turn: 2 }],
+    shared: () => assert.fail("Unread must not read local state"),
+    setShared: () => assert.fail("Unread must not write local state"),
+    run: () => assert.fail("No terminal.unread app command exists"),
+    hc: async (args) => {
+      calls.push(Array.from(args));
+      return {
+        code: 0,
+        stderr: "",
+        stdout: JSON.stringify({
+          address: agent.address,
+          state: "live",
+          status: { state: "idle" },
+          turn: 7,
+        }),
+      };
+    },
+  });
+  const index = module
+    .items({ tab: "pane", target }, null)
+    .findIndex(([, command]) => command === "unread");
+  const view = new module.default();
+  const cx = {
+    spawn: (task: () => Promise<unknown>) => {
+      tasks.push(task());
+    },
+  };
+  view.choose(index, cx as unknown as Parameters<typeof view.choose>[1]);
+  await Promise.all(tasks);
+  assert.deepEqual(calls, [
+    ["get", agent.address],
+    ["label", agent.address, "herdr.seen=6"],
+  ]);
+  assert.equal(agent.status, "idle");
+});
+
+test("only idle agents offer mark unread; native statuses stay unchanged", async () => {
+  for (const status of ["idle", "done", "working", "blocked", "error"]) {
+    const agent = { address: "t1", status };
+    const module = await load({ agents: () => [agent] });
+    const menu = module.items({ tab: "pane", target: { terminal: "t1", pane: "p1" } }, null);
+    assert.equal(
+      menu.some(([, command]) => command === "unread"),
+      status === "idle",
+    );
+    assert.equal(agent.status, status);
+  }
+});
+
 test("a space's menu opens a new tab in it, worktrees included", async () => {
   const menu = JSON.parse(
     JSON.stringify((await load()).items({ tab: "space", target: { id: "s1" } }, "linked")),
@@ -164,7 +247,16 @@ test("a live terminal without a pane gets the agent actions and can be kept as a
   const menu = await terminalMenu({ terminal: "t2" });
   assert.deepEqual(
     menu.map(([, command]) => command),
-    ["terminal.peek", "reply", "interrupt", "copy", "copy", "kill", "terminal.keep"],
+    [
+      "terminal.peek",
+      "terminal.pin",
+      "reply",
+      "interrupt",
+      "copy",
+      "copy",
+      "kill",
+      "terminal.keep",
+    ],
   );
 });
 

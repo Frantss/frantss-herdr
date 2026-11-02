@@ -1,6 +1,6 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,7 +48,9 @@ async function harness(refresh = false) {
     write_to_clipboard(text) {
       state.clipboard = text;
     },
-    stop_propagation() {},
+    stop_propagation() {
+      state.stopped = (state.stopped ?? 0) + 1;
+    },
   };
   async function drain() {
     for (let start = 0; start < state.tasks.length;) {
@@ -89,7 +91,13 @@ async function harness(refresh = false) {
     return proxy;
   }
   const context = vm.createContext({});
-  const palette = { background: "#111111", muted: "#aaaaaa", dim: "#555555" };
+  const palette = {
+    background: "#111111",
+    muted: "#aaaaaa",
+    dim: "#555555",
+    border: "#333333",
+    accent: "#88aaff",
+  };
   const natives = {
     "fs/promises": {
       mkdir: async () => {},
@@ -121,7 +129,14 @@ async function harness(refresh = false) {
       },
       Editor: { new: element },
       Input: { new: element },
-      InputState: {},
+      InputState: {
+        new: () => ({
+          on() {},
+          focus() {
+            state.inputFocuses = (state.inputFocuses ?? 0) + 1;
+          },
+        }),
+      },
       EditorState: {
         new(options) {
           const code = {
@@ -166,6 +181,13 @@ async function harness(refresh = false) {
         },
       ]),
       ["appHome", () => "/herdr"],
+      [
+        "nextCommand",
+        () =>
+          new Promise((resolve) => {
+            state.receiveCommand = resolve;
+          }),
+      ],
       ["spaces", () => []],
       ["shared", (key) => state.shared[key] ?? null],
       [
@@ -205,6 +227,12 @@ async function harness(refresh = false) {
     natives.herdr.exec = async (command, args, options) => {
       state.executions.push({ command, args, options });
       if (command === "sh") {
+        if (state.realDirectory)
+          return {
+            code: 0,
+            stdout: execFileSync(command, args, { encoding: "utf8", timeout: 3000 }),
+            stderr: "",
+          };
         const path = args.at(-1);
         if (path === state.directoryError) throw new Error("Cannot list folder");
         state.activeDirectories++;
@@ -284,7 +312,11 @@ async function harness(refresh = false) {
     pressed: null,
     editing: null,
     editError: null,
-    handle: { focus() {} },
+    handle: {
+      focus() {
+        state.focuses = (state.focuses ?? 0) + 1;
+      },
+    },
     nameInput: (() => {
       let value = "";
       return {
@@ -378,7 +410,7 @@ test("Files constructs only the requested viewport and dispatches clicks by stab
   assert.equal(h.state.lists.length, 1);
   const list = h.state.lists[0];
   assert.equal(list.count, 5000);
-  assert.equal(list.extent, 24 * 0.8);
+  assert.equal(list.extent, 24);
   assert.equal(list.key(301), "dir-0/file-300.ts");
   h.range(list, 300, 310);
   assert.equal(h.state.rows.length, 10);
@@ -387,6 +419,150 @@ test("Files constructs only the requested viewport and dispatches clicks by stab
   h.state.lists.at(-1).node.handlers.on_item_click("dir-0/file-300.ts", h.cx);
   assert.equal(h.files.file, "dir-0/file-300.ts");
   assert.deepEqual(h.state.calls, []);
+});
+
+test("Files receives focus commands and preserves a name input on popup return", async () => {
+  const h = await harness();
+  const handle = h.files.handle;
+  h.files.refresh = () => {};
+  h.files.init(null, { ...h.cx, focus_handle: () => handle, timer: { every() {} } });
+  await ticks();
+  h.state.layout = { children: [{ id: "panel", hidden: true, active: "files" }] };
+  h.state.receiveCommand("focus");
+  await ticks();
+  assert.equal(h.state.focuses ?? 0, 0);
+  h.state.layout.children[0].hidden = false;
+  h.state.receiveCommand("focus");
+  await ticks();
+  assert.equal(h.state.focuses, 1);
+  h.files.editing = { kind: "rename", path: "a.ts" };
+  h.state.receiveCommand("focus");
+  await ticks();
+  assert.equal(h.state.focuses, 1);
+  assert.equal(h.state.inputFocuses, 1);
+  h.state.layout.children[0].hidden = true;
+  h.state.receiveCommand("focus");
+  await ticks();
+  assert.equal(h.state.inputFocuses, 1);
+  assert.equal(h.state.focuses, 1);
+  h.state.receiveCommand("unknown");
+  await ticks();
+  assert.equal(h.state.focuses, 1);
+  const manifest = JSON.parse(await readFile(new URL("mod.json", import.meta.url), "utf8"));
+  assert.equal(manifest.focusable, true);
+});
+
+test("Files refines its existing border with the theme accent when focused", async () => {
+  const h = await harness();
+  const panel = findNode(h.render(), byId("files"));
+  assert.ok(panel.styles.some(([key, value]) => key === "border_color" && value === "#333333"));
+  const refine = panel.styles.find(([key]) => key === "focus")?.[1];
+  assert.equal(typeof refine, "function");
+  let focusedBorder;
+  refine({
+    border_color(color) {
+      focusedBorder = color;
+    },
+  });
+  assert.equal(focusedBorder, "#88aaff");
+});
+
+test("Files lets configured modified pane navigation bubble without taking menu or editing arrows", async () => {
+  const { h, press } = await menuHarness();
+  press("a.ts");
+  const handler = findNode(h.render(), byId("files")).handlers.on_key_down;
+  for (const modifier of ["platform", "control", "alt"]) {
+    for (const key of ["left", "right", "up", "down"]) {
+      handler({ key, keystroke: `cmd-alt-${key}`, modifiers: { [modifier]: true } }, h.cx);
+      assert.equal(h.files.menu.at, -1);
+      assert.equal(h.files.menu.sub, false);
+    }
+  }
+  assert.equal(h.state.stopped ?? 0, 0);
+  assert.equal(h.state.calls.length, 0);
+  handler({ key: "down", modifiers: {} }, h.cx);
+  assert.equal(h.files.menu.at, 0);
+  handler({ key: "escape", modifiers: {} }, h.cx);
+  assert.equal(h.files.menu, null);
+  h.files.editing = { kind: "rename", path: "a.ts" };
+  for (const key of ["left", "right", "up", "down"]) handler({ key, modifiers: {} }, h.cx);
+  assert.ok(h.files.editing);
+  handler({ key: "escape", modifiers: {} }, h.cx);
+  assert.equal(h.files.editing, null);
+});
+
+test(
+  "Files lists real POSIX symlinks lazily with literal quoted Unicode paths",
+  { skip: process.platform === "win32" },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "herdr-files-雪 '[x]-"));
+    try {
+      await mkdir(join(root, "real 雪' [dir]"));
+      await writeFile(join(root, "real 雪' [dir]", "file 雪' [1].ts"), "text");
+      await symlink("real 雪' [dir]", join(root, "linked 雪' [dir]"));
+      await symlink("missing", join(root, "dangling"));
+      await symlink(".", join(root, "cycle"));
+      await symlink("loop-b", join(root, "loop-a"));
+      await symlink("loop-a", join(root, "loop-b"));
+      await mkdir(join(root, ".git"));
+      const h = await harness(true);
+      h.state.cwd = root;
+      h.files.root = root;
+      h.files.context = JSON.stringify({ cwd: root, on: null });
+      // Use the actual directory command, not the listing mock.
+      h.state.realDirectory = true;
+      await h.files.loadFolder("", h.files.context, h.files.generation, root, null);
+      assert.deepEqual(Object.fromEntries(h.files.entries.get("").map((e) => [e.name, e.dir])), {
+        cycle: true,
+        "linked 雪' [dir]": true,
+        "real 雪' [dir]": true,
+        dangling: false,
+        "loop-a": false,
+        "loop-b": false,
+      });
+      assert.equal(h.state.executions.length, 1);
+      assert.equal(h.files.entries.size, 1);
+      h.files.toggle("linked 雪' [dir]", h.cx);
+      await h.drain();
+      assert.equal(h.files.entries.get("linked 雪' [dir]")[0].name, "file 雪' [1].ts");
+      h.files.toggle("cycle", h.cx);
+      await h.drain();
+      assert.equal(h.state.executions.length, 3);
+      assert.equal(h.files.entries.has("cycle/cycle"), false);
+      assert.ok(h.files.rows().length < 30);
+      h.files.toggle("cycle", h.cx);
+      assert.equal(h.files.entries.has("cycle"), false);
+      assert.equal(h.files.entryCount, countedEntries(h.files));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("Windows listings request UTF-8 and validate directory reparse targets using literal paths", async () => {
+  const h = await harness();
+  h.state.platform = "windows";
+  const path = "C:/repo/雪's [dir]";
+  h.state.cwd = path;
+  h.files.root = path;
+  h.files.context = JSON.stringify({ cwd: path, on: null });
+  h.state.run = () => ({
+    code: 0,
+    stdout: JSON.stringify([
+      { name: "雪's [1]", dir: true },
+      { name: "dangling", dir: false },
+    ]),
+    stderr: "",
+  });
+  await h.files.loadFolder("", h.files.context, h.files.generation, path, null);
+  const [command, , , script] = h.state.commands[0];
+  assert.equal(command, "powershell");
+  assert.ok(script.endsWith("'C:/repo/雪''s [dir]'"));
+  assert.ok(script.includes("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)"));
+  assert.ok(script.includes("Get-ChildItem -LiteralPath $p"));
+  assert.ok(script.includes("$_.Target -and [IO.Directory]::Exists"));
+  assert.ok(script.includes("[IO.Path]::GetDirectoryName($_.FullName), $_.Target[0]"));
+  assert.equal(h.files.entries.get("")[0].name, "雪's [1]");
 });
 
 test("Files keeps expanded directory order, depth, ignored inheritance, and directory clicks", async () => {

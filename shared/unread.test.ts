@@ -4,70 +4,129 @@ import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 
-async function load(stored: unknown = null) {
+const record = (overrides = {}) => ({
+  address: "t1",
+  state: "live",
+  status: { state: "idle" },
+  turn: 8,
+  ...overrides,
+});
+
+async function load(getResult: unknown = record(), labelCode = 0, getCode = 0) {
   const context = vm.createContext({});
-  const state = { value: stored, writes: 0 };
+  const calls: string[][] = [];
+  const notices: unknown[] = [];
   const herdr = {
-    shared: () => state.value,
-    setShared: (_key: string, value: unknown) => {
-      state.value = value;
-      state.writes++;
+    agents: () => [],
+    hc: async (args: string[]) => {
+      calls.push(Array.from(args));
+      if (args[0] === "get") {
+        if (getResult instanceof Error) throw getResult;
+        return typeof getResult === "string"
+          ? { code: getCode, stdout: getResult, stderr: getCode ? "not found" : "" }
+          : {
+              code: getCode,
+              stdout: JSON.stringify(getResult),
+              stderr: getCode ? "not found" : "",
+            };
+      }
+      if (labelCode < 0) throw new Error("offline");
+      return { code: labelCode, stdout: "", stderr: labelCode ? "offline" : "" };
     },
+    notify: (notice: unknown) => notices.push(notice),
+    shared: () => assert.fail("Unread must not read local overlay state"),
+    setShared: () => assert.fail("Unread must not write local overlay state"),
   };
+  const native = new vm.SyntheticModule(
+    Object.keys(herdr),
+    function () {
+      for (const [key, value] of Object.entries(herdr)) this.setExport(key, value);
+    },
+    { context },
+  );
+  const helper = new vm.SourceTextModule(
+    stripTypeScriptTypes(await readFile(new URL("agent-hc.ts", import.meta.url), "utf8")),
+    { context },
+  );
   const module = new vm.SourceTextModule(
     stripTypeScriptTypes(await readFile(new URL("unread.ts", import.meta.url), "utf8")),
     { context },
   );
-  await module.link(
-    () =>
-      new vm.SyntheticModule(
-        Object.keys(herdr),
-        function () {
-          for (const [key, value] of Object.entries(herdr)) this.setExport(key, value);
-        },
-        { context },
-      ),
-  );
+  await module.link((name) => (name === "herdr" ? native : helper));
   await module.evaluate();
-  return { unread: module.namespace as typeof import("./unread.ts"), state };
+  return { unread: module.namespace as typeof import("./unread.ts"), calls, notices };
 }
 
-const agent = (address: string, status: string, focused = false) => ({ address, status, focused });
-const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
-
-test("a marked idle agent shows as done, and other agents keep their status", async () => {
-  const { unread } = await load();
-  assert.equal(unread.shownStatus(agent("t1", "idle"), ["t1"]), "done");
-  assert.equal(unread.shownStatus(agent("t2", "idle"), ["t1"]), "idle");
-  assert.equal(unread.shownStatus(agent("t1", "working"), ["t1"]), "working");
+test("mark unread lowers the current core turn, without a local status overlay", async () => {
+  const { unread, calls, notices } = await load();
+  await unread.markUnread("t1");
+  assert.deepEqual(calls, [
+    ["get", "t1"],
+    ["label", "t1", "herdr.seen=7"],
+  ]);
+  assert.equal(notices.length, 0);
+  assert.deepEqual(Object.keys(unread), ["markUnread"]);
 });
 
-test("a mark goes when the agent stops being idle or is gone", async () => {
-  const { unread } = await load();
-  const list = [agent("t1", "working"), agent("t2", "blocked"), agent("t3", "idle")];
-  assert.deepEqual(plain(unread.keptUnread(["t1", "t2", "t3", "t4"], list, null)), ["t3"]);
+test("mark unread preserves the remote qualified target", async () => {
+  const { unread, calls } = await load(record({ address: "mac/t1", turn: 2 }));
+  await unread.markUnread("mac/t1");
+  assert.deepEqual(calls, [
+    ["get", "mac/t1"],
+    ["label", "mac/t1", "herdr.seen=1"],
+  ]);
 });
 
-test("a mark goes when you go to the agent, and stays while you are still on it", async () => {
-  const { unread } = await load();
-  const list = [agent("t1", "idle", true)];
-  assert.deepEqual(plain(unread.keptUnread(["t1"], list, "t2")), []);
-  assert.deepEqual(plain(unread.keptUnread(["t1"], list, "t1")), ["t1"]);
+test("turn zero has no completed turn to mark", async () => {
+  const { unread, calls, notices } = await load(record({ turn: 0 }));
+  await unread.markUnread("t1");
+  assert.deepEqual(calls, [["get", "t1"]]);
+  assert.equal(notices.length, 0);
 });
 
-test("marking adds the agent once", async () => {
-  const { unread, state } = await load(["t1"]);
-  unread.markUnread("t1");
-  unread.markUnread("t2");
-  assert.deepEqual(plain(state.value), ["t1", "t2"]);
-  assert.equal(state.writes, 1);
+test("missing, invalid, finished or changed records cannot be marked", async () => {
+  for (const invalid of [
+    null,
+    {},
+    record({ turn: undefined }),
+    record({ turn: -1 }),
+    record({ turn: 1.5 }),
+    record({ turn: "8" }),
+    record({ turn: Number.MAX_SAFE_INTEGER + 1 }),
+    record({ state: "finished" }),
+    record({ address: "t2" }),
+    record({ status: { state: "working" } }),
+    record({ status: null }),
+  ]) {
+    const { unread, calls, notices } = await load(invalid);
+    await unread.markUnread("t1");
+    assert.deepEqual(calls, [["get", "t1"]]);
+    assert.equal(notices.length, 1);
+  }
 });
 
-test("keeping writes only when a mark goes", async () => {
-  const { unread, state } = await load(["t1"]);
-  unread.keepUnread([agent("t1", "idle")], null);
-  assert.equal(state.writes, 0);
-  unread.keepUnread([agent("t1", "working")], null);
-  assert.deepEqual(plain(state.value), []);
-  assert.equal(state.writes, 1);
+test("read errors and malformed responses are visible and do not write labels", async () => {
+  for (const response of [new Error("offline"), "not json"]) {
+    const { unread, calls, notices } = await load(response);
+    await unread.markUnread("t1");
+    assert.deepEqual(calls, [["get", "t1"]]);
+    assert.equal(notices.length, 1);
+  }
+});
+
+test("failed reads preserve the core error and never label", async () => {
+  const { unread, calls, notices } = await load(record(), 0, 3);
+  await unread.markUnread("t1");
+  assert.deepEqual(calls, [["get", "t1"]]);
+  assert.equal(notices.length, 1);
+  assert.match((notices[0] as { body: string }).body, /not found/);
+});
+
+test("label errors and rejected commands remain visible", async () => {
+  for (const code of [1, -1]) {
+    const { unread, notices } = await load(record(), code);
+    await unread.markUnread("t1");
+    assert.equal(notices.length, 1);
+    if (code === 1) assert.equal((notices[0] as { body: string }).body, "offline");
+  }
 });

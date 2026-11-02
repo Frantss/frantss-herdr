@@ -104,14 +104,19 @@ async function harness() {
       assert.notEqual(phase, "layout");
       return {
         focuses: 0,
+        is_focused() {
+          return state.activeFocus === this;
+        },
         focus() {
+          state.activeFocus = this;
           this.focuses++;
         },
       };
     },
     spawn(body) {
       const task = Promise.resolve().then(() => body(ctx));
-      state.tasks.push(task);
+      if (String(body).includes("nextCommand")) state.commandTask = task;
+      else state.tasks.push(task);
       return task;
     },
     timer: {
@@ -258,7 +263,14 @@ async function harness() {
       VirtualListScrollHandle: { new: scrollHandle },
       v_virtual_list(id, count, size, key, renderer) {
         const node = element("virtual_list");
-        Object.assign(node, { listId: id, count, size, key, renderer });
+        Object.assign(node, {
+          listId: id,
+          count,
+          size,
+          key,
+          renderer,
+          nativeSize: size * state.settings.zoom,
+        });
         state.lists.push(node);
         return node;
       },
@@ -271,6 +283,10 @@ async function harness() {
       layout: () => state.layout,
       exec,
       settings: () => state.settings,
+      nextCommand: () =>
+        new Promise<string>((resolve) => {
+          state.commandReceiver = resolve;
+        }),
       run() {},
       theme: () =>
         Object.fromEntries(
@@ -748,6 +764,59 @@ test("Tab and Shift+Tab dispatch native focus traversal and controls are tab sto
   );
 });
 
+test("focus commands restore the copy's history/file role after a popup and skip hidden copies", async () => {
+  const h = await harness();
+  const other = await harness();
+  await loaded(h);
+  h.state.commandReceiver("focus");
+  await h.tick();
+  assert.equal(h.state.activeFocus, h.view.listFocus);
+  assert.equal(other.view.listFocus.focuses, 0);
+  h.view.pick(hash(2), h.ctx);
+  await h.flush();
+  openDetails(h);
+  h.view.fileFocus.focus();
+  h.render();
+  h.state.activeFocus = null;
+  h.state.commandReceiver("focus");
+  await h.tick();
+  assert.equal(h.state.activeFocus, h.view.fileFocus);
+  h.view.detailsOpen = false;
+  h.view.historyOpen = false;
+  h.state.commandReceiver("focus");
+  await h.tick();
+  assert.equal(h.state.activeFocus, h.view.listFocus);
+  assert.equal(h.view.historyOpen, true);
+  h.state.props = {};
+  h.state.layout = { children: [{ id: "panel", hidden: true, active: "git-history" }] };
+  h.state.activeFocus = null;
+  h.state.commandReceiver("focus");
+  await h.tick();
+  assert.equal(h.state.activeFocus, null);
+});
+
+test("configured directional pane shortcuts pass through history and files without selection changes", async () => {
+  const h = await harness();
+  await loaded(h);
+  h.view.pick(hash(2), h.ctx);
+  await h.flush();
+  openDetails(h);
+  const tree = h.render();
+  const selected = h.view.selected;
+  const fileIndex = h.view.fileIndex;
+  const stopped = h.state.stopped;
+  for (const key of ["left", "right", "up", "down"]) {
+    const event = { key, keystroke: `cmd-alt-${key}`, modifiers: { platform: true, alt: true } };
+    for (const id of ["history-list-focus", "history-files-focus", "git-history"])
+      byId(tree, id).handlers.on_key_down(event, h.ctx);
+  }
+  assert.equal(h.state.stopped, stopped);
+  assert.equal(h.view.selected, selected);
+  assert.equal(h.view.fileIndex, fileIndex);
+  byId(tree, "history-list-focus").handlers.on_key_down({ key: "down" }, h.ctx);
+  assert.equal(h.view.selected, hash(1));
+});
+
 test("opening a diff moves focus to the mounted commit list and Escape returns to details", async () => {
   const h = await harness();
   await loaded(h);
@@ -765,24 +834,25 @@ test("opening a diff moves focus to the mounted commit list and Escape returns t
   assert.equal(h.view.listFocus.focuses, previousFocus + 2);
 });
 
-test("virtual row extents and measured panel bounds account for app zoom", async () => {
+test.each([0.8, 1, 1.5, 2])("virtual row extents stay logical at zoom %s", async (zoom) => {
   const h = await harness();
-  h.state.settings.zoom = 1.5;
+  h.state.settings.zoom = zoom;
   await loaded(h);
   let tree = h.render();
-  assert.equal(list(h, "history-commits").size, 63);
+  assert.equal(list(h, "history-commits").size, 42);
+  assert.equal(list(h, "history-commits").nativeSize, 42 * zoom);
   byId(tree, "git-history").handlers.on_size_change({ width: 600, height: 900 }, h.ctx);
-  assert.equal(h.view.size.width, 400);
-  assert.equal(h.view.size.height, 600);
+  assert.equal(h.view.size.width, 600 / zoom);
+  assert.equal(h.view.size.height, 900 / zoom);
   h.view.pick(hash(2), h.ctx);
   await h.flush();
   openDetails(h);
   tree = h.render();
-  assert.equal(list(h, "history-files").size, 39);
+  assert.equal(list(h, "history-files").size, 26);
   h.view.pickFile("src/main.js", h.ctx);
   await h.flush();
   tree = h.render();
-  assert.equal(list(h, "history-diff").size, 28.5);
+  assert.equal(list(h, "history-diff").size, 19);
 });
 
 test("History immediately restores navigation rows and reconciles the cached page size with fresh tips", async () => {

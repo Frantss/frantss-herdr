@@ -34,6 +34,7 @@ import {
   agents,
   type AgentInfo,
   hc,
+  nextCommand,
 } from "herdr";
 import { LINE_LIMIT, trackedPreview, untrackedPreview } from "./preview.ts";
 import { expandGaps, fileLines } from "./gaps.ts";
@@ -268,6 +269,7 @@ export default class Changes extends View {
   declare noteInput: InputState;
   // The input holding the keyboard.
   declare typing: "comment" | "note" | "commit" | null;
+  declare focusRole: Changes["typing"] | "select";
   declare commitInput: TextareaState;
   declare commitMessage: string;
   // Amend shows the last commit's message; the message written before waits here.
@@ -354,6 +356,7 @@ export default class Changes extends View {
     ) => {
       input.on("focus", (_e, cx) => {
         this.typing = name;
+        this.focusRole = name;
         cx.notify();
       });
       input.on("blur", (_e, cx) => {
@@ -382,6 +385,33 @@ export default class Changes extends View {
     });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.poll(cx));
+    this.listen(cx);
+  }
+
+  listen(cx: AsyncContext) {
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const command = await nextCommand();
+        if (command !== "focus" || !panelShown("changes")) continue;
+        if (this.selectOpen) this.optionsFocus.focus();
+        else if (this.focusRole === "select") this.selectFocus.focus();
+        else if (
+          !this.selectedTurn &&
+          this.focusRole === "comment" &&
+          this.target &&
+          entryKey(this.target) === this.open &&
+          this.openFile() &&
+          this.rows.some((row) => row.kind === "compose")
+        )
+          this.commentInput.focus();
+        else if (!this.selectedTurn && this.focusRole === "note" && this.comments.length)
+          this.noteInput.focus();
+        else if (!this.selectedTurn && this.root && this.focusRole === "commit")
+          this.commitInput.focus();
+        else this.handle.focus();
+        cx.notify();
+      }
+    });
   }
 
   turnPlace(): TurnPlace | null {
@@ -550,6 +580,7 @@ export default class Changes extends View {
   }
 
   setSelectOpen(open: boolean, cx: Context) {
+    this.focusRole = "select";
     this.selectOpen = open;
     if (open) {
       this.selectIndex = Math.max(
@@ -647,6 +678,7 @@ export default class Changes extends View {
         .border_color(t.input)
         .bg(t.raised)
         .on_key_down((e, cx) => {
+          if (e.modifiers?.alt || e.modifiers?.control || e.modifiers?.platform) return;
           if (["up", "down", "home", "end"].includes(e.key)) {
             this.selectIndex =
               e.key === "home"
@@ -676,7 +708,7 @@ export default class Changes extends View {
                 v_virtual_list(
                   "changes-turn-options",
                   turns.length,
-                  28 * zoom(),
+                  28,
                   (index) => turns[index].id,
                   (range) =>
                     turns
@@ -1976,7 +2008,7 @@ export default class Changes extends View {
               v_virtual_list(
                 "changes-files",
                 rows.length,
-                26 * zoom(),
+                26,
                 (i) => this.rowKey(rows[i]),
                 (range) =>
                   rows.slice(range.start, range.end).map((row) =>
@@ -2063,10 +2095,8 @@ export default class Changes extends View {
                           "changes-diff",
                           this.rows.length,
                           this.target
-                            ? this.rows.map(
-                                (row) => (row.kind === "compose" ? COMPOSER : 20) * zoom(),
-                              )
-                            : 20 * zoom(),
+                            ? this.rows.map((row) => (row.kind === "compose" ? COMPOSER : 20))
+                            : 20,
                           (i) => String(i),
                           (range) =>
                             this.rows
@@ -2086,6 +2116,8 @@ export default class Changes extends View {
 
   render(cx: Context) {
     if (!panelShown("changes")) return div();
+    if (this.selectFocus.is_focused()) this.focusRole = "select";
+    else if (this.handle.is_focused()) this.focusRole = null;
     if (this.stale) {
       this.stale = false;
       this.refresh(cx);
@@ -2113,6 +2145,7 @@ export default class Changes extends View {
       .text_color(t.foreground)
       .text_size(12)
       .track_focus(this.handle)
+      .focus((el) => el.border_color(t.accent))
       .on_key_down((e, cx) => {
         if (e.key === "escape" && this.choosingAgent) {
           this.choosingAgent = false;

@@ -22,7 +22,7 @@ import {
   AccordionTrigger,
   AccordionPanel,
 } from "gpui-base";
-import { spaces, focused, props, exec, theme, settings } from "herdr";
+import { spaces, focused, props, exec, theme, settings, nextCommand } from "herdr";
 import { loadHistory, loadDetails, loadDiff, PAGE_SIZE } from "./git.ts";
 import { layoutGraph } from "./graph.ts";
 import { button } from "./button.ts";
@@ -119,6 +119,7 @@ export default class GitHistory extends View {
   declare size: { width: number; height: number };
   declare listFocus: FocusHandle;
   declare fileFocus: FocusHandle;
+  declare focusRole: "list" | "files";
   declare scroll: ReturnType<typeof VirtualListScrollHandle.new>;
   declare fileScroll: ReturnType<typeof VirtualListScrollHandle.new>;
   declare diffScroll: ReturnType<typeof VirtualListScrollHandle.new>;
@@ -170,6 +171,23 @@ export default class GitHistory extends View {
     this.diffLines = [];
     this.diffWidth = 0;
     cx.timer.every(15000, (cx) => this.poll(cx));
+    this.listen(cx);
+  }
+
+  listen(cx: AsyncContext) {
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const command = await nextCommand();
+        if (command !== "focus" || !this.visible()) continue;
+        if (this.focusRole === "files" && this.detailsOpen && this.details && !this.file)
+          this.fileFocus.focus();
+        else {
+          this.historyOpen = true;
+          this.listFocus.focus();
+        }
+        cx.notify();
+      }
+    });
   }
 
   visible() {
@@ -534,6 +552,8 @@ export default class GitHistory extends View {
       )
       .focus((el) => el.border_color(t.accent))
       .on_key_down((event, cx) => {
+        if (event.modifiers?.alt || event.modifiers?.control || event.modifiers?.platform) return;
+        this.focusRole = "files";
         if (["up", "down", "enter"].includes(event.key) && details.files.length) {
           this.fileIndex = Math.max(
             0,
@@ -553,7 +573,7 @@ export default class GitHistory extends View {
           v_virtual_list(
             "history-files",
             details.files.length,
-            26 * ((settings().zoom as number | undefined) ?? 1),
+            26,
             (i) => details.files[i].path,
             (range) =>
               details.files.slice(range.start, range.end).map((file, offset) =>
@@ -728,7 +748,7 @@ export default class GitHistory extends View {
                         v_virtual_list(
                           "history-diff",
                           this.diffLines.length,
-                          19 * ((settings().zoom as number | undefined) ?? 1),
+                          19,
                           (i) => String(i),
                           (range) =>
                             this.diffLines.slice(range.start, range.end).map((line) =>
@@ -880,10 +900,14 @@ export default class GitHistory extends View {
           .border_1()
           .border_color("#00000000")
           .track_focus(this.listFocus)
+          .focus((el) => el.border_color(t.accent))
           .tab_stop(true)
           .role("list")
           .accessibility_label("Git history. Arrow keys select commits. R refreshes history.")
           .on_key_down((event, cx) => {
+            if (event.modifiers?.alt || event.modifiers?.control || event.modifiers?.platform)
+              return;
+            this.focusRole = "list";
             if (["up", "down", "r", "home", "end"].includes(event.key)) {
               if (event.key === "r") this.refresh(cx);
               else if (event.key === "home") {
@@ -914,7 +938,7 @@ export default class GitHistory extends View {
                       v_virtual_list(
                         "history-commits",
                         this.commits.length,
-                        ROW_HEIGHT * ((settings().zoom as number | undefined) ?? 1),
+                        ROW_HEIGHT,
                         (i) => this.commits[i].hash,
                         (range) =>
                           this.commits
@@ -972,6 +996,8 @@ export default class GitHistory extends View {
 
   render(cx: Context) {
     if (!this.visible()) return div();
+    if (this.fileFocus.is_focused()) this.focusRole = "files";
+    else if (this.listFocus.is_focused()) this.focusRole = "list";
     if (contextKey(location()) !== this.context) this.refresh(cx, false, false);
     const t = theme() as Theme;
     return v_flex()
@@ -985,6 +1011,7 @@ export default class GitHistory extends View {
       .text_color(t.foreground)
       .text_size(12)
       .on_key_down((event, cx) => {
+        if (event.modifiers?.alt || event.modifiers?.control || event.modifiers?.platform) return;
         if (event.key === "tab") {
           if (event.modifiers.shift) window.focus_prev();
           else window.focus_next();

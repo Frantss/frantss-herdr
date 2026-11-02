@@ -29,20 +29,39 @@ async function harness(refresh = false) {
     gitCalls: [],
     hostReads: { spaces: 0, panes: 0, focused: 0, paneRecords: 0 },
   };
+  const focusHandle = () => ({
+    focuses: 0,
+    is_focused() {
+      return state.activeFocus === this;
+    },
+    focus() {
+      state.activeFocus = this;
+      this.focuses++;
+    },
+  });
   const input = () => {
     let value = "";
+    const events = {};
     return {
       value: () => value,
       set_value(next) {
         value = next;
       },
-      focus() {},
+      ...focusHandle(),
+      events,
+      on(name, callback) {
+        events[name] = callback;
+      },
+      set_auto_grow() {},
     };
   };
   const cx: any = {
+    focus_handle: focusHandle,
+    timer: { every() {} },
     spawn(callback) {
       const task = Promise.resolve().then(() => callback(cx));
-      state.tasks.push(task);
+      if (String(callback).includes("nextCommand")) state.commandTask = task;
+      else state.tasks.push(task);
       return task;
     },
     notify() {
@@ -114,18 +133,35 @@ async function harness(refresh = false) {
       VirtualListScrollHandle: { new: () => ({ scroll_to_item() {} }) },
       resizable_panel: element,
       Scrollbar: { vertical: element },
-      InputState: {},
+      InputState: { new: input },
       Input: { new: element },
-      TextareaState: {},
+      TextareaState: { new: input },
       Textarea: { new: element },
       v_virtual_list(id, count, extent, key, render) {
         const node = element();
         node.virtual = true;
-        state.lists.push({ id, count, extent, key, render, node });
+        state.lists.push({
+          id,
+          count,
+          extent,
+          key,
+          render,
+          node,
+          nativeExtent: Array.isArray(extent)
+            ? extent.map((size) => size * state.zoom)
+            : extent * state.zoom,
+        });
         return node;
       },
     },
     herdr: Object.fromEntries([
+      [
+        "nextCommand",
+        () =>
+          new Promise<string>((resolve) => {
+            state.commandReceiver = resolve;
+          }),
+      ],
       ...[
         "exec",
         "readTextFile",
@@ -302,8 +338,8 @@ async function harness(refresh = false) {
     revision: 0,
     selectOpen: false,
     selectIndex: 0,
-    selectFocus: { focus() {} },
-    optionsFocus: { focus() {} },
+    selectFocus: focusHandle(),
+    optionsFocus: focusHandle(),
     turnScroll: {
       scroll_to_item: (index, strategy) =>
         (state.scrolls = [...(state.scrolls ?? []), [index, strategy]]),
@@ -341,7 +377,9 @@ async function harness(refresh = false) {
     listSize: 200,
     collapsed: new Set(),
     handle: {
+      ...focusHandle(),
       focus() {
+        state.activeFocus = this;
         state.focuses = (state.focuses ?? 0) + 1;
       },
     },
@@ -367,6 +405,108 @@ async function harness(refresh = false) {
     },
   };
 }
+
+test("Changes receives copy-local focus, restores popup input drafts, and skips hidden or unmounted inputs", async () => {
+  const h = await harness();
+  const other = await harness();
+  h.changes.refresh = () => {};
+  h.changes.init({}, h.cx);
+  other.changes.listen(other.cx);
+  await Promise.resolve();
+  const focus = async () => {
+    h.state.commandReceiver("focus");
+    await Promise.resolve();
+    await Promise.resolve();
+  };
+  await focus();
+  assert.equal(h.state.activeFocus, h.changes.handle);
+  assert.equal(other.state.activeFocus, undefined);
+  const root = byId(h.render(), "changes");
+  const focusStyle = root.styles.find(([name]) => name === "focus")[1];
+  let focusColor;
+  focusStyle({
+    border_color: (color) => {
+      focusColor = color;
+    },
+  });
+  assert.equal(focusColor, "#aabbcc");
+  h.changes.commitInput.set_value("Keep this draft");
+  h.changes.commitInput.events.focus({}, h.cx);
+  assert.equal(h.changes.typing, "commit");
+  h.changes.commitInput.events.blur({}, h.cx);
+  assert.equal(h.changes.typing, null);
+  assert.equal(h.changes.focusRole, "commit");
+  h.state.activeFocus = null;
+  await focus();
+  assert.equal(h.state.activeFocus, h.changes.commitInput);
+  assert.equal(h.changes.commitInput.value(), "Keep this draft");
+  h.changes.root = null;
+  await focus();
+  assert.equal(h.state.activeFocus, h.changes.handle);
+  assert.equal(h.changes.commitInput.value(), "Keep this draft");
+  h.changes.root = "/repo";
+  h.changes.target = { section: "unstaged", path: "file.ts" };
+  h.changes.files = [file("file.ts")];
+  h.changes.open = "unstaged:file.ts";
+  h.changes.rows = [{ kind: "compose" }];
+  h.changes.focusRole = "comment";
+  await focus();
+  assert.equal(h.state.activeFocus, h.changes.commentInput);
+  h.changes.open = null;
+  await focus();
+  assert.equal(h.state.activeFocus, h.changes.handle);
+  h.changes.open = "unstaged:file.ts";
+  h.changes.rows = [];
+  await focus();
+  assert.equal(h.state.activeFocus, h.changes.handle);
+  h.changes.target = null;
+  await focus();
+  assert.equal(h.state.activeFocus, h.changes.handle);
+  h.changes.focusRole = "note";
+  h.changes.comments = [{}];
+  await focus();
+  assert.equal(h.state.activeFocus, h.changes.noteInput);
+  h.changes.selectedTurn = "historical";
+  await focus();
+  assert.equal(h.state.activeFocus, h.changes.handle);
+  h.changes.selectOpen = true;
+  await focus();
+  assert.equal(h.state.activeFocus, h.changes.optionsFocus);
+  h.state.layout = { children: [{ id: "panel", hidden: true, active: "changes" }] };
+  h.state.activeFocus = null;
+  await focus();
+  assert.equal(h.state.activeFocus, null);
+});
+
+test.each([0.8, 1, 1.5, 2])("turn options use logical extents at zoom %s", async (zoom) => {
+  const h = await harness();
+  h.state.zoom = zoom;
+  h.changes.turns = [{ id: "turn", startedAt: "2026-07-31T12:00:00.000Z" }];
+  h.changes.setSelectOpen(true, h.cx);
+  h.render();
+  const list = h.state.lists.find((list) => list.id === "changes-turn-options");
+  assert.equal(list.extent, 28);
+  assert.equal(list.nativeExtent, 28 * zoom);
+});
+
+test("Changes turn options let configured pane navigation pass through but keep bare arrows", async () => {
+  const h = await harness();
+  h.changes.turns = [{ id: "turn", startedAt: "2026-07-31T12:00:00.000Z" }];
+  h.changes.setSelectOpen(true, h.cx);
+  const menu = byId(h.render(), "changes-view-options");
+  let stopped = 0;
+  const cx = { ...h.cx, stop_propagation: () => stopped++ };
+  for (const key of ["left", "right", "up", "down"])
+    menu.handlers.on_key_down(
+      { key, keystroke: `cmd-alt-${key}`, modifiers: { platform: true, alt: true } },
+      cx,
+    );
+  assert.equal(h.changes.selectIndex, 0);
+  assert.equal(stopped, 0);
+  menu.handlers.on_key_down({ key: "down" }, cx);
+  assert.equal(h.changes.selectIndex, 1);
+  assert.equal(stopped, 1);
+});
 
 test("hidden Changes renders retain selection and skip list work without forcing a refresh", async () => {
   const h = await harness();
@@ -429,7 +569,7 @@ test("Changes constructs only requested file rows and selects by stable path aft
   assert.equal(h.state.rows.length, 0);
   const list = h.state.lists.find((list) => list.id === "changes-files");
   assert.equal(list.count, 1001);
-  assert.equal(list.extent, 26 * h.state.zoom);
+  assert.equal(list.extent, 26);
   assert.equal(list.key(0), "unstaged:");
   assert.equal(list.key(301), "unstaged:src/file-300.ts");
   const rows = h.range(list, 301, 309);
@@ -1260,13 +1400,16 @@ test("colored diff rows draw one theme-colored element per span", async () => {
   );
 });
 
-test("Changes lays diff rows out at their zoomed height", async () => {
+test.each([0.8, 1, 1.5, 2])("Changes uses logical row extents at zoom %s", async (zoom) => {
   const h = await harness(true);
+  h.state.zoom = zoom;
   h.changes.refresh(h.cx);
   await h.drain();
   h.render();
   const list = h.state.lists.find((list) => list.id === "changes-diff");
-  assert.equal(list.extent, 20 * h.state.zoom);
+  assert.equal(list.extent, 20);
+  assert.equal(list.nativeExtent, 20 * zoom);
+  assert.equal(h.state.lists.find((list) => list.id === "changes-files").extent, 26);
 });
 
 test("clicking a gap shows its unchanged lines and keeps them through unchanged refreshes", async () => {
@@ -1329,44 +1472,50 @@ async function reviewing() {
   return { h, click, comment };
 }
 
-test("comments collect under their lines until the review is sent", async () => {
-  const { h, click, comment } = await reviewing();
-  click(2);
-  assert.deepEqual(plain(h.changes.target), {
-    section: "unstaged",
-    path: "file.ts",
-    side: "new",
-    number: 1,
-    quote: "new",
-    index: null,
-  });
-  assert.deepEqual(plain(h.changes.rows.map((row) => row.kind)), ["@", "-", "+", "compose"]);
-  h.render();
-  const list = h.state.lists.findLast((list) => list.id === "changes-diff");
-  assert.deepEqual(
-    plain(list.extent),
-    [20, 20, 20, 48].map((size) => size * h.state.zoom),
-  );
-  byId(h.render(), "changes-diff-rows").handlers.on_mouse_down({ local_position: { x: 10, y: 0 } });
-  assert.equal(h.changes.pressX, 10);
-  click(3);
-  assert.equal(h.changes.target.index, null);
-  h.changes.commentInput.set_value("  Rename it. ");
-  h.changes.saveComment(h.cx);
-  assert.equal(h.changes.target, null);
-  comment(1, "Why remove?");
-  assert.deepEqual(plain(h.changes.rows.map((row) => [row.kind, row.text, row.comment ?? null])), [
-    ["@", "@@ -1 +1 @@", null],
-    ["-", "old", null],
-    ["#", "Why remove?", 1],
-    ["+", "new", null],
-    ["#", "Rename it.", 0],
-  ]);
-  const tree = text(h.render());
-  assert.ok(tree.includes("2 comments"));
-  assert.ok(tree.includes("No agent here"));
-  assert.equal(h.state.sent.length, 0);
-});
+test.each([0.8, 1, 1.5, 2])(
+  "composer extents remain logical and comments collect at zoom %s",
+  async (zoom) => {
+    const { h, click, comment } = await reviewing();
+    h.state.zoom = zoom;
+    click(2);
+    assert.deepEqual(plain(h.changes.target), {
+      section: "unstaged",
+      path: "file.ts",
+      side: "new",
+      number: 1,
+      quote: "new",
+      index: null,
+    });
+    assert.deepEqual(plain(h.changes.rows.map((row) => row.kind)), ["@", "-", "+", "compose"]);
+    h.render();
+    const list = h.state.lists.findLast((list) => list.id === "changes-diff");
+    assert.deepEqual(plain(list.extent), [20, 20, 20, 48]);
+    byId(h.render(), "changes-diff-rows").handlers.on_mouse_down({
+      local_position: { x: 10, y: 0 },
+    });
+    assert.equal(h.changes.pressX, 10);
+    click(3);
+    assert.equal(h.changes.target.index, null);
+    h.changes.commentInput.set_value("  Rename it. ");
+    h.changes.saveComment(h.cx);
+    assert.equal(h.changes.target, null);
+    comment(1, "Why remove?");
+    assert.deepEqual(
+      plain(h.changes.rows.map((row) => [row.kind, row.text, row.comment ?? null])),
+      [
+        ["@", "@@ -1 +1 @@", null],
+        ["-", "old", null],
+        ["#", "Why remove?", 1],
+        ["+", "new", null],
+        ["#", "Rename it.", 0],
+      ],
+    );
+    const tree = text(h.render());
+    assert.ok(tree.includes("2 comments"));
+    assert.ok(tree.includes("No agent here"));
+    assert.equal(h.state.sent.length, 0);
+  },
+);
 
 test("clicking a comment edits it, and emptying it removes it", async () => {
   const { h, click, comment } = await reviewing();

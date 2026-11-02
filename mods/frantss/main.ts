@@ -36,7 +36,6 @@ import { button } from "./button.ts";
 import { paneName, tabName, threadTitle } from "./tab-names.ts";
 import { hcOrToast } from "./agent-hc.ts";
 import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
-import { keepUnread, shownStatus } from "./unread.ts";
 import {
   SESSION_LABEL,
   CONTEXT_LABEL,
@@ -283,8 +282,6 @@ export default class Frantss extends View {
   declare seenAgents: Map<string, AgentInfo>;
   declare settling: Task;
   declare hovered: string | null;
-  // The agent focused at the last render, so a mark goes only when you go to its agent.
-  declare focusedAgent: string | null;
   // The focused agent's context, read from its session file: what was read (`key`) and for whom.
   declare context: { address: string; usage: ContextUsage } | null;
   declare contextKey: string;
@@ -880,13 +877,13 @@ export default class Frantss extends View {
 
   rail(t: Theme, list: AgentInfo[], snapshot: WorkspaceSnapshot) {
     const all = snapshot.spaces;
-    const focused = list.find((a) => a.focused)?.address ?? null;
-    const unread = keepUnread(list, this.focusedAgent === undefined ? focused : this.focusedAgent);
-    this.focusedAgent = focused;
-    const groups = GROUPS.map((g) => ({
-      ...g,
-      agents: list.filter((a) => shownStatus(a, unread) === g.status),
-    }));
+    const groups = [
+      { status: "pinned", label: "PINNED", agents: list.filter((a) => a.pinned) },
+      ...GROUPS.map((g) => ({
+        ...g,
+        agents: list.filter((a) => !a.pinned && a.status === g.status),
+      })),
+    ];
     setAgentOrder(groups.flatMap((g) => g.agents.map((a) => a.address)));
     const named = new Set(
       all.flatMap((s) => s.tabs.filter((tab) => tab.named).map((tab) => tab.id)),
@@ -1090,6 +1087,10 @@ export default class Frantss extends View {
     ];
     const closed = closedAgents(agentRecords()),
       now = Date.now();
+    const pinnedStatus = (a: AgentInfo) => {
+      const label = GROUPS.find((g) => g.status === a.status)?.label ?? a.status;
+      return dot(t, a.status).id(`status-${a.address}`).tooltip(label).accessibility_label(label);
+    };
     const sections: RailSection[] = [
       {
         id: "spaces",
@@ -1108,7 +1109,14 @@ export default class Frantss extends View {
           rows: g.agents.map((a) => ({
             id: `agent-${a.address}`,
             current: a.focused,
-            lead: icon(t, a.program),
+            lead: a.pinned
+              ? h_flex()
+                  .gap(8)
+                  .items_center()
+                  .flex_none()
+                  .child(icon(t, a.program))
+                  .child(pinnedStatus(a))
+              : icon(t, a.program),
             agent: true,
             text: named.has(a.tab)
               ? a.tab_name

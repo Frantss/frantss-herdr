@@ -41,6 +41,7 @@ import {
   terminals,
   shared,
   setShared,
+  nextCommand,
 } from "herdr";
 import { iconFile, type IconManifest } from "./icons.ts";
 import { statusMarks, type Mark } from "./status.ts";
@@ -134,15 +135,16 @@ async function directory(path: string, on: string | null): Promise<FileEntry[]> 
     const r = await exec("powershell", [
       "-NoProfile",
       "-Command",
-      "& { param($p) @(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop | Where-Object Name -ne '.git' | Select-Object -First 501 | ForEach-Object { @{ name=$_.Name; dir=($_.PSIsContainer -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)) } }) | ConvertTo-Json -Compress }",
-      path,
+      "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); & { param($p) @(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop | Where-Object Name -ne '.git' | Select-Object -First 501 | ForEach-Object { @{ name=$_.Name; dir=($_.PSIsContainer -and (-not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or ($_.Target -and [IO.Directory]::Exists(([IO.Path]::Combine([IO.Path]::GetDirectoryName($_.FullName), $_.Target[0])))))) } }) | ConvertTo-Json -Compress } '" +
+        path.replaceAll("'", "''") +
+        "'",
     ]);
     if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
     const result = JSON.parse(r.stdout || "[]");
     return Array.isArray(result) ? result : [result];
   }
   const script =
-    'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ] && [ ! -L "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; test -d "$1"';
+    'n=0; for p in "$1"/* "$1"/.[!.]* "$1"/..?*; do [ -e "$p" ] || [ -L "$p" ] || continue; name=${p##*/}; [ "$name" = .git ] && continue; if [ -d "$p" ]; then kind=d; else kind=f; fi; printf "%s\\0%s\\0" "$kind" "$name"; n=$((n+1)); [ "$n" -gt 500 ] && break; done; test -d "$1"';
   const r = await exec("sh", ["-c", script, "files", path], { on });
   if (r.code !== 0) throw new Error(r.stderr || "Cannot list this folder");
   const fields = r.stdout.split("\0"),
@@ -237,6 +239,16 @@ export default class Files extends View {
     this.handle = cx.focus_handle();
     this.nameInput = InputState.new({ placeholder: "Name" });
     this.nameInput.on("submit", (_e, cx) => this.applyEdit(cx));
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const command = await nextCommand();
+        if (command === "focus" && panelShown("files")) {
+          if (this.editing) this.nameInput.focus();
+          else this.handle.focus();
+          cx.notify();
+        }
+      }
+    });
     cx.spawn(async (cx) => {
       const text = await readTextFile(`${appHome()}/mods/frantss-files/material-icons.json`).catch(
         (): null => null,
@@ -1023,7 +1035,7 @@ export default class Files extends View {
               v_virtual_list(
                 "files-rows",
                 rows.length,
-                24 * zoom(),
+                24,
                 (i) => rows[i].path,
                 (range) => rows.slice(range.start, range.end).map((row) => this.row(row, t, light)),
               )
@@ -1070,7 +1082,10 @@ export default class Files extends View {
       .id("files")
       .relative()
       .track_focus(this.handle)
-      .on_key_down((e, cx) => this.key(e.key, cx))
+      .on_key_down((e, cx) => {
+        if (e.modifiers?.platform || e.modifiers?.control || e.modifiers?.alt) return;
+        this.key(e.key, cx);
+      })
       .on_mouse_down("right", (e, cx) => this.openMenu(e, cx))
       .on_mouse_down("left", (e) => {
         this.lastPress = e;
@@ -1081,6 +1096,7 @@ export default class Files extends View {
       .overflow_hidden()
       .border_1()
       .border_color(t.border)
+      .focus((s) => s.border_color(t.accent))
       .text_color(t.foreground)
       .text_size(12)
       .child(
