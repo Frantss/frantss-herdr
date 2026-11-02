@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Turn changes · Herdr prototype</title>
+    <style>
+      /* Throwaway prototype. Herdr dark tokens and compact stacked panels preserve the host's density.
+   System UI matches native chrome; monospace is reserved for file contents. Dial: 1/1/1. */
+      :root {
+        color-scheme: dark;
+        --bg: #111;
+        --canvas: #0a0a0a;
+        --text: #ededed;
+        --muted: #a1a1a1;
+        --border: #383838;
+        --accent: #a78bfa;
+        --selected: #201d28;
+        --add: #23d18b;
+        --del: #ff8585;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--canvas);
+        color: var(--text);
+        font:
+          13px -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+      button,
+      select {
+        font: inherit;
+        color: inherit;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        min-height: 36px;
+        padding: 6px 10px;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        background: #24212b;
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 3px;
+      }
+      select {
+        max-width: 100%;
+        min-width: 0;
+      }
+      h1,
+      h2,
+      p {
+        margin: 0;
+      }
+      h1 {
+        font-size: 17px;
+        font-weight: 600;
+      }
+      h2 {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .add {
+        color: var(--add);
+      }
+      .del {
+        color: var(--del);
+      }
+      .intro {
+        max-width: 1050px;
+        margin: 32px auto 18px;
+        padding: 0 24px;
+        display: flex;
+        gap: 24px;
+        justify-content: space-between;
+        align-items: start;
+      }
+      .intro p {
+        margin-top: 8px;
+        line-height: 1.6;
+        max-width: 660px;
+      }
+      .prototype {
+        color: var(--accent);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .workspace {
+        max-width: 1002px;
+        margin: 0 auto 30px;
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        overflow: hidden;
+        background: var(--bg);
+      }
+      .bar {
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .bar .muted {
+        font-size: 12px;
+      }
+      .grow {
+        flex: 1;
+      }
+      .controls {
+        display: grid;
+        grid-template-columns: 120px minmax(0, 1fr);
+        gap: 10px;
+        align-items: center;
+        padding: 14px;
+        border-bottom: 1px solid var(--border);
+      }
+      .navigation {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        grid-column: 2;
+        flex-wrap: wrap;
+      }
+      .navigation span {
+        flex: 1;
+        text-align: center;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .scope {
+        padding: 12px 14px;
+        background: #16141b;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 12px;
+        align-items: start;
+        justify-content: space-between;
+      }
+      .scope p {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+        margin-top: 5px;
+      }
+      .readonly {
+        white-space: nowrap;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .files {
+        padding: 8px 0;
+        min-height: 115px;
+        max-height: 200px;
+        overflow: auto;
+      }
+      .file {
+        width: 100%;
+        border: 0;
+        border-radius: 0;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        text-align: left;
+        background: transparent;
+        padding: 9px 16px;
+        min-height: 38px;
+      }
+      .file[aria-pressed="true"] {
+        background: var(--selected);
+      }
+      .file .path {
+        flex: 1;
+        overflow-wrap: anywhere;
+      }
+      .status {
+        color: var(--accent);
+        font-size: 12px;
+      }
+      .stats {
+        white-space: nowrap;
+        font:
+          12px ui-monospace,
+          SFMono-Regular,
+          monospace;
+      }
+      .diffheader {
+        padding: 12px 14px;
+        border-block: 1px solid var(--border);
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .diffheader h2 {
+        overflow-wrap: anywhere;
+      }
+      .comparison {
+        color: var(--muted);
+        font-size: 12px;
+        width: 100%;
+      }
+      .code {
+        overflow: auto;
+        min-height: 260px;
+        padding: 10px 0;
+        font:
+          12px/25px ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+      .line {
+        display: grid;
+        grid-template-columns: 40px 40px 24px minmax(max-content, 1fr);
+        min-width: max-content;
+        padding-right: 18px;
+      }
+      .number {
+        color: var(--muted);
+        text-align: right;
+        padding-right: 10px;
+        user-select: none;
+      }
+      .sign {
+        text-align: center;
+      }
+      .line.plus {
+        background: #10251c;
+      }
+      .line.minus {
+        background: #301a1a;
+      }
+      .line.plus .content,
+      .line.plus .sign {
+        color: var(--add);
+      }
+      .line.minus .content,
+      .line.minus .sign {
+        color: var(--del);
+      }
+      .content {
+        white-space: pre;
+      }
+      .footer {
+        border-top: 1px solid var(--border);
+        padding: 12px 14px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .footer p {
+        flex: 1;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      .empty {
+        padding: 28px 16px;
+        line-height: 1.7;
+      }
+      .empty p {
+        color: var(--muted);
+        margin-top: 6px;
+      }
+      .testing {
+        max-width: 1002px;
+        margin: 0 auto 40px;
+        padding: 0 14px;
+      }
+      .testing label {
+        display: inline-flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .testing details {
+        margin-top: 18px;
+        color: var(--muted);
+      }
+      summary {
+        cursor: pointer;
+      }
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      @media (max-width: 650px) {
+        .intro {
+          margin-top: 20px;
+          padding: 0 14px;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .workspace {
+          margin-inline: 10px;
+        }
+        .controls {
+          grid-template-columns: 1fr;
+        }
+        .navigation {
+          grid-column: 1;
+        }
+        .scope {
+          flex-direction: column;
+        }
+        .footer button {
+          width: 100%;
+        }
+        button,
+        select {
+          min-height: 44px;
+        }
+        .file {
+          min-height: 44px;
+        }
+        .testing label {
+          align-items: start;
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="intro">
+      <div>
+        <h1>Review a turn, not the whole working tree</h1>
+        <p class="muted">
+          Choose a turn to inspect its saved before/after diff. Later edits stay out of the review.
+        </p>
+      </div>
+      <span class="prototype">Throwaway prototype · Sample data</span>
+    </header>
+    <main class="workspace" aria-label="Changes panel">
+      <div class="bar">
+        <h2>Changes</h2>
+        <span id="totals" class="muted"></span><span class="grow"></span
+        ><span id="branch" class="muted">sample-project / main</span>
+      </div>
+      <div class="controls">
+        <label for="comparison">View / turn</label
+        ><select id="comparison" aria-label="Select working tree or a saved turn"></select>
+        <div class="navigation">
+          <button id="previous" aria-label="Previous turn">‹ Previous</button
+          ><span id="position"></span><button id="next" aria-label="Next turn">Next ›</button>
+        </div>
+      </div>
+      <section class="scope" aria-label="Diff scope">
+        <div>
+          <h2 id="scopeTitle"></h2>
+          <p id="scopeDescription"></p>
+        </div>
+        <span class="readonly">Read-only prototype</span>
+      </section>
+      <div id="result" aria-live="polite"></div>
+      <div class="footer">
+        <p id="footnote"></p>
+        <button id="current">Show current working-tree diff</button>
+      </div>
+    </main>
+    <aside class="testing" aria-label="Prototype controls">
+      <label for="scenario"
+        ><span class="muted">Preview state</span
+        ><select id="scenario">
+          <option value="ready">Recorded changes</option>
+          <option value="empty">Turn made no changes</option>
+          <option value="missing">Snapshot not recorded</option>
+          <option value="loading">Loading snapshot</option>
+          <option value="error">Snapshot unavailable</option>
+        </select></label
+      >
+      <details>
+        <summary>Prototype state and design notes</summary>
+        <pre id="state"></pre>
+        <p>
+          Herdr dark palette, compact file rows, and a stacked diff keep this close to the existing
+          Changes panel. Purple marks selection; green and red mark added and removed lines. No live
+          repository access, persistence, or Git actions. ENERGY 1 / RHYTHM 1 / MOTION 1.
+        </p>
+      </details>
+    </aside>
+    <script>
+      const turns = [
+        {
+          id: 12,
+          title: "Add retry handling",
+          before: "return response.json();",
+          after: ["if (!response.ok) {", "  return retry(url);", "}", "return response.json();"],
+          test: 'it("retries failed requests", retryTest);',
+        },
+        {
+          id: 13,
+          title: "Improve error messages",
+          before: 'throw new Error("Request failed");',
+          after: ["throw new Error(`Request failed: ${response.status}`);"],
+          test: 'it("includes the status in errors", errorTest);',
+        },
+        {
+          id: 14,
+          title: "Update timeout defaults",
+          before: "const timeout = 1000;",
+          after: ["const timeout = 5000;"],
+          test: 'it("uses a five-second timeout", timeoutTest);',
+        },
+      ];
+      const $ = (id) => document.getElementById(id);
+      const escape = (value) =>
+        String(value).replace(
+          /[&<>"']/g,
+          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+        );
+      let index = 0,
+        selected = "src/request.ts",
+        view = "turn",
+        scenario = "ready";
+      $("comparison").innerHTML =
+        '<option value="working">Working tree</option><optgroup label="Turn changes">' +
+        turns
+          .map(
+            (t, i) =>
+              `<option value="turn:${i}">Turn #${t.id} · ${escape(t.title)}${i === turns.length - 1 ? " · Latest" : ""}</option>`,
+          )
+          .join("") +
+        "</optgroup>";
+      function line(kind, oldNumber, newNumber, text) {
+        return `<div class="line ${kind === "+" ? "plus" : kind === "-" ? "minus" : ""}"><span class="number">${oldNumber ?? ""}</span><span class="number">${newNumber ?? ""}</span><span class="sign">${kind}</span><span class="content">${escape(text)}</span></div>`;
+      }
+      function render() {
+        const turn = turns[index],
+          working = view === "working",
+          ready = scenario === "ready";
+        const add = working ? 9 : turn.after.length + 1,
+          del = working ? 3 : 1;
+        $("comparison").value = working ? "working" : `turn:${index}`;
+        $("scenario").value = scenario;
+        $("previous").disabled = working || index === 0;
+        $("next").disabled = working || index === turns.length - 1;
+        $("position").textContent = working
+          ? "Current state"
+          : `Turn ${index + 1} of ${turns.length}`;
+        $("totals").textContent = ready ? `2 files  +${add}  −${del}` : "";
+        $("scopeTitle").textContent = working
+          ? "Current working tree"
+          : `#${turn.id} · ${turn.title}`;
+        $("scopeDescription").textContent = working
+          ? "HEAD → Working tree. Includes uncommitted edits from all three sample turns."
+          : `Before turn ${turn.id} → After turn ${turn.id}. Only changes made during this turn.`;
+        $("footnote").textContent = working
+          ? "This comparison includes the later timeout and error-message edits. All sample edits are unstaged."
+          : "Saved snapshot. Later edits are not shown. Stage, discard, and commit actions are not available here.";
+        $("current").hidden = working;
+        $("state").textContent = JSON.stringify(
+          {
+            prototype: true,
+            data: "sample only",
+            view,
+            turn: working ? null : turn.id,
+            file: selected,
+            scenario,
+            comparison: working ? "HEAD → Working tree" : `Before #${turn.id} → After #${turn.id}`,
+            readOnly: true,
+          },
+          null,
+          2,
+        );
+        const states = {
+          empty: [
+            "No changes in this turn.",
+            "This turn has a recorded snapshot, but its before and after states are identical. Select another turn.",
+          ],
+          missing: [
+            "No snapshot recorded for this turn.",
+            "Historical diffs are available only for turns captured after recording was enabled. Select another turn or view the current working tree.",
+          ],
+          loading: [
+            "Loading saved snapshot…",
+            "Reading the before and after file states for this turn.",
+          ],
+          error: [
+            "Could not load this snapshot.",
+            "The saved snapshot could not be read. Retry, select another turn, or view the current working tree.",
+          ],
+        };
+        if (!ready) {
+          const [title, description] = states[scenario];
+          $("result").innerHTML =
+            `<section class="empty"><h2>${title}</h2><p>${description}</p>${scenario === "error" ? '<p><button id="retry">Retry sample load</button></p>' : ""}</section>`;
+          if (scenario === "error")
+            $("retry").onclick = () => {
+              scenario = "ready";
+              render();
+            };
+          return;
+        }
+        const test = selected.endsWith(".test.ts");
+        const files = ["src/request.ts", "src/request.test.ts"];
+        let code = "";
+        if (test) {
+          code = line(" ", 1, 1, 'describe("request", () => {');
+          (working ? turns : [turn]).forEach(
+            (t, i) => (code += line("+", null, i + 2, "  " + t.test)),
+          );
+          code += line(" ", 2, working ? 5 : 3, "});");
+        } else if (working) {
+          code =
+            line("-", 4, null, turns[2].before) +
+            line("+", null, 4, turns[2].after[0]) +
+            line(" ", 5, 5, "");
+          code +=
+            line(" ", 18, 18, "const response = await fetch(url);") +
+            line("-", 19, null, turns[0].before);
+          turns[0].after.forEach((text, i) => (code += line("+", null, 19 + i, text)));
+          code +=
+            line(" ", 23, 26, "") +
+            line("-", 24, null, turns[1].before) +
+            line("+", null, 27, turns[1].after[0]);
+        } else {
+          const start = turn.id === 14 ? 4 : 19;
+          code =
+            line(
+              " ",
+              start - 1,
+              start - 1,
+              turn.id === 14 ? "// Request defaults" : "const response = await fetch(url);",
+            ) + line("-", start, null, turn.before);
+          turn.after.forEach((text, i) => (code += line("+", null, start + i, text)));
+        }
+        $("result").innerHTML =
+          `<nav class="files" aria-label="Changed files">${files.map((path) => `<button class="file" data-file="${path}" aria-pressed="${path === selected}"><span class="status">M</span><span class="path">${path}</span><span class="stats"><span class="add">+${path.endsWith(".test.ts") ? (working ? 3 : 1) : working ? 6 : turn.after.length}</span> <span class="del">${path.endsWith(".test.ts") ? "" : "−" + (working ? 3 : 1)}</span></span></button>`).join("")}</nav><div class="diffheader"><h2>${selected}</h2><span class="comparison">${working ? "HEAD → Working tree" : `Before turn ${turn.id} → After turn ${turn.id}`}</span></div><section class="code" tabindex="0" aria-label="File diff. Minus marks removed lines; plus marks added lines.">${code}</section>`;
+        document.querySelectorAll("[data-file]").forEach(
+          (button) =>
+            (button.onclick = () => {
+              selected = button.dataset.file;
+              render();
+              document.querySelector(`[data-file="${selected}"]`).focus();
+            }),
+        );
+      }
+      $("comparison").onchange = (e) => {
+        const value = e.target.value;
+        view = value === "working" ? "working" : "turn";
+        if (view === "turn") index = Number(value.split(":")[1]);
+        scenario = "ready";
+        render();
+      };
+      $("previous").onclick = () => {
+        if (index > 0) index--;
+        scenario = "ready";
+        render();
+      };
+      $("next").onclick = () => {
+        if (index < turns.length - 1) index++;
+        scenario = "ready";
+        render();
+      };
+      $("current").onclick = () => {
+        view = "working";
+        scenario = "ready";
+        render();
+      };
+      $("scenario").onchange = (e) => {
+        scenario = e.target.value;
+        render();
+      };
+      render();
+    </script>
+  </body>
+</html>
