@@ -1074,6 +1074,75 @@ test("a clicked file previews below the tree as code, with Fresh behind the pen"
   assert.equal(code.released, true);
 });
 
+test("the preview's VS Code action opens the current text, markdown, or image file", async () => {
+  for (const path of ["src/it's main.ts", "README.md", "logo.png"]) {
+    const h = await harness();
+    assert.equal(findNode(h.render(), byId("files-vscode")), undefined);
+    h.state.texts[`/repo/${path}`] = "Preview content";
+    h.files.show(path, h.cx);
+    await h.drain();
+    const action = findNode(h.render(), byId("files-vscode"));
+    assert.ok(action, path);
+    assert.ok(
+      action.styles.some(
+        ([key, value]) => key === "accessibility_label" && value === "Open in VS Code",
+      ),
+    );
+    assert.ok(action.styles.some(([key, value]) => key === "tab_stop" && value));
+    action.handlers.on_click({}, h.cx);
+    await h.drain();
+    assert.deepEqual(h.state.commands.at(-1), [
+      "open",
+      "-a",
+      "Visual Studio Code",
+      `/repo/${path}`,
+      null,
+    ]);
+    assert.equal(h.files.file, path);
+    assert.equal(h.state.notices.length, 0);
+  }
+});
+
+test("the VS Code preview action is unavailable for remote files and other platforms", async () => {
+  for (const [on, platform] of [
+    ["remote", "macos"],
+    [null, "linux"],
+    [null, "windows"],
+  ]) {
+    const h = await harness();
+    h.files.on = on;
+    h.state.platform = platform;
+    h.state.texts["/repo/main.ts"] = "Preview content";
+    h.files.show("main.ts", h.cx);
+    await h.drain();
+    assert.equal(findNode(h.render(), byId("files-vscode")), undefined);
+    h.files.openInVSCode("main.ts", h.cx);
+    await h.drain();
+    assert.equal(h.state.commands.length, 0);
+  }
+});
+
+test("a failed VS Code launch reports an error and leaves the preview open", async () => {
+  for (const failure of [
+    () => ({ code: 1, stdout: "", stderr: "App not found" }),
+    () => {
+      throw new Error("Launch failed");
+    },
+  ]) {
+    const h = await harness();
+    h.state.texts["/repo/main.ts"] = "Preview content";
+    h.files.show("main.ts", h.cx);
+    await h.drain();
+    h.state.run = failure;
+    findNode(h.render(), byId("files-vscode")).handlers.on_click({}, h.cx);
+    await h.drain();
+    assert.equal(h.state.notices.length, 1);
+    assert.equal(h.state.notices[0].title, "Could not open VS Code");
+    assert.equal(h.state.notices[0].level, "error");
+    assert.equal(h.files.file, "main.ts");
+  }
+});
+
 test("a changed file reloads its preview, and unchanged text keeps the view", async () => {
   const h = await harness();
   h.state.texts["/repo/a.ts"] = "one";

@@ -63,6 +63,7 @@ Fresh daemon per project folder. The daemons keep running after their tabs close
 written to `~/.config/fresh/themes/herdr-frantss.json`, and a config without the welcome
 tab, written to `frantss-files/fresh-config.json` in Herdr's config folder. Stop a daemon
 to give it a changed theme.
+On macOS, the preview's VS Code button opens the local file in Visual Studio Code.
 The app launcher uses macOS `open`. Other panels use Herdr's `hc` and native APIs.
 
 This layout's Codex launchers and Resume controls use `--no-daemon`, so `hc run`

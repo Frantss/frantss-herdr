@@ -1,5 +1,5 @@
 // A lazy file browser for the focused pane's folder. A click on a file previews it below the tree;
-// the preview's pen opens it in Fresh (getfresh.dev).
+// the preview actions open it in Fresh or VS Code.
 import {
   View,
   div,
@@ -899,6 +899,21 @@ export default class Files extends View {
     });
   }
 
+  openInVSCode(path: string, cx: Context) {
+    if (!this.local()) return;
+    const vscode = knownApps(["vscode"])[0],
+      args = openArgs(vscode, this.root, `${this.root}/${path}`);
+    cx.spawn(async () => {
+      const result = await exec("open", args).catch((): null => null);
+      if (!result || result.code !== 0)
+        notify({
+          title: "Could not open VS Code",
+          body: "Check that Visual Studio Code is installed and the file is available.",
+          level: "error",
+        });
+    });
+  }
+
   // Ignored directories dim their descendants too, including rows outside the viewport.
   rows(): FileRow[] {
     return (this.rowCache ??= this.appendRows("", 0, [], false));
@@ -1368,6 +1383,16 @@ export default class Files extends View {
           .child(
             this.iconButton("files-fresh", "Open in Fresh", PEN, (cx) =>
               this.openInFresh(path, cx),
+            ),
+          )
+          .when(this.local(), (e) =>
+            e.child(
+              this.iconButton(
+                "files-vscode",
+                "Open in VS Code",
+                "mods/frantss-files/icons/vscode.svg",
+                (cx) => this.openInVSCode(path, cx),
+              ),
             ),
           )
           .child(
