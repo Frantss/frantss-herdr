@@ -17,5 +17,14 @@ export function statusMarks(stdout: string, top: string, limit: number): Record<
               ? "D"
               : "M";
   }
+  for (const [path, mark] of Object.entries(marks)) {
+    if (mark === "I") continue;
+    for (let end = path.lastIndexOf("/"); end > top.length; end = path.lastIndexOf("/", end - 1)) {
+      const parent = path.slice(0, end),
+        previous = marks[parent];
+      marks[parent] =
+        previous === "U" || mark === "U" ? "U" : !previous || previous === mark ? mark : "M";
+    }
+  }
   return marks;
 }

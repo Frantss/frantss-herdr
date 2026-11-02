@@ -1,6 +1,9 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 
@@ -220,7 +223,11 @@ async function harness(refresh = false) {
       if (command === "git" && args.includes("--show-toplevel"))
         return { code: 0, stdout: `${options.cwd}\n${options.cwd}/.git\n`, stderr: "" };
       if (command === "git" && args.includes("status"))
-        return { code: 0, stdout: state.gitStatus ?? " M changed.ts\0", stderr: "" };
+        return {
+          code: 0,
+          stdout: state.readGitStatus?.(args) ?? state.gitStatus ?? " M changed.ts\0",
+          stderr: "",
+        };
       throw new Error(`Unexpected command ${command}`);
     };
   if (refresh)
@@ -411,6 +418,60 @@ test("Files keeps expanded directory order, depth, ignored inheritance, and dire
   assert.deepEqual(h.state.calls, [["toggle", "dist"]]);
 });
 
+test("file and folder names match status colors in both themes and selected rows", async () => {
+  const h = await harness();
+  for (const mode of ["light", "dark"]) {
+    const theme = JSON.parse(
+      await readFile(new URL(`../../themes/frantss-${mode}.json`, import.meta.url), "utf8"),
+    );
+    const t = {
+      ...theme.colors,
+      foreground: theme.foreground,
+      ansi1: theme.ansi[1],
+      ansi2: theme.ansi[2],
+    };
+    for (const dir of [false, true]) {
+      for (const selected of [false, true]) {
+        for (const mark of ["A", "M", "D", "U", "I", undefined]) {
+          h.files.file = selected ? "entry" : null;
+          const row = h.files.row(
+            {
+              name: "entry",
+              path: "entry",
+              dir,
+              depth: 0,
+              open: false,
+              mark,
+              ignored: mark === "I",
+            },
+            t,
+            mode === "light",
+          );
+          const label = row.childNodes.find((node) => node?.childNodes?.includes("entry"));
+          const color = label.styles.filter(([key]) => key === "text_color").at(-1)?.[1];
+          const expected =
+            mark === "I"
+              ? t.dim
+              : mark === "A"
+                ? t.ansi2
+                : mark === "D" || mark === "U"
+                  ? t.ansi1
+                  : mark === "M"
+                    ? t.accent
+                    : undefined;
+          assert.equal(color, expected, `${mode}: dir=${dir}, selected=${selected}, mark=${mark}`);
+          if (mark && mark !== "I") {
+            const indicator = row.childNodes.find((node) => node?.childNodes?.includes(mark));
+            assert.ok(
+              indicator.styles.some(([key, value]) => key === "text_color" && value === color),
+            );
+          }
+        }
+      }
+    }
+  }
+});
+
 const deferred = () => {
   let resolve;
   const promise = new Promise<any[]>((done) => {
@@ -504,6 +565,73 @@ test("cached Files metadata follows Git marks and restored places", async () => 
   await h.drain();
   assert.ok(h.files.rows().some((row) => row.path === "src/next.ts" && row.ignored));
   assert.ok(!h.files.rows().some((row) => row.path === "other.ts"));
+});
+
+test("nested files and their folders show added and modified indicators from Git", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "herdr-files-status-"));
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+  try {
+    git("init");
+    await mkdir(join(repo, "src/nested/new-folder"), { recursive: true });
+    await writeFile(join(repo, "src/nested/changed.ts"), "before\n");
+    git("add", ".");
+    git(
+      "-c",
+      "user.name=Files Test",
+      "-c",
+      "user.email=files@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-m",
+      "initial",
+    );
+    await writeFile(join(repo, "src/nested/changed.ts"), "after\n");
+    await writeFile(join(repo, "src/nested/added.ts"), "staged\n");
+    git("add", "src/nested/added.ts");
+    await writeFile(join(repo, "src/nested/new-folder/new.ts"), "untracked\n");
+
+    const h = await harness(true);
+    h.state.readGitStatus = (args) => git(...args);
+    const directories = [
+      ["", [{ name: "src", dir: true }]],
+      ["src", [{ name: "nested", dir: true }]],
+      [
+        "src/nested",
+        [
+          { name: "new-folder", dir: true },
+          { name: "added.ts", dir: false },
+          { name: "changed.ts", dir: false },
+        ],
+      ],
+      ["src/nested/new-folder", [{ name: "new.ts", dir: false }]],
+    ] as const;
+    for (const [path, entries] of directories) {
+      h.files.entries.set(path, entries);
+      if (path) h.files.folders.add(path);
+      h.state.directories.set(path ? `/repo/${path}` : "/repo", entries);
+    }
+    seedEntryCount(h.files);
+    h.files.refresh(h.cx);
+    await h.drain();
+    const marks = Object.fromEntries(h.files.rows().map((row) => [row.path, row.mark]));
+    assert.deepEqual(marks, {
+      src: "M",
+      "src/nested": "M",
+      "src/nested/new-folder": "A",
+      "src/nested/new-folder/new.ts": "A",
+      "src/nested/added.ts": "A",
+      "src/nested/changed.ts": "M",
+    });
+    h.files.folders.delete("src/nested");
+    h.files.rowCache = null;
+    assert.deepEqual(Object.fromEntries(h.files.rows().map((row) => [row.path, row.mark])), {
+      src: "M",
+      "src/nested": "M",
+    });
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
 });
 
 async function expandedFiles() {

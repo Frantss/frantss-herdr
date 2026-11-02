@@ -479,7 +479,7 @@ export default class Files extends View {
               "--porcelain=v1",
               "-z",
               "--no-renames",
-              "--untracked-files=normal",
+              "--untracked-files=all",
               "--ignored",
             ],
             { cwd, on },
@@ -938,6 +938,7 @@ export default class Files extends View {
     t: Theme,
     light: boolean,
   ): Element {
+    const markColor = mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.accent;
     // The pointer hovers rows under the open menu too.
     return h_flex()
       .id(`file-${path}`)
@@ -986,16 +987,12 @@ export default class Files extends View {
               .flex_1()
               .min_w(0)
               .truncate()
+              .when(Boolean(mark) && !ignored, (el) => el.text_color(markColor))
               .when(ignored, (el) => el.text_color(t.dim))
               .child(name),
       )
       .when(Boolean(mark) && mark !== "I", (el) =>
-        el.child(
-          div()
-            .text_size(11)
-            .text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.accent)
-            .child(mark),
-        ),
+        el.child(div().text_size(11).text_color(markColor).child(mark)),
       );
   }
 
