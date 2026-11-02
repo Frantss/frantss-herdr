@@ -312,8 +312,8 @@ Click it to open the GitHub panel's **Agents** tab, which lists each agent's pul
 merged and closed ones included. An agent counts a pull request it created with `gh pr create`
 or the GitHub MCP server, one the GitHub panel started it for, and an open or merged pull request
 whose branch it pushed to GitHub (except the default branch). Closed agents keep their list until
-the rail forgets them. States refresh with the GitHub panel's poll: every minute while it shows,
-else every five minutes. Lookups use the local `gh`; agents on other machines are not tracked.
+the rail forgets them. The rail looks pull requests up within seconds of a new link and refreshes
+their states every two minutes. Lookups use the local `gh`; agents on other machines are not tracked.
 
 For Claude Code and Codex, add this hook next to the turn hooks, with the same `/ABS/CHECKOUT`:
 

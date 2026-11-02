@@ -52,9 +52,11 @@ import {
   isOpen,
   mostUrgentPr,
   prLinks,
+  trackedAgents,
   type AgentPr,
   type PrLink,
 } from "./agent-prs.ts";
+import { AgentPrTracker } from "./agent-pr-tracker.ts";
 import {
   SESSION_LABEL,
   CONTEXT_LABEL,
@@ -216,6 +218,8 @@ const URGENT = GROUPS.map((g) => g.status).filter((status) => status !== "idle")
 const mostUrgent = (statuses: string[]) => URGENT.find((status) => statuses.includes(status));
 // Agent ages are in minutes, so the rail renders again this often.
 const AGE_REFRESH_MS = 30_000;
+// Agents' PR links are compared this often; a lookup runs only when they change or are due.
+const PR_LINKS_MS = 2000;
 // A place's ahead/behind counts are read again at the first render after this long.
 const BRANCH_REFRESH_MS = 60_000;
 const DEFAULT_BRANCHES = new Set(["main", "master"]);
@@ -413,6 +417,12 @@ export default class Frantss extends View {
       cx.timer.every(AGE_REFRESH_MS, (cx) => cx.notify());
       cx.timer.every(10_000, (cx) => this.refreshWorktrees(cx));
       this.refreshWorktrees(cx);
+      const prs = new AgentPrTracker((args) => exec("gh", args), shared, setShared);
+      cx.timer.every(PR_LINKS_MS, (cx) => {
+        const tracked = trackedAgents(terminals(), agents(), agentRecords());
+        if (prs.due(tracked, Date.now()))
+          cx.spawn(() => prs.lookUp(tracked, Date.now()).catch(() => {}));
+      });
     }
   }
 

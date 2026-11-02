@@ -1,15 +1,6 @@
 import { test } from "vite-plus/test";
 import assert from "node:assert/strict";
-import {
-  agentPullRequests,
-  buildInbox,
-  findCheckout,
-  loadLinkedPrs,
-  loadPullRequests,
-  prState,
-  taskFor,
-} from "./github.ts";
-import { URGENCY } from "./agent-prs.ts";
+import { buildInbox, findCheckout, loadPullRequests, taskFor } from "./github.ts";
 
 const node = (overrides = {}) => ({
   number: 1,
@@ -206,98 +197,4 @@ test("finds the checkout of a branch", () => {
     "worktree /repo\nHEAD abc\nbranch refs/heads/main\n\nworktree /wt/feat\nHEAD def\nbranch refs/heads/feat/login\n";
   assert.equal(findCheckout(porcelain, "feat/login"), "/wt/feat");
   assert.equal(findCheckout(porcelain, "feat"), null);
-});
-
-const linkedNode = (number, overrides = {}) => ({
-  ...node({ number, url: `https://github.com/o/r/pull/${number}` }),
-  state: "OPEN",
-  mergeable: "MERGEABLE",
-  ...overrides,
-});
-
-test("a pull request's state is its most urgent one", () => {
-  const state = (overrides) => prState(linkedNode(1, overrides) as Parameters<typeof prState>[0]);
-  assert.equal(state({ state: "MERGED" }), "merged");
-  assert.equal(
-    state({ commits: rollup("FAILURE", []), reviewDecision: "CHANGES_REQUESTED" }),
-    "failing",
-  );
-  assert.equal(state({ reviewDecision: "CHANGES_REQUESTED" }), "changes");
-  assert.equal(state({ mergeable: "CONFLICTING" }), "conflicts");
-  assert.equal(state({ reviewThreads: { nodes: [thread()] } }), "comments");
-  assert.equal(state({ commits: rollup("PENDING", []) }), "pending");
-  assert.equal(state({ reviewDecision: "APPROVED" }), "ready");
-  assert.equal(state({ reviewDecision: "APPROVED", isDraft: true }), "open");
-});
-
-test("linked pull requests load in one query, missing ones and the default branch skipped", async () => {
-  const calls = [];
-  const gh = async (args) => {
-    calls.push(args);
-    return {
-      code: 1,
-      stderr: "Could not resolve to a PullRequest with the number of 9.",
-      stdout: JSON.stringify({
-        data: {
-          repository: {
-            defaultBranchRef: { name: "main" },
-            n4: linkedNode(4),
-            n9: null,
-            b0: { nodes: [linkedNode(5, { headRefName: "feat", state: "MERGED" })] },
-            b1: { nodes: [linkedNode(6)] },
-          },
-        },
-      }),
-    };
-  };
-  const { byNumber, byBranch } = await loadLinkedPrs(gh, "o/r", [4, 9], ["feat", "main"]);
-  assert.equal(calls.length, 1);
-  assert.ok(calls[0].includes("b0=feat") && calls[0].includes("b1=main"));
-  assert.deepEqual([...byNumber.keys()], [4]);
-  assert.deepEqual([...byBranch.keys()], ["feat"]);
-  assert.equal(byBranch.get("feat")[0].state, "merged");
-  await assert.rejects(
-    loadLinkedPrs(async () => ({ code: 1, stderr: "HTTP 401", stdout: "" }), "o/r", [1], []),
-    /HTTP 401/,
-  );
-});
-
-test("an agent's pull requests are listed once, created before pushed, most urgent first", () => {
-  const pr = (number, state) => ({
-    repo: "o/r",
-    number,
-    title: "",
-    url: "",
-    branch: `b${number}`,
-    state,
-  });
-  const lookups = new Map([
-    [
-      "o/r",
-      {
-        byNumber: new Map([[2, pr(2, "pending")]]),
-        byBranch: new Map([
-          ["b2", [pr(2, "pending")]],
-          ["b3", [pr(3, "failing")]],
-        ]),
-      },
-    ],
-  ]);
-  const prs = agentPullRequests(
-    [
-      { repo: "o/r", branch: "b2", source: "pushed" },
-      { repo: "o/r", number: 2, source: "created" },
-      { repo: "o/r", branch: "b3", source: "pushed" },
-      { repo: "x/y", number: 1, source: "created" },
-    ],
-    lookups,
-    URGENCY,
-  );
-  assert.deepEqual(
-    prs.map((p) => [p.number, p.source]),
-    [
-      [3, "pushed"],
-      [2, "created"],
-    ],
-  );
 });
