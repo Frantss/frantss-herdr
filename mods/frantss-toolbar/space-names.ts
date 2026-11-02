@@ -1,0 +1,1 @@
+../../shared/space-names.ts

@@ -45,7 +45,17 @@ async function launchMenu(name: string, argv = ["codex"]) {
   const context = vm.createContext({});
   const natives = {
     "gpui-kit": { View: class {}, div: element, svg: element, image: element },
-    "gpui-base": { h_flex: element, v_flex: element },
+    "gpui-base": {
+      h_flex: element,
+      v_flex: element,
+      Scrollbar: { vertical: element },
+      v_virtual_list: (id, count, _sizes, _key, draw) => {
+        const list = element().id(id);
+        for (const row of draw({ start: 0, end: count })) list.child(row);
+        return list;
+      },
+      VirtualListScrollHandle: { new: () => ({ scroll_to_item() {}, release() {} }) },
+    },
     herdr: {
       theme: () => ({}),
       spaces: () => [{ id: "build/s1", active: true, machine: "build" }],
@@ -95,6 +105,9 @@ function byId(node, id) {
   return (node?.childNodes ?? []).map((child) => byId(child, id)).find(Boolean);
 }
 
+// The thread picker's rows sit in a virtual list, which reports a press by the row's key.
+const pickThread = (tree, key: string) => byId(tree, "thread-choices").handlers.on_item_click(key);
+
 test("cached new-menu Codex choices use isolated execution for both clicks and shortcuts", async () => {
   const h = await launchMenu("frantss-new-menu", ["codex", "--model", "chosen-model"]);
   const tree = h.render();
@@ -109,12 +122,12 @@ test("cached new-menu Codex choices use isolated execution for both clicks and s
 
 test("thread launches isolate Codex in existing spaces, new spaces, and worktrees", async () => {
   const h = await launchMenu("frantss-thread");
-  byId(h.render(), "local-codex").handlers.on_click();
+  pickThread(h.render(), "local-codex");
   assert.deepEqual(plain(h.state.commands), [
     ["space.select", { id: "build/s1" }],
-    ["tab.new", { space: "build/s1", argv: ["codex", "--no-daemon"] }],
+    ["tab.new", { space: "build/s1", folder: "/repo", argv: ["codex", "--no-daemon"] }],
   ]);
-  byId(h.render(), "worktree-codex").handlers.on_click();
+  pickThread(h.render(), "worktree-codex");
   assert.deepEqual(plain(h.state.overlays.at(-1).props), {
     space: "build/s1",
     folder: "/repo",
@@ -122,12 +135,12 @@ test("thread launches isolate Codex in existing spaces, new spaces, and worktree
     argv: ["codex", "--no-daemon"],
   });
   h.state.props.space = null;
-  byId(h.render(), "local-codex").handlers.on_click();
+  pickThread(h.render(), "local-codex");
   assert.deepEqual(plain(h.state.commands.at(-1)), [
     "space.new",
     { folder: "/repo", machine: "build", argv: ["codex", "--no-daemon"] },
   ]);
-  byId(h.render(), "worktree-codex").handlers.on_click();
+  pickThread(h.render(), "worktree-codex");
   assert.deepEqual(plain(h.state.overlays.at(-1).props), {
     machine: "build",
     folder: "/repo",
@@ -142,10 +155,14 @@ test("Codex paths and existing isolation flags preserve all launch arguments wit
       const argv = [executable, ...(present ? ["--no-daemon"] : []), "--profile", "work"];
       const before = [...argv];
       const h = await launchMenu("frantss-thread", argv);
-      byId(h.render(), "local-codex").handlers.on_click();
+      pickThread(h.render(), "local-codex");
       assert.deepEqual(plain(h.state.commands.at(-1)), [
         "tab.new",
-        { space: "build/s1", argv: [executable, "--no-daemon", "--profile", "work"] },
+        {
+          space: "build/s1",
+          folder: "/repo",
+          argv: [executable, "--no-daemon", "--profile", "work"],
+        },
       ]);
       assert.deepEqual(argv, before);
     }
@@ -155,15 +172,14 @@ test("Codex paths and existing isolation flags preserve all launch arguments wit
 test("other agents and plain terminals retain their launch commands", async () => {
   for (const name of ["frantss-thread", "frantss-new-menu"]) {
     const h = await launchMenu(name);
-    byId(
-      h.render(),
-      name === "frantss-thread" ? "local-claude-code" : "claude-code",
-    ).handlers.on_click();
-    assert.deepEqual(plain(h.state.commands.at(-1)), [
-      "tab.new",
-      { space: "build/s1", argv: ["claude"] },
-    ]);
-    byId(h.render(), name === "frantss-thread" ? "local-terminal" : "terminal").handlers.on_click();
-    assert.deepEqual(plain(h.state.commands.at(-1)), ["tab.new", { space: "build/s1" }]);
+    const thread = name === "frantss-thread";
+    // The thread picker opens its tab in the folder it shows; the new menu leaves it to Herdr.
+    const target = thread ? { space: "build/s1", folder: "/repo" } : { space: "build/s1" };
+    const pick = (threadKey: string, menuId: string) =>
+      thread ? pickThread(h.render(), threadKey) : byId(h.render(), menuId).handlers.on_click();
+    pick("local-claude-code", "claude-code");
+    assert.deepEqual(plain(h.state.commands.at(-1)), ["tab.new", { ...target, argv: ["claude"] }]);
+    pick("local-terminal", "terminal");
+    assert.deepEqual(plain(h.state.commands.at(-1)), ["tab.new", target]);
   }
 });

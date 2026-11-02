@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
+import type { items as menuItems } from "./main.ts";
 
 const records = [
   { address: "t1", cwd: "/repo" },
@@ -10,15 +11,22 @@ const records = [
   { address: "t3", cwd: "/repo" },
 ];
 
+// Where the menu's scroll handle was told to bring an entry on screen.
+const scrolled: number[] = [];
+
 async function load(overrides = {}, icons: string[] = []) {
   const context = vm.createContext({});
   const empty = () => {};
+  // GPUI builds a virtual list's rows during layout, where the runtime refuses handlers.
+  let lazy = false;
   const element = () => {
     const state: any = { childNodes: [], handlers: {}, elementId: undefined };
     const node = new Proxy(state, {
       get: (target, key) => {
         if (key in target) return target[key];
         return (...args) => {
+          if (lazy && String(key).startsWith("on_"))
+            throw new Error(`${String(key)} inside a virtual list row`);
           if (key === "when" && args[0]) args[1](node);
           if (key === "child") state.childNodes.push(args[0]);
           if (key === "id") state.elementId = args[0];
@@ -41,6 +49,23 @@ async function load(overrides = {}, icons: string[] = []) {
     "gpui-base": {
       v_flex: element,
       h_flex: element,
+      Scrollbar: { vertical: element },
+      v_virtual_list: (id, count, sizes, key, draw) => {
+        assert.equal(sizes.length, count, "One height per entry");
+        const keys = Array.from({ length: count }, (_, index) => key(index));
+        assert.equal(new Set(keys).size, count, "Entry keys are unique");
+        const list = element().id(id);
+        lazy = true;
+        try {
+          for (const row of draw({ start: 0, end: count })) list.child(row);
+        } finally {
+          lazy = false;
+        }
+        return list;
+      },
+      VirtualListScrollHandle: {
+        new: () => ({ scroll_to_item: (index) => scrolled.push(index), release() {} }),
+      },
       Button: { new: (id) => element().id(id) },
       Input: { new: element },
       InputState: {
@@ -100,7 +125,10 @@ async function load(overrides = {}, icons: string[] = []) {
     );
   });
   await module.evaluate();
-  return module.namespace as typeof import("./main.ts");
+  return module.namespace as {
+    default: new () => any;
+    items: typeof menuItems;
+  };
 }
 
 const paneMenu = async (terminal: string) =>
@@ -231,7 +259,6 @@ test("an agent's pane menu starts with its actions and can send it back", async 
     ["Peek", "terminal.peek", { terminal: "t1" }],
     ["Pin", "terminal.pin", { terminal: "t1", pinned: true }],
     ["Reply…", "reply", { terminal: "t1" }],
-    ["Interrupt", "interrupt", { terminal: "t1" }],
     ["Copy address", "copy", { text: "t1" }],
     ["Copy folder", "copy", { text: "/repo" }],
     ["Kill…", "kill", { terminal: "t1" }],
@@ -349,6 +376,221 @@ test("only idle agents offer mark unread; native statuses stay unchanged", async
   }
 });
 
+test("only a working agent offers Interrupt, as the rail's hover actions do", async () => {
+  for (const status of ["working", "blocked", "idle", "done", null]) {
+    const module = await load({ agents: () => [{ address: "t1", status }] });
+    for (const tab of ["pane", "terminal"]) {
+      const menu = module.items({ tab, target: { pane: "p1", terminal: "t1" } }, null);
+      assert.equal(
+        menu.some(([, command]) => command === "interrupt"),
+        status === "working",
+        `${tab} menu, ${status}`,
+      );
+    }
+  }
+});
+
+const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+const keyContext = { stop_propagation() {}, notify() {} };
+const press = (view: { render(cx: unknown): unknown }, ...keys: string[]) => {
+  for (const key of keys)
+    (view.render({}) as any).handlers.on_key_down({ key, modifiers: {} }, keyContext);
+};
+const findId = (node, id) =>
+  node?.elementId === id
+    ? node
+    : (node?.childNodes ?? []).map((child) => findId(child, id)).find(Boolean);
+// A press on an entry, as the virtual list reports it: by the entry's key.
+const click = (view: { render(cx: unknown): unknown }, key: string) =>
+  findId(view.render({}), "menu-items").handlers.on_item_click(key, keyContext);
+
+test("a pane that stands for its space acts on that space by id, never on the focused one", async () => {
+  const commands = [],
+    overlays = [];
+  const target = {
+    pane: "p2",
+    terminal: "t3",
+    space: "s2",
+    spaceName: "feature/login",
+    checkout: "linked" as const,
+  };
+  const module = await load({
+    props: () => ({ tab: "pane", target }),
+    panes: () => [
+      { pane: "p1", tab: "tab1", focused: true },
+      { pane: "p2", tab: "tab2", title: "Work" },
+    ],
+    spaces: () => [
+      { id: "s1", active: true, name: "Focused", named: true, tabs: [{ id: "tab1" }] },
+      { id: "s2", name: "repo", named: false, branch: "other", tabs: [{ id: "tab2" }] },
+    ],
+    run: (...args) => commands.push(plain(args)),
+    openOverlay: (spec) => overlays.push(plain(spec)),
+    theme: () => ({}),
+  });
+  const view = new module.default();
+  view.init(
+    {},
+    { focus_handle: () => ({ focus() {} }), spawn: () => assert.fail("Known checkout") },
+  );
+  const menu = plain(module.items({ tab: "pane", target }, view.git));
+  const close = menu.findIndex(([label]) => label === "Close pane");
+  assert.deepEqual(menu.slice(close + 1), [
+    ["Space: feature/login", "heading", {}],
+    ["Rename space", "rename", { what: "space", id: "s2", name: "feature/login" }],
+    ["New tab", "tab.new", { space: "s2" }],
+    ["New worktree", "worktree", { space: "s2", action: "new" }],
+    ["Open worktree", "worktree", { space: "s2", action: "open" }],
+    ["Remove worktree", "worktree", { space: "s2", action: "remove" }],
+    ["Close space", "space.close", { id: "s2" }],
+  ]);
+  click(view, "heading:Space: feature/login");
+  assert.deepEqual(commands, [], "The heading does nothing");
+  click(view, "rename:Rename space");
+  assert.equal(overlays[0].props.value, "feature/login");
+  assert.deepEqual(overlays[0].props.command, { name: "space.rename", args: { id: "s2" } });
+  scrolled.length = 0;
+  press(view, "end");
+  assert.deepEqual(scrolled, [menu.length - 1], "End brings the last space action on screen");
+  click(view, "space.close:Close space");
+  assert.deepEqual(commands, [["space.close", { id: "s2" }]]);
+  const without = module.items({ tab: "pane", target: { pane: "p2", terminal: "t3" } }, "linked");
+  assert.equal(without.at(-1)[1], "pane.close", "Other pane menus get no space actions");
+});
+
+test("without a checkout the parent space's own folder is asked, and its shown name is used", async () => {
+  const asked = [];
+  const tasks = [];
+  const target = { pane: "p2", space: "s2" };
+  const module = await load({
+    props: () => ({ tab: "pane", target }),
+    panes: () => [{ pane: "p2", tab: "tab2", cwd: "/wt" }],
+    spaces: () => [
+      { id: "s1", active: true, folder: "/focused", tabs: [] },
+      {
+        id: "s2",
+        name: "repo",
+        named: false,
+        branch: "feat",
+        folder: "/wt",
+        tabs: [{ id: "tab2" }],
+      },
+    ],
+    exec: async (_command, args, options) => {
+      asked.push(options.cwd);
+      return {
+        code: 0,
+        stdout: args[0] === "rev-parse" && args[1] === "--show-toplevel" ? "/wt\n" : "/repo/.git\n",
+      };
+    },
+  });
+  const view = new module.default();
+  view.init({}, { focus_handle: () => ({ focus() {} }), spawn: (task) => tasks.push(task) });
+  await tasks[0]({ notify() {} });
+  assert.equal(view.git, "linked");
+  assert.deepEqual(asked, ["/wt", "/wt"]);
+  const menu = plain(module.items({ tab: "pane", target }, view.git));
+  assert.ok(menu.some(([label]) => label === "Space: feat"));
+  assert.ok(menu.some(([label, , args]) => label === "Remove worktree" && args.space === "s2"));
+});
+
+test("Resume needs a saved folder; history stays available and the explanation does nothing", async () => {
+  const commands = [],
+    overlays = [],
+    closed = [];
+  const target = { terminal: "t9", name: "fix tabs", app: "codex" };
+  const module = await load({
+    props: () => ({ tab: "closed", overlay: "menu-1", target }),
+    run: (...args) => commands.push(plain(args)),
+    openOverlay: (spec) => overlays.push(plain(spec)),
+    closeOverlay: (id) => closed.push(id),
+    theme: () => ({}),
+  });
+  for (const cwd of [undefined, ""]) {
+    const menu = plain(module.items({ tab: "closed", target: { ...target, cwd } }, null));
+    assert.deepEqual(
+      menu.map(([label, command]) => [label, command]),
+      [
+        ["View history", "history"],
+        ["Resume unavailable: no saved folder", "note"],
+        ["Forget history…", "forget-history"],
+      ],
+    );
+  }
+  const view = new module.default();
+  view.init({}, { focus_handle: () => ({ focus() {} }), spawn() {} });
+  view.choose(1, {} as Parameters<typeof view.choose>[1]);
+  assert.deepEqual([commands, closed], [[], []]);
+  // The keys pass over the explanation.
+  press(view, "down", "enter");
+  assert.equal(overlays[0].props.command.name, "frantss.forget-history:t9");
+  press(view, "up", "enter");
+  assert.equal(commands.at(-1)[0], "space.new");
+  assert.deepEqual(commands.at(-1)[1].argv, ["hc", "read", "t9", "--lines", "100000"]);
+});
+
+test("the keyboard keeps the selected item when git adds worktree items above Close", async () => {
+  const commands = [];
+  const tasks = [];
+  const module = await load({
+    props: () => ({ tab: "space", target: { id: "s1" } }),
+    spaces: () => [{ id: "s1", folder: "/repo", tabs: [] }],
+    exec: async (_command, args) => ({
+      code: 0,
+      stdout: args[1] === "--show-toplevel" ? "/repo\n" : "/repo/.git\n",
+    }),
+    run: (...args) => commands.push(plain(args)),
+    theme: () => ({}),
+  });
+  const view = new module.default();
+  view.init({}, { focus_handle: () => ({ focus() {} }), spawn: (task) => tasks.push(task) });
+  scrolled.length = 0;
+  press(view, "end");
+  await tasks[0]({ notify() {} });
+  assert.equal(view.git, "main");
+  press(view, "enter");
+  assert.deepEqual(commands, [["space.close", { id: "s1" }]]);
+  press(view, "home", "down", "space");
+  assert.deepEqual(commands.at(-1), ["tab.new", { space: "s1" }]);
+  press(view, "up", "up", "enter");
+  assert.deepEqual(commands.at(-1), ["space.close", { id: "s1" }], "Up wraps to the last item");
+  // Each move brings its item on screen, at its place in the list git grew: Close moved from 2 to 4.
+  assert.deepEqual(scrolled, [2, 0, 1, 0, 4]);
+});
+
+test("a tab's menu, and a lone pane's, settle or restore the tab; a split pane's does not", async () => {
+  for (const settled of [false, true]) {
+    const tab = { id: "tab1", name: "Work", named: true, settled };
+    const module = await load({
+      spaces: () => [{ id: "s1", tabs: [tab] }],
+      panes: () => [{ pane: "p1", tab: "tab1" }],
+    });
+    const expected = settled
+      ? ["Restore tab", "tab.unsettle", { id: "tab1" }]
+      : ["Settle tab", "tab.settle", { id: "tab1" }];
+    for (const menu of [
+      module.items({ tab: "tab", target: { id: "tab1", space: "s1", name: "Work" } }, null),
+      module.items({ tab: "pane", target: { pane: "p1" } }, null),
+    ])
+      assert.deepEqual(
+        plain(menu.find(([, command]) => command.startsWith("tab.") && command.includes("settle"))),
+        expected,
+      );
+  }
+  const split = await load({
+    spaces: () => [{ id: "s1", tabs: [{ id: "tab1", settled: false }] }],
+    panes: () => [
+      { pane: "p1", tab: "tab1" },
+      { pane: "p2", tab: "tab1" },
+    ],
+  });
+  assert.ok(
+    !split
+      .items({ tab: "pane", target: { pane: "p1" } }, null)
+      .some(([, command]) => command === "tab.settle"),
+  );
+});
+
 test("a space's menu opens a new tab in it, worktrees included", async () => {
   const menu = JSON.parse(
     JSON.stringify((await load()).items({ tab: "space", target: { id: "s1" } }, "linked")),
@@ -371,16 +613,7 @@ test("a live terminal without a pane gets the agent actions and can be kept as a
   const menu = await terminalMenu({ terminal: "t2" });
   assert.deepEqual(
     menu.map(([, command]) => command),
-    [
-      "terminal.peek",
-      "terminal.pin",
-      "reply",
-      "interrupt",
-      "copy",
-      "copy",
-      "kill",
-      "terminal.keep",
-    ],
+    ["terminal.peek", "terminal.pin", "reply", "copy", "copy", "kill", "terminal.keep"],
   );
 });
 

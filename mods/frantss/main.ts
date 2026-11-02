@@ -1,12 +1,4 @@
-import type {
-  Context,
-  AsyncContext,
-  Element,
-  ClickEvent,
-  MouseButtonEvent,
-  Task,
-  FocusHandle,
-} from "gpui-kit";
+import type { Context, AsyncContext, Element, KeyEvent, Task, FocusHandle } from "gpui-kit";
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import {
@@ -22,7 +14,6 @@ import {
   shared,
   setShared,
   pickFolder,
-  knownAgents,
   hc,
   nextCommand,
   notify,
@@ -88,15 +79,16 @@ import {
   type RemovalTarget,
   type RemovalPlan,
 } from "./worktree-removal.ts";
+import { refreshAgents } from "./known-agents.ts";
+import { savedWorkspaces, WORKSPACES, type SavedWorkspace } from "./workspaces.ts";
+import { spaceName } from "./space-names.ts";
 
 type Theme = Record<string, `#${string}`>;
-type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
 type RepositoryLookup = {
   repo: string | null;
   top: string | null;
   checkout: "main" | "linked" | null;
 };
-type SavedWorkspace = { folder: string };
 type NamedWorkspace = SavedWorkspace & { key: string; repo: boolean; name: string };
 type SpaceGroup = {
   key: string;
@@ -126,11 +118,10 @@ type RailRow = {
   tail?: Element;
   value?: string | Element;
   end?: Element;
-  onClick?: (event: ClickEvent, cx: Context) => unknown;
   activate?: (cx: Context) => unknown;
   focus?: FocusHandle;
   controlFocus?: FocusHandle[];
-  onMenu?: (event: MouseButtonEvent, cx: Context) => unknown;
+  onMenu?: () => unknown;
   // Controls shown in place of `value` and `end` while the row is hovered.
   hoverEnd?: Element;
   collapsed?: boolean;
@@ -208,6 +199,14 @@ const menu = (tab: string, target: Record<string, unknown>) =>
     height: 440,
     props: { tab, target },
   });
+const openThread = (target: Record<string, unknown>) =>
+  openOverlay({
+    mod: "frantss-thread",
+    kind: "popup",
+    width: 260,
+    height: 420,
+    props: target,
+  });
 
 // A space's or tab's status dot, only when something in it is going on.
 const statusDot = (t: Theme, status: string) =>
@@ -250,19 +249,6 @@ function discoverRepository(key: string): Promise<RepositoryLookup> {
   return lookup;
 }
 
-// The workspaces you added, kept in shared state (persisted, and the workspace menu changes it):
-// [{ folder }], folders on this machine. They stay in the rail when none of their spaces is open.
-const WORKSPACES = "frantss.workspaces";
-const savedWorkspaces = () => (shared(WORKSPACES) as SavedWorkspace[] | null) ?? [];
-// The agents each machine has ("" for this one), as frantss-new-menu and frantss-thread keep them; the
-// rail fills it when it starts, so those open with a fresh list.
-const AGENTS = "frantss.agents";
-async function refreshAgents(machine: string) {
-  const found = await knownAgents({ on: machine || null });
-  const known = (shared(AGENTS) as Record<string, KnownAgent[]> | null) ?? {};
-  if (JSON.stringify(found) !== JSON.stringify(known[machine]))
-    setShared(AGENTS, { ...known, [machine]: found });
-}
 const folderKey = (folder: string) => JSON.stringify([null, folder]);
 // Each space's workspace key, published by the rail for other panels (the agent graph's Workspace filter).
 const SPACE_WORKSPACES = "frantss.spaceWorkspaces";
@@ -332,17 +318,18 @@ const slugify = (text: string) =>
     .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "");
 
-// A space you named shows that name; else its branch, else Herdr's name for it (its repo or folder).
-const spaceName = (s: SpaceInfo) => (s.named ? s.name : (s.branch ?? s.name));
-
 export default class Frantss extends View {
   subscriptionUsage = new SubscriptionUsage();
   movingTabs = new Set<string>();
   checkoutRoots: Record<string, string | null> = {};
   openingWorktrees = new Set<string>();
-  worktreeFocus = new Map<string, FocusHandle>();
-  usedWorktreeFocus = new Set<string>();
-  syncingWorktreeFocus = false;
+  railFocus = new Map<string, FocusHandle>();
+  usedRailFocus = new Set<string>();
+  syncingRailFocus = false;
+  railOrder: string[] = [];
+  previousRailOrder: string[] = [];
+  rowControls = new Map<string, FocusHandle[]>();
+  railRole = false;
   removingWorktrees = new Set<string>();
   checkingRemoval = new Set<string>();
   pendingRemoval: { token: string; target: RemovalTarget } | null = null;
@@ -625,8 +612,8 @@ export default class Frantss extends View {
   // picker in its folder, or ask to forget its retained terminal history.
   closedRow(t: Theme, record: AgentRecord, now: number): RailRow {
     const text = (record.title ?? record.program?.name ?? "agent").toLowerCase();
-    const resume = resumeArgv(record.app);
-    const prChip = this.prChip(t, record.address);
+    const resume = record.cwd ? resumeArgv(record.app) : null;
+    const prChip = this.prChip(t, record.address, `closed-${record.address}`);
     return {
       id: `closed-${record.address}`,
       dim: true,
@@ -648,6 +635,9 @@ export default class Frantss extends View {
             ),
           ),
         )
+        .when(!record.cwd && Boolean(resumeArgv(record.app)), (e) =>
+          e.child(div().text_size(10).text_color(t.dim).child("No resume folder")),
+        )
         .child(
           this.control(
             t,
@@ -657,7 +647,7 @@ export default class Frantss extends View {
             () => confirmForgetHistory(record.address, text),
           ),
         ),
-      onClick: () => openAgentTab(record.cwd, historyArgv(record.address), `${text} history`),
+      activate: () => openAgentTab(record.cwd, historyArgv(record.address), `${text} history`),
       onMenu: () =>
         menu("closed", {
           terminal: record.address,
@@ -776,30 +766,81 @@ export default class Frantss extends View {
     });
   }
 
-  worktreeFocusHandle(id: string) {
-    this.usedWorktreeFocus.add(id);
-    return this.worktreeFocus.get(id);
+  railFocusHandle(id: string) {
+    this.usedRailFocus.add(id);
+    return this.railFocus.get(id);
   }
 
-  syncWorktreeFocus(cx: Context) {
+  syncRailFocus(cx: Context) {
     if (
-      this.syncingWorktreeFocus ||
-      (this.worktreeFocus.size === this.usedWorktreeFocus.size &&
-        [...this.usedWorktreeFocus].every((id) => this.worktreeFocus.has(id)))
+      this.syncingRailFocus ||
+      (this.railFocus.size === this.usedRailFocus.size &&
+        [...this.usedRailFocus].every((id) => this.railFocus.has(id)))
     )
       return;
-    this.syncingWorktreeFocus = true;
+    this.syncingRailFocus = true;
     cx.timer.after(0, (cx) => {
-      for (const [id, handle] of this.worktreeFocus) {
-        if (this.usedWorktreeFocus.has(id)) continue;
+      let fallback: string | undefined;
+      for (const [id, handle] of this.railFocus) {
+        if (this.usedRailFocus.has(id)) continue;
+        if (handle.is_focused()) {
+          const index = this.previousRailOrder.indexOf(id);
+          fallback = this.railOrder[Math.max(0, Math.min(index, this.railOrder.length - 1))];
+        }
         handle.release();
-        this.worktreeFocus.delete(id);
+        this.railFocus.delete(id);
       }
-      for (const id of this.usedWorktreeFocus)
-        if (!this.worktreeFocus.has(id)) this.worktreeFocus.set(id, cx.focus_handle());
-      this.syncingWorktreeFocus = false;
+      for (const id of this.usedRailFocus)
+        if (!this.railFocus.has(id)) this.railFocus.set(id, cx.focus_handle());
+      if (fallback) this.railFocus.get(fallback)?.focus();
+      this.syncingRailFocus = false;
       cx.notify();
     });
+  }
+
+  keyboard(
+    element: Element,
+    t: Theme,
+    id: string,
+    label: string,
+    activate: (cx: Context) => unknown,
+    onMenu?: () => unknown,
+    collapsed?: boolean,
+  ) {
+    this.railOrder.push(id);
+    const handle = this.railFocusHandle(id);
+    return element
+      .role("button")
+      .tab_index(0)
+      .accessibility_label(
+        collapsed === undefined ? label : `${label}, ${collapsed ? "collapsed" : "expanded"}`,
+      )
+      .when(Boolean(handle), (e) => e.track_focus(handle))
+      .focus((e) => e.bg(t.selected).border_1().border_color(t.accent))
+      .on_key_down((event: KeyEvent, cx) => {
+        if (!this.railFocus.get(id)?.is_focused()) return;
+        const key = event.key;
+        const index = this.railOrder.indexOf(id);
+        if (key === "up" || key === "down" || key === "home" || key === "end") {
+          const next =
+            key === "home"
+              ? 0
+              : key === "end"
+                ? this.railOrder.length - 1
+                : Math.max(0, Math.min(this.railOrder.length - 1, index + (key === "up" ? -1 : 1)));
+          this.railFocus.get(this.railOrder[next])?.focus();
+        } else if (onMenu && (key === "menu" || event.keystroke === "shift-f10")) onMenu();
+        else if (
+          key === "enter" ||
+          key === "space" ||
+          (collapsed !== undefined &&
+            ((key === "left" && !collapsed) || (key === "right" && collapsed)))
+        )
+          activate(cx);
+        else return;
+        cx.stop_propagation();
+        cx.notify();
+      });
   }
 
   newWorktreeThread(tree: Worktree, key: string) {
@@ -810,12 +851,13 @@ export default class Frantss extends View {
     const [machine] = JSON.parse(key);
     const { open, normalize } = this.worktreeSpaces(key, workspaceSnapshot());
     const existing = open.get(normalize(tree.path));
-    openOverlay({
-      mod: "frantss-thread",
-      kind: "popup",
-      width: 260,
-      height: 420,
-      props: { folder: tree.path, machine, space: existing?.id, repo: false },
+    openThread({
+      folder: tree.path,
+      machine,
+      space: existing?.id,
+      repo: false,
+      targetLabel: "This checkout",
+      checkout: tree.main ? "main" : "linked",
     });
   }
 
@@ -1165,7 +1207,6 @@ export default class Frantss extends View {
       tail,
       value,
       end,
-      onClick,
       activate,
       focus,
       controlFocus,
@@ -1176,9 +1217,13 @@ export default class Frantss extends View {
       flush,
     }: RailRow,
   ) {
+    focus ??= activate ? this.railFocusHandle(id) : undefined;
     const hovered =
       Boolean(hoverEnd) &&
-      (this.hovered === id || focus?.is_focused() || controlFocus?.some((h) => h?.is_focused()));
+      (this.hovered === id ||
+        focus?.is_focused() ||
+        controlFocus?.some((h) => h?.is_focused()) ||
+        this.rowControls.get(id)?.some((handle) => handle.is_focused()));
     return (
       h_flex()
         .id(id)
@@ -1197,26 +1242,18 @@ export default class Frantss extends View {
         .text_color(current || lit ? t.foreground : dim ? t.dim : t.muted)
         .when(Boolean(current), (e) => e.bg(t.selected))
         .when(!current, (e) => e.hover((s) => s.bg(t.hover).text_color(t.foreground)))
-        .when(Boolean(activate || onClick), (e) =>
-          e.on_click(activate ? (_event, cx) => activate(cx) : onClick),
-        )
-        .when(Boolean(focus), (e) => e.track_focus(focus))
         .when(Boolean(activate), (e) =>
-          e
-            .tab_index(0)
-            .accessibility_label(text)
-            .focus((s) =>
-              s.bg(t.selected).text_color(t.foreground).border_1().border_color(t.accent),
-            )
-            .on_key_down((event, cx) => {
-              if (focus && !focus.is_focused()) return;
-              if (event.key === "enter" || event.key === "space") {
-                cx.stop_propagation();
-                activate(cx);
-              }
-            }),
+          this.keyboard(
+            e.on_click((_event, cx) => activate(cx)),
+            t,
+            id,
+            text,
+            activate,
+            onMenu,
+            collapsed,
+          ),
         )
-        .when(Boolean(onMenu), (e) => e.on_mouse_down("right", onMenu))
+        .when(Boolean(onMenu), (e) => e.on_mouse_down("right", () => onMenu()))
         .when(Boolean(hoverEnd), (e) =>
           e.on_hover((over, cx) => {
             if (over) this.hovered = id;
@@ -1276,6 +1313,10 @@ export default class Frantss extends View {
       collapsed,
     }: Omit<RailSection, "rows"> & { collapsed: boolean },
   ) {
+    const activate = (cx: Context) => {
+      toggleCollapsed(id);
+      if (id === "spaces") this.refreshWorktrees(cx);
+    };
     return h_flex()
       .id(`header-${id}`)
       .left(0)
@@ -1285,10 +1326,8 @@ export default class Frantss extends View {
       .gap(8)
       .items_center()
       .cursor_pointer()
-      .on_click((_event, cx) => {
-        toggleCollapsed(id);
-        if (id === "spaces") this.refreshWorktrees(cx);
-      })
+      .when(true, (e) => this.keyboard(e, t, `header-${id}`, title, activate, undefined, collapsed))
+      .on_click((_event, cx) => activate(cx))
       .child(chevron(t, collapsed))
       .child(
         div()
@@ -1305,8 +1344,18 @@ export default class Frantss extends View {
   }
 
   // A small "+" in the rail; it doesn't select the row it sits on.
-  plus(t: Theme, id: string, tooltip: string, onClick: (cx: Context) => unknown) {
-    return this.control(t, id, tooltip, "+", onClick);
+  plus(t: Theme, id: string, tooltip: string, onClick: (cx: Context) => unknown, owner?: string) {
+    return this.control(t, id, tooltip, "+", onClick, owner);
+  }
+
+  controlHandle(id: string, owner?: string) {
+    const focus = this.railRole ? this.railFocusHandle(id) : undefined;
+    if (owner && focus) {
+      const controls = this.rowControls.get(owner);
+      if (controls) controls.push(focus);
+      else this.rowControls.set(owner, [focus]);
+    }
+    return focus;
   }
 
   // A small control at a rail row's end, in the +'s column; it doesn't select the row it sits on.
@@ -1316,25 +1365,48 @@ export default class Frantss extends View {
     tooltip: string,
     label: Element | string,
     onClick: (cx: Context) => unknown,
+    owner?: string,
   ) {
+    const focus = this.controlHandle(id, owner);
     return button(id, label, onClick, {
       variant: "quiet",
       size: "dense",
       square: true,
       tooltip,
-    }).text_color(t.dim);
+    })
+      .text_color(t.dim)
+      .when(Boolean(focus), (e) => e.track_focus(focus));
   }
 
   // An agent's open pull requests as one chip in their most urgent state's color, from what the
   // GitHub mod shares. Clicking it shows them in the GitHub panel.
-  prChip(t: Theme, address: string) {
+  prChip(t: Theme, address: string, owner = `agent-${address}`) {
     const all = (shared(AGENT_PRS) as Record<string, AgentPr[]> | null)?.[address] ?? [];
     const prs = all.filter(isOpen),
       state = mostUrgentPr(prs);
     if (!state) return null;
     const { label, color } = PR_STATES[state];
-    return h_flex()
-      .id(`prs-${address}`)
+    const focus = this.controlHandle(`prs-${address}`, owner);
+    return button(
+      `prs-${address}`,
+      h_flex()
+        .gap(4)
+        .items_center()
+        .child(
+          div()
+            .size(6)
+            .rounded(3)
+            .flex_none()
+            .bg(t[color] ?? t.dim),
+        )
+        .child(`${prs.length} PR${prs.length > 1 ? "s" : ""}`),
+      () => showAgentPrs(address),
+      {
+        variant: "quiet",
+        size: "dense",
+        tooltip: `${prs.length} open pull requests, ${label}. Show in GitHub`,
+      },
+    )
       .h(16)
       .px(5)
       .gap(4)
@@ -1349,18 +1421,7 @@ export default class Frantss extends View {
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .tooltip(`${label}. Show in GitHub`)
       .accessibility_label(`${prs.length} open pull requests, ${label}`)
-      .on_click((_event, cx) => {
-        cx.stop_propagation();
-        showAgentPrs(address);
-      })
-      .child(
-        div()
-          .size(6)
-          .rounded(3)
-          .flex_none()
-          .bg(t[color] ?? t.dim),
-      )
-      .child(`${prs.length} PR${prs.length > 1 ? "s" : ""}`);
+      .when(Boolean(focus), (e) => e.track_focus(focus));
   }
 
   // An agent row's hover controls: peek, and interrupt while it works, then its PR chip, which
@@ -1371,8 +1432,13 @@ export default class Frantss extends View {
       .gap(4)
       .items_center()
       .child(
-        this.control(t, `peek-${a.address}`, "Peek", svg("mods/github/eye.svg").size(10), () =>
-          run("terminal.peek", { terminal: a.address }),
+        this.control(
+          t,
+          `peek-${a.address}`,
+          "Peek",
+          svg("mods/github/eye.svg").size(10),
+          () => run("terminal.peek", { terminal: a.address }),
+          `agent-${a.address}`,
         ),
       )
       .when(a.status === "working", (e) =>
@@ -1383,6 +1449,7 @@ export default class Frantss extends View {
             "Interrupt",
             svg("mods/workspace-chrome/square.svg").size(10),
             (cx) => cx.spawn(() => hcOrToast(["interrupt", a.address], "Could not interrupt")),
+            `agent-${a.address}`,
           ),
         ),
       )
@@ -1406,7 +1473,10 @@ export default class Frantss extends View {
   }
 
   rail(t: Theme, list: AgentInfo[], snapshot: WorkspaceSnapshot, cx: Context) {
-    this.usedWorktreeFocus.clear();
+    this.usedRailFocus.clear();
+    this.previousRailOrder = this.railOrder;
+    this.railOrder = [];
+    this.rowControls.clear();
     const all = snapshot.spaces;
     const groups = [
       { status: "pinned", label: "Pinned", agents: list.filter((a) => a.pinned) },
@@ -1425,7 +1495,10 @@ export default class Frantss extends View {
     // than one pane lists its panes under it. A space with one tab of one pane stands for that tab: it
     // shows its name and program, takes the marker and has nothing to close.
     const tabPanes = (tab: TabInfo) => snapshot.panesByTab.get(tab.id) ?? [];
-    const standsForTab = (s: SpaceInfo) => s.tabs.length === 1 && tabPanes(s.tabs[0]).length < 2;
+    const folded = (tab: TabInfo) =>
+      tab.settled && tab.status !== "blocked" && tab.status !== "done";
+    const standsForTab = (s: SpaceInfo) =>
+      s.tabs.length === 1 && !folded(s.tabs[0]) && tabPanes(s.tabs[0]).length < 2;
     const collapsed = collapsedIds();
     const spaceClosed = (s: SpaceInfo) =>
       collapsed.includes(`space:${s.id}:closed`) ||
@@ -1503,11 +1576,22 @@ export default class Frantss extends View {
         .child(tail)
         .child(dotted ?? div().w(6 + 8 + PLUS_WIDTH));
     };
-    const paneMenu = (pane: PaneInfo) => menu("pane", { pane: pane.pane, terminal: pane.terminal });
-    const tabMenu = (s: SpaceInfo, tab: TabInfo) => {
+    const paneMenu = (pane: PaneInfo, space?: SpaceInfo) =>
+      menu("pane", {
+        pane: pane.pane,
+        terminal: pane.terminal,
+        ...(space
+          ? {
+              space: space.id,
+              spaceName: spaceName(space),
+              checkout: this.checkouts?.[snapshot.placeBySpace.get(space.id)],
+            }
+          : {}),
+      });
+    const tabMenu = (s: SpaceInfo, tab: TabInfo, parentSpace = false) => {
       const panes = tabPanes(tab);
       return panes.length === 1
-        ? paneMenu(panes[0])
+        ? paneMenu(panes[0], parentSpace ? s : undefined)
         : menu("tab", { id: tab.id, space: s.id, name: tabName(tab, panes, s) });
     };
     const spaceRow = (s: SpaceInfo): RailRow => ({
@@ -1519,28 +1603,62 @@ export default class Frantss extends View {
       // Hovered, its + starts a thread as a new tab in this space (no repo: no Worktree choice).
       hoverEnd: spaceEnd(
         s,
-        newThread(`tab-${s.id}`, {
-          space: s.id,
-          folder: snapshot.cwdBySpace.get(s.id),
-          machine: s.machine,
-        }),
+        newThread(
+          `tab-${s.id}`,
+          {
+            space: s.id,
+            folder: snapshot.cwdBySpace.get(s.id),
+            machine: s.machine,
+            targetLabel: "This checkout",
+            checkout: this.checkouts?.[snapshot.placeBySpace.get(s.id)],
+          },
+          `space-${s.id}`,
+        ),
       ),
       collapsed: standsForTab(s) ? undefined : spaceClosed(s),
       text: spaceText(s),
-      onClick: () => (standsForTab(s) ? run("space.select", { id: s.id }) : toggleSpace(s)),
+      activate: () => (standsForTab(s) ? run("space.select", { id: s.id }) : toggleSpace(s)),
       onMenu: () =>
         standsForTab(s)
-          ? tabMenu(s, s.tabs[0])
+          ? tabMenu(s, s.tabs[0], true)
           : menu("space", {
               id: s.id,
               name: spaceName(s),
               checkout: this.checkouts?.[snapshot.placeBySpace.get(s.id)],
             }),
     });
-    const tabRows = (s: SpaceInfo): RailRow[] =>
-      standsForTab(s) || spaceClosed(s)
-        ? []
-        : s.tabs.flatMap((tab) => [tabRow(s, tab), ...paneRows(s, tab)]);
+    const tabRows = (s: SpaceInfo): RailRow[] => {
+      if (standsForTab(s) || spaceClosed(s)) return [];
+      const rows = s.tabs
+        .filter((tab) => !folded(tab))
+        .flatMap((tab) => [tabRow(s, tab), ...paneRows(s, tab)]);
+      const settled = s.tabs.filter(folded);
+      if (!settled.length) return rows;
+      const key = `settled:${s.id}`;
+      const open = collapsed.includes(key);
+      rows.push({
+        id: `settled-${s.id}`,
+        text: `${settled.length} settled tab${settled.length === 1 ? "" : "s"}`,
+        indent: 14,
+        dim: true,
+        collapsed: !open,
+        activate: () => toggleCollapsed(key),
+      });
+      if (open)
+        for (const tab of settled) {
+          rows.push({
+            ...tabRow(s, tab),
+            id: `settled-tab-${tab.id}`,
+            indent: 28,
+            dim: true,
+            current: false,
+            end: this.control(t, `restore-tab-${tab.id}`, "Restore tab", "↩", () =>
+              run("tab.unsettle", { id: tab.id }),
+            ),
+          });
+        }
+      return rows;
+    };
     const split = (tab: TabInfo) => tabPanes(tab).length > 1;
     const tabRow = (s: SpaceInfo, tab: TabInfo): RailRow => ({
       id: `tab-${tab.id}`,
@@ -1550,7 +1668,7 @@ export default class Frantss extends View {
       lead: programIcon(t, snapshot.leadByTab.get(tab.id)?.program),
       end: dotEnd(tab.status),
       text: tabName(tab, tabPanes(tab), s),
-      onClick: () => run("tab.select", { id: tab.id }),
+      activate: () => run("tab.select", { id: tab.id }),
       onMenu: () => tabMenu(s, tab),
     });
     const paneRows = (s: SpaceInfo, tab: TabInfo): RailRow[] =>
@@ -1562,7 +1680,7 @@ export default class Frantss extends View {
         lead: programIcon(t, pane.program),
         end: dotEnd(pane.status),
         text: paneName(pane),
-        onClick: () => run("pane.focus", { pane: pane.pane }),
+        activate: () => run("pane.focus", { pane: pane.pane }),
         onMenu: () => paneMenu(pane),
       }));
     const withTabs = (s: SpaceInfo) => [spaceRow(s), ...tabRows(s)];
@@ -1570,16 +1688,8 @@ export default class Frantss extends View {
     // you closed it. Clicking opens or closes it; its + (on hover, as on space rows) starts a thread
     // (frantss-thread) in its own checkout (not one of Herdr's worktrees), else its first space; its
     // menu keeps or removes it (frantss-workspace).
-    const newThread = (key: string, target: Record<string, unknown>) =>
-      this.plus(t, `new-${key}`, "New thread", () =>
-        openOverlay({
-          mod: "frantss-thread",
-          kind: "popup",
-          width: 260,
-          height: 420,
-          props: target,
-        }),
-      );
+    const newThread = (key: string, target: Record<string, unknown>, owner: string) =>
+      this.plus(t, `new-${key}`, "New thread", () => openThread(target), owner);
     const workspaceMenu = (folder: string, saved: boolean) =>
       openOverlay({
         mod: "frantss-workspace",
@@ -1589,7 +1699,7 @@ export default class Frantss extends View {
         props: { folder, saved },
       });
     const ownCheckout = (g: SpaceGroup) =>
-      g.spaces.find((s) => !snapshot.cwdBySpace.get(s.id)?.includes("/.herdr/worktrees/")) ??
+      g.spaces.find((s) => this.checkouts?.[snapshot.placeBySpace.get(s.id)] === "main") ??
       g.spaces[0];
     const workspaceClosed = (g: SpaceGroup) => collapsed.includes(`workspace:${g.key}`);
     // A workspace's letter in its color on a tint of it, like the rail's other marks.
@@ -1612,6 +1722,8 @@ export default class Frantss extends View {
         .child(name.slice(0, 1).toUpperCase() || "?");
     const groupRow = (g: SpaceGroup, saved: NamedWorkspace): RailRow => {
       const s = ownCheckout(g);
+      const place = snapshot.placeBySpace.get(s.id);
+      const checkout = this.checkouts?.[place];
       const status = mostUrgent(g.spaces.map((space) => space.status));
       return {
         id: `group-${g.key}`,
@@ -1623,19 +1735,32 @@ export default class Frantss extends View {
         end: dotEnd(status),
         hoverEnd: dotEnd(
           status,
-          newThread(g.key, {
-            space: s.id,
-            folder: snapshot.cwdBySpace.get(s.id),
-            machine: s.machine,
-            repo: g.repo,
-          }),
+          newThread(
+            g.key,
+            {
+              space: s.id,
+              folder: this.checkoutRoots[place] ?? snapshot.cwdBySpace.get(s.id),
+              machine: s.machine,
+              repo: g.repo,
+              checkout,
+              targetLabel:
+                checkout === "main"
+                  ? "Main checkout"
+                  : checkout === "linked"
+                    ? "First open checkout (no main checkout open)"
+                    : "First open checkout (type not verified)",
+            },
+            `group-${g.key}`,
+          ),
         ),
-        onClick: (_event, cx) => {
+        activate: (cx) => {
           toggleCollapsed(`workspace:${g.key}`);
           this.refreshWorktrees(cx);
         },
         // Only folders on this machine can be kept (the folder picker's, and new spaces', machine).
-        onMenu: () => g.local && workspaceMenu(saved?.folder ?? g.folder, Boolean(saved)),
+        onMenu: g.local
+          ? () => workspaceMenu(saved?.folder ?? g.folder, Boolean(saved))
+          : undefined,
       };
     };
     // A saved workspace with nothing open: clicking opens a space in its folder.
@@ -1646,8 +1771,15 @@ export default class Frantss extends View {
       strong: true,
       lead: avatar(w.key, w.name, true),
       text: w.name,
-      hoverEnd: dotEnd("", newThread(w.key, { folder: w.folder, repo: w.repo })),
-      onClick: () => run("space.new", { folder: w.folder }),
+      hoverEnd: dotEnd(
+        "",
+        newThread(
+          w.key,
+          { folder: w.folder, repo: w.repo, targetLabel: "New space" },
+          `group-${w.key}`,
+        ),
+      ),
+      activate: () => run("space.new", { folder: w.folder, machine: "" }),
       onMenu: () => workspaceMenu(w.folder, true),
     });
     const open = this.spaceGroups(snapshot);
@@ -1674,9 +1806,9 @@ export default class Frantss extends View {
       }
       const refresh = (cx: Context) => this.refreshWorktrees(cx, g.key);
       const refreshId = `worktrees-refresh-${g.key}`;
-      const refreshFocus = this.worktreeFocusHandle(refreshId);
+      const refreshFocus = this.railFocusHandle(refreshId);
       const removeId = `worktrees-remove-all-${g.key}`;
-      const removeFocus = this.worktreeFocusHandle(removeId);
+      const removeFocus = this.railFocusHandle(removeId);
       const refreshControl = () =>
         this.control(
           t,
@@ -1689,7 +1821,7 @@ export default class Frantss extends View {
         {
           id: `worktrees-${g.key}`,
           lead: branchIcon(),
-          focus: this.worktreeFocusHandle(`worktrees-${g.key}`),
+          focus: this.railFocusHandle(`worktrees-${g.key}`),
           controlFocus: [refreshFocus, removeFocus],
           end: refreshControl(),
           hoverEnd: h_flex()
@@ -1734,7 +1866,7 @@ export default class Frantss extends View {
       for (const tree of unopened ?? []) {
         const id = `worktree-${JSON.stringify([g.key, tree.path])}`;
         const actions = ["open", "thread", ...(!tree.main ? ["remove"] : [])];
-        const handles = actions.map((action) => this.worktreeFocusHandle(`${id}-${action}`));
+        const handles = actions.map((action) => this.railFocusHandle(`${id}-${action}`));
         const open = this.control(
           t,
           `${id}-open`,
@@ -1747,7 +1879,7 @@ export default class Frantss extends View {
         ).when(Boolean(handles[1]), (e) => e.track_focus(handles[1]));
         rows.push({
           id,
-          focus: this.worktreeFocusHandle(id),
+          focus: this.railFocusHandle(id),
           controlFocus: handles,
           indent: 14,
           lead: branchIcon(),
@@ -1857,7 +1989,7 @@ export default class Frantss extends View {
                 ? this.contextMeter(t, this.context.usage)
                 : since(a),
             end: this.prChip(t, a.address),
-            onClick: () => run("agent.focus", { terminal: a.address }),
+            activate: () => run("agent.focus", { terminal: a.address }),
             onMenu: () => menu("pane", { pane: a.pane, terminal: a.address }),
             hoverEnd: this.agentControls(t, a),
           })),
@@ -1885,11 +2017,10 @@ export default class Frantss extends View {
       y += gap - RAIL.rowGap;
     }
 
-    this.syncWorktreeFocus(cx);
     this.marks ??= {};
     const chevron = (e: Element) =>
       e.left(12).h(RAIL.row).flex().items_center().text_size(12).text_color(t.accent).child("❯");
-    return v_flex()
+    const result = v_flex()
       .size_full()
       .child(
         v_flex()
@@ -1923,6 +2054,8 @@ export default class Frantss extends View {
       )
       .child(this.subscriptions(t, now))
       .child(this.footer(t));
+    this.syncRailFocus(cx);
+    return result;
   }
 
   // Subscription quota, pinned above the footer. Closed, its header shows each subscription's most used
@@ -1970,6 +2103,17 @@ export default class Frantss extends View {
           .gap(8)
           .items_center()
           .cursor_pointer()
+          .when(true, (e) =>
+            this.keyboard(
+              e,
+              t,
+              "header-usage",
+              "Usage",
+              () => toggleCollapsed("usage:open"),
+              undefined,
+              !open,
+            ),
+          )
           .on_click(() => toggleCollapsed("usage:open"))
           .accessibility_label(
             `Usage: ${summary.map((s) => `${s.name} ${s.value}`).join(", ")}. ${open ? "Collapse" : "Expand"}`,
@@ -2121,11 +2265,11 @@ export default class Frantss extends View {
 
   // Herdr's own sidebar footer, in the rail's row style: it stays below the scrolling sections.
   footer(t: Theme) {
-    const action = (id: string, icon: string, text: string, onClick: () => unknown): RailRow => ({
+    const action = (id: string, icon: string, text: string, activate: () => unknown): RailRow => ({
       id,
       text,
       lead: svg(`mods/workspace-chrome/${icon}.svg`).size(14).flex_none(),
-      onClick,
+      activate,
     });
     return v_flex()
       .flex_none()
@@ -2228,6 +2372,7 @@ export default class Frantss extends View {
   render(cx: Context) {
     const t = theme() as Record<string, `#${string}`>;
     const role = props()?.role;
+    this.railRole = role === "rail";
     if (role === "pane") return this.pane(t);
     const snapshot = workspaceSnapshot();
     if (role === "top") {

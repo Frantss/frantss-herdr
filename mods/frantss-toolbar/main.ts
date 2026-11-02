@@ -5,12 +5,12 @@ import { button as sharedButton } from "./button.ts";
 import { findNode, followedPlace, PANEL_MODS, type LayoutNode, type PanelId } from "./panel.ts";
 import { closeTab } from "./close-tab.ts";
 import { tabName } from "./pane-names.ts";
+import { rename, spaceName } from "./space-names.ts";
 import {
   spaces,
   panes,
   focused,
   run,
-  openOverlay,
   theme,
   window,
   shared,
@@ -33,24 +33,6 @@ const enabledPanels = () => [
   "git-history",
   "github",
 ];
-
-// The frantss rail's space name: the name you gave it, else its branch, else Herdr's.
-const spaceName = (s: SpaceInfo) => (s.named ? s.name : (s.branch ?? s.name));
-
-// Herdr's own rename prompt starts from the stored name (a number for an unnamed tab, the repo for an
-// unnamed space); this one starts from the name shown. `what`: "tab" or "space".
-const rename = (what: string, id: string, name: string) =>
-  openOverlay({
-    mod: "prompt",
-    kind: "dialog",
-    width: 400,
-    height: 190,
-    props: {
-      title: `rename ${what}`,
-      value: name,
-      command: { name: `${what}.rename`, args: { id } },
-    },
-  });
 
 export default class Toolbar extends View {
   declare panels: Record<string, string | null>;

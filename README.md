@@ -77,6 +77,12 @@ With Herdr's default macOS bindings, use Cmd+Option+Arrow to move between
 terminal panes and the visible Files, Changes, or Git History panel. These
 panels follow your `pane.go` bindings; the layout does not replace them.
 
+Tab into the rail to use Up/Down or Home/End between rows. Enter or Space activates
+the focused row; Left/Right closes or opens a disclosure. Shift+F10 opens its
+context menu. Thread, workspace, and context menus use Up/Down, Home/End, and
+Enter or Space to choose; Escape closes them. Keyboard selection stays visible
+when a menu scrolls or its choices finish loading.
+
 An agent's context menu offers **Pin** or **Unpin**. Pinned agents appear above
 the status groups in the rail, and agent navigation follows that order.
 **Mark as unread** and pins use Herdr's shared terminal state, so they follow
@@ -88,6 +94,21 @@ or **Rename tab** to name its tab. Pane names appear in the rail and pane header
 and persist in this Herdr installation. Clear a pane name to use the program's
 title again. An unnamed tab with one pane follows that pane's name; an explicit
 tab name stays separate. Pane names are removed when their panes close.
+
+A space shown as one pane keeps its pane actions and a separate **Space** group
+in its context menu. **Settle tab** puts a tab away without stopping its terminals.
+Expand its space's **settled tabs** row to restore it, or choose **Restore tab**
+from the tab's menu. A tab returns when an agent in it needs you or has unread
+output. Agents remain available in the attention groups.
+
+A workspace's **New thread** control uses an open main checkout identified by Git,
+including when other tools created the worktrees. With no main checkout open, it
+uses the first open checkout. The picker shows that choice, its folder, and its
+machine; a local thread starts in the displayed folder.
+
+**Recently closed** retains local agents. Selecting a record opens its terminal
+history. **Resume…** opens the provider's session picker in the saved folder, so
+it is unavailable when no folder was saved; history remains available.
 
 ## Other worktrees
 

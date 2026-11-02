@@ -2,32 +2,8 @@ import type { AsyncContext, FocusHandle, Element } from "gpui-kit";
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agentArgv } from "./agent-launch.ts";
-import {
-  theme,
-  spaces,
-  panes,
-  knownAgents,
-  run,
-  openOverlay,
-  closeOverlay,
-  props,
-  window,
-  shared,
-  setShared,
-} from "herdr";
-
-// The agents each machine has ("" for this one), kept in shared state (persisted) so this opens at once
-// with last time's list while it asks again; frantss-new-menu and frantss-thread share it.
-type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
-
-const AGENTS = "frantss.agents";
-async function refreshAgents(machine: string) {
-  const agents = await knownAgents({ on: machine || null });
-  const known = (shared(AGENTS) as Record<string, KnownAgent[]> | null) ?? {};
-  if (JSON.stringify(agents) !== JSON.stringify(known[machine]))
-    setShared(AGENTS, { ...known, [machine]: agents });
-  return agents;
-}
+import { cachedAgents, refreshAgents, type KnownAgent } from "./known-agents.ts";
+import { theme, spaces, panes, run, openOverlay, closeOverlay, props, window } from "herdr";
 
 export default class NewMenu extends View {
   declare agents: KnownAgent[];
@@ -35,7 +11,7 @@ export default class NewMenu extends View {
   declare failed: boolean;
   init(_props: unknown, cx: AsyncContext) {
     const machine = spaces().find((s) => s.active)?.machine ?? "";
-    this.agents = (shared(AGENTS) as Record<string, KnownAgent[]> | null)?.[machine] ?? [];
+    this.agents = cachedAgents(machine);
     this.handle = cx.focus_handle();
     this.handle.focus();
     cx.spawn(async (cx) => {

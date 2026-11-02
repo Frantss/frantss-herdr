@@ -1,51 +1,69 @@
-import type { AsyncContext, FocusHandle } from "gpui-kit";
+import type { AsyncContext, Context, FocusHandle } from "gpui-kit";
 // A workspace's menu in the frantss rail. Props: { folder, saved }. Keeping adds the folder to the
-// workspaces the rail remembers (shared "frantss.workspaces"); removing only forgets it, its spaces stay.
+// workspaces the rail remembers (workspaces.ts); removing only forgets it, its spaces stay. Keys as
+// in menu-list.ts.
 
-import { View, div } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { theme, run, closeOverlay, props, shared, setShared } from "herdr";
+import { View } from "gpui-kit";
+import { v_flex } from "gpui-base";
+import { theme, run, closeOverlay, props, setShared } from "herdr";
+import { savedWorkspaces, WORKSPACES, type SavedWorkspace } from "./workspaces.ts";
+import { listCommand, menuRow, selectedKey, separator } from "./menu-list.ts";
 
-type SavedWorkspace = { folder: string };
 type WorkspaceAction = (folder: string, list: SavedWorkspace[]) => unknown;
+type Choice = { key: string; label: string; action: WorkspaceAction };
 
-const WORKSPACES = "frantss.workspaces";
+const choices = (): Choice[] => [
+  { key: "new-space", label: "New space", action: (folder) => run("space.new", { folder }) },
+  props()?.saved
+    ? {
+        key: "remove",
+        label: "Remove workspace",
+        action: (folder, list) =>
+          setShared(
+            WORKSPACES,
+            list.filter((w) => w.folder !== folder),
+          ),
+      }
+    : {
+        key: "keep",
+        label: "Keep as workspace",
+        action: (folder, list) => setShared(WORKSPACES, [...list, { folder }]),
+      },
+];
 
 export default class Workspace extends View {
   declare handle: FocusHandle;
+  declare selected: string | null;
   init(_props: unknown, cx: AsyncContext) {
+    this.selected = null;
     this.handle = cx.focus_handle();
     this.handle.focus();
   }
 
   act(action: WorkspaceAction) {
     closeOverlay(props()?.overlay);
-    action(props()?.folder, (shared(WORKSPACES) as SavedWorkspace[] | null) ?? []);
-  }
-
-  // Like frantss-menu's rows: 24px, 3px corners, muted until hovered.
-  row(t: Record<string, `#${string}`>, id: string, text: string, action: WorkspaceAction) {
-    return h_flex()
-      .id(id)
-      .h(24)
-      .px(6)
-      .gap(8)
-      .rounded(3)
-      .items_center()
-      .flex_none()
-      .cursor_pointer()
-      .text_color(t.muted)
-      .hover((s) => s.bg(t.hover).text_color(t.foreground))
-      .on_click(() => this.act(action))
-      .child(div().w(10).flex_none())
-      .child(div().flex_1().min_w(0).truncate().child(text));
+    action(props()?.folder, savedWorkspaces());
   }
 
   render() {
     const t = theme() as Record<string, `#${string}`>;
+    const list = choices();
+    const keys = list.map((c) => c.key);
+    const selected = selectedKey(keys, this.selected);
+    const row = (c: Choice, i: number) =>
+      menuRow(t, {
+        id: c.key,
+        label: c.label,
+        selected: c.key === selected,
+        choose: () => this.act(c.action),
+        position: i + 1,
+        size: list.length,
+      });
     // A popup doesn't block presses: stop them before a click lands on what is behind it.
     return v_flex()
       .id("workspace")
+      .role("menu")
+      .accessibility_label("Workspace menu")
       .track_focus(this.handle)
       .w_full()
       .min_h(0)
@@ -54,22 +72,19 @@ export default class Workspace extends View {
       .text_size(12)
       .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
       .on_mouse_down("right", (_e, cx) => cx.stop_propagation())
-      .on_key_down((e) => {
-        if (e.key === "escape") closeOverlay(props()?.overlay);
+      .on_key_down((e, cx: Context) => {
+        const command = listCommand(e, keys, selected);
+        if (!command) return;
+        cx.stop_propagation();
+        if ("close" in command) closeOverlay(props()?.overlay);
+        else if ("choose" in command) this.act(list.find((c) => c.key === command.choose).action);
+        else {
+          this.selected = command.select;
+          cx.notify();
+        }
       })
-      .child(this.row(t, "new-space", "New space", (folder) => run("space.new", { folder })))
-      .child(div().h(1).mx(4).my(4).bg(t.border))
-      .child(
-        props()?.saved
-          ? this.row(t, "remove", "Remove workspace", (folder, list) =>
-              setShared(
-                WORKSPACES,
-                list.filter((w) => w.folder !== folder),
-              ),
-            )
-          : this.row(t, "keep", "Keep as workspace", (folder, list) =>
-              setShared(WORKSPACES, [...list, { folder }]),
-            ),
-      );
+      .child(row(list[0], 0))
+      .child(separator(t))
+      .child(row(list[1], 1));
   }
 }
