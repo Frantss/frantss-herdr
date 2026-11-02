@@ -33,7 +33,7 @@ import {
   type CoreTerminal,
 } from "./closed.ts";
 import { button } from "./button.ts";
-import { paneName, tabName, threadTitle } from "./tab-names.ts";
+import { paneName, tabName, threadTitle, prunePaneNames } from "./pane-names.ts";
 import { hcOrToast } from "./agent-hc.ts";
 import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
 import {
@@ -167,7 +167,7 @@ const menu = (tab: string, target: Record<string, unknown>) =>
     mod: "frantss-menu",
     kind: "popup",
     width: 320,
-    height: 380,
+    height: 440,
     props: { tab, target },
   });
 
@@ -1293,7 +1293,13 @@ export default class Frantss extends View {
             agent: true,
             text: named.has(a.tab)
               ? a.tab_name
-              : (threadTitle(a.title, a.program) ?? a.program.name).toLowerCase(),
+              : paneName(
+                  snapshot.panesByTab.get(a.tab)?.find((p) => p.pane === a.pane) ?? {
+                    pane: a.pane,
+                    title: a.title,
+                    program: a.program,
+                  },
+                ),
             tail: a.space_name ? agentTail(a) : undefined,
             value:
               a.focused && this.context?.address === a.address
@@ -1676,6 +1682,7 @@ export default class Frantss extends View {
       this.track(cx, space ? [snapshot.placeBySpace.get(space.id)] : []);
       return this.top(t, snapshot, space);
     }
+    prunePaneNames([...snapshot.panesByTab.values()].flat());
     this.track(cx, snapshot.placeBySpace.values());
     this.trackBranches(cx, snapshot.placeBySpace.values());
     this.publishWorkspaces(snapshot);

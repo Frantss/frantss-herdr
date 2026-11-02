@@ -399,7 +399,7 @@ export default class AgentGraph extends View {
       mod: "frantss-menu",
       kind: "popup",
       width: 320,
-      height: 380,
+      height: 440,
       props: pane
         ? { tab: "pane", target: { pane, terminal: k.address } }
         : { tab: "terminal", target: { terminal: k.address, cwd: k.cwd } },

@@ -37,6 +37,7 @@ async function harness() {
       agents: unused,
       spaces: unused,
       panes: unused,
+      machines: unused,
       props: unused,
       run: unused,
       theme: unused,

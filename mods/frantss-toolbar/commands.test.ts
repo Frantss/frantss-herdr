@@ -24,6 +24,7 @@ async function runShortcut({
   focus = { pane: "p2", tab: "t1" },
   active = true,
   tabs = [{ id: "t1", name: "Work", named: true, active: true }],
+  paneNames = {} as Record<string, string>,
 } = {}) {
   const commands: unknown[][] = [];
   const overlays: any[] = [];
@@ -43,7 +44,9 @@ async function runShortcut({
       nextCommand: async () => queue.shift() ?? new Promise<string>(() => {}),
       theme: unused,
       window: unused,
-      shared: unused,
+      shared: () => paneNames,
+      setShared: unused,
+      machines: unused,
       layout: unused,
       exec: unused,
       watchFolder: unused,
@@ -192,4 +195,19 @@ test("the tab close confirmation uses the split tab's branch when no pane has fo
   });
   assert.deepEqual(commands, []);
   assert.equal(overlays[0].props.title, "Close feature/Login?");
+});
+
+test("tab rename and close prompts use a lone pane's saved name", async () => {
+  for (const command of ["rename", "close-tab"]) {
+    const { overlays } = await runShortcut({
+      command,
+      panes: [{ pane: "p1", tab: "t1", terminal: "term1", focused: true, title: "Live title" }],
+      tabs: [{ id: "t1", name: "1", named: false, active: true }],
+      paneNames: { p1: "My PANE" },
+    });
+    assert.equal(
+      command === "rename" ? overlays[0].props.value : overlays[0].props.title,
+      command === "rename" ? "My PANE" : "Close My PANE?",
+    );
+  }
 });

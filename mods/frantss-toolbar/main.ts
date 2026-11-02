@@ -4,7 +4,7 @@ import { h_flex } from "gpui-base";
 import { button as sharedButton } from "./button.ts";
 import { findNode, followedPlace, PANEL_MODS, type LayoutNode, type PanelId } from "./panel.ts";
 import { closeTab } from "./close-tab.ts";
-import { tabName } from "./tab-names.ts";
+import { tabName } from "./pane-names.ts";
 import {
   spaces,
   panes,

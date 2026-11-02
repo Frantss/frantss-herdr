@@ -83,6 +83,12 @@ the status groups in the rail, and agent navigation follows that order.
 the agent across connected Herdr clients. Reading an agent on another client
 clears its shared unread status. Pins end when the terminal ends.
 
+Right-click a pane in the rail and choose **Rename pane** to give it a name,
+or **Rename tab** to name its tab. Pane names appear in the rail and pane headers
+and persist in this Herdr installation. Clear a pane name to use the program's
+title again. An unnamed tab with one pane follows that pane's name; an explicit
+tab name stays separate. Pane names are removed when their panes close.
+
 ## Agent usage
 
 The rail's **Usage** section shows Claude and Codex subscription quota consumed.

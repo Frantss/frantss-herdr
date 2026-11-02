@@ -173,6 +173,10 @@ async function harness(role = "rail") {
         });
       },
       agents: () => state.agents,
+      machines: () => [
+        { name: null, layout: "ready" },
+        { name: "build", layout: "ready" },
+      ],
       props: () => {
         state.propsCalls++;
         return { role: state.role, pane: state.pane };
@@ -403,6 +407,52 @@ test("Pi session names reach tab rows, pane headers, and agent rows", async () =
   h.state.role = "pane";
   h.state.pane = target.pane;
   assert.match(text(h.render()), /fix pi titles/);
+});
+
+test("pane aliases reach rail rows, agent rows, headers and breadcrumbs through splitting and clearing", async () => {
+  const h = await harness();
+  const target = h.state.panes.find((pane) => pane.tab === "t-cwd");
+  target.pane = "p-custom";
+  const names = { [target.pane]: "My PANE" };
+  h.state.shared.set("frantss.paneNames", names);
+  h.state.agents = [
+    {
+      address: "term1",
+      pane: target.pane,
+      tab: target.tab,
+      space: "primary",
+      program: agent,
+      title: "Original",
+      status: "idle",
+    },
+  ];
+  let tree = h.render();
+  assert.equal(text(byId(tree, "tab-t-cwd")), "My PANE");
+  assert.match(text(byId(tree, "agent-term1")), /^My PANE/);
+  target.title = "New live title";
+  assert.equal(text(byId(h.render(), "tab-t-cwd")), "My PANE");
+  h.state.role = "pane";
+  h.state.pane = target.pane;
+  assert.match(text(h.render()), /My PANE/);
+  h.state.role = "top";
+  h.state.spaces[1].tabs.forEach((tab) => {
+    tab.active = tab.id === target.tab;
+  });
+  assert.equal(text(byId(h.render(), "crumb-tab")), "my-pane");
+  h.state.role = "rail";
+  const added = pane(target.tab, "/project/live", "Second pane", shell);
+  h.state.panes.push(added);
+  tree = h.render();
+  assert.equal(text(byId(tree, "tab-t-cwd")), "main");
+  assert.equal(text(byId(tree, `pane-${target.pane}`)), "├My PANE");
+  h.state.panes = h.state.panes.filter((pane) => pane !== added);
+  assert.equal(text(byId(h.render(), "tab-t-cwd")), "My PANE");
+  h.state.shared.set("frantss.paneNames", {});
+  assert.equal(text(byId(h.render(), "tab-t-cwd")), "new live title");
+  h.state.panes = h.state.panes.filter((pane) => pane !== target);
+  h.state.shared.set("frantss.paneNames", names);
+  h.render();
+  assert.deepEqual(plain(h.state.shared.get("frantss.paneNames")), {});
 });
 
 test("rail lists a tab's panes under it when it has more than one", async () => {

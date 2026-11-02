@@ -14,17 +14,19 @@ async function load(overrides = {}, icons: string[] = []) {
   const context = vm.createContext({});
   const empty = () => {};
   const element = () => {
-    const node = new Proxy(
-      {},
-      {
-        get:
-          (_target, key) =>
-          (...args) => {
-            if (key === "when" && args[0]) args[1](node);
-            return node;
-          },
+    const state: any = { childNodes: [], handlers: {}, elementId: undefined };
+    const node = new Proxy(state, {
+      get: (target, key) => {
+        if (key in target) return target[key];
+        return (...args) => {
+          if (key === "when" && args[0]) args[1](node);
+          if (key === "child") state.childNodes.push(args[0]);
+          if (key === "id") state.elementId = args[0];
+          if (String(key).startsWith("on_")) state.handlers[key] = args.at(-1);
+          return node;
+        };
       },
-    );
+    });
     return node;
   };
   const natives: Record<string, Record<string, unknown>> = {
@@ -36,7 +38,26 @@ async function load(overrides = {}, icons: string[] = []) {
         return element();
       },
     },
-    "gpui-base": { v_flex: element, h_flex: element },
+    "gpui-base": {
+      v_flex: element,
+      h_flex: element,
+      Button: { new: (id) => element().id(id) },
+      Input: { new: element },
+      InputState: {
+        new: ({ value }) => ({
+          text: value,
+          handlers: {} as Record<string, () => void>,
+          value() {
+            return this.text;
+          },
+          set_selected_range() {},
+          focus() {},
+          on(event, callback) {
+            this.handlers[event] = callback;
+          },
+        }),
+      },
+    },
     herdr: {
       run: empty,
       props: empty,
@@ -53,6 +74,8 @@ async function load(overrides = {}, icons: string[] = []) {
       exec: empty,
       shared: empty,
       setShared: empty,
+      settings: () => ({}),
+      machines: () => [{ name: null, layout: "ready" }],
       ...overrides,
     },
   };
@@ -84,6 +107,107 @@ const paneMenu = async (terminal: string) =>
   JSON.parse(
     JSON.stringify((await load()).items({ tab: "pane", target: { pane: "p1", terminal } }, null)),
   ) as [string, string, Record<string, string>][];
+
+test("a clicked pane offers separate pane and tab rename actions without selecting it", async () => {
+  for (const prefix of ["", "remote/"]) {
+    const pane = { pane: `${prefix}p2`, tab: `${prefix}tab2`, title: "Clicked" };
+    const target = { pane: pane.pane, terminal: `${prefix}t2` };
+    const overlays = [];
+    const module = await load({
+      props: () => ({ tab: "pane", target }),
+      panes: () => [
+        { pane: `${prefix}p1`, tab: `${prefix}tab1`, title: "Focused", focused: true },
+        pane,
+      ],
+      spaces: () => [
+        {
+          id: `${prefix}s1`,
+          tabs: [
+            { id: `${prefix}tab1`, named: true, name: "Focused tab", active: true },
+            { id: pane.tab, named: true, name: "Tab name" },
+          ],
+        },
+      ],
+      openOverlay: (value) => overlays.push(JSON.parse(JSON.stringify(value))),
+      run: () => assert.fail("Opening rename must not select a pane or tab"),
+    });
+    const entries = module.items({ tab: "pane", target }, null);
+    const view = new module.default();
+    const paneIndex = entries.findIndex(([label]) => label === "Rename pane");
+    const tabIndex = entries.findIndex(([label]) => label === "Rename tab");
+    assert.ok(paneIndex >= 0, "Pane menu must offer Rename pane");
+    assert.ok(tabIndex >= 0, "Pane menu must offer Rename tab");
+    view.choose(paneIndex, {} as Parameters<typeof view.choose>[1]);
+    assert.equal(overlays[0].mod, "frantss-menu");
+    assert.equal(overlays[0].kind, "dialog");
+    assert.equal(overlays[0].props.target.pane, pane.pane);
+    view.choose(tabIndex, {} as Parameters<typeof view.choose>[1]);
+    assert.equal(overlays[1].mod, "prompt");
+    assert.equal(overlays[1].props.value, "Tab name");
+    assert.deepEqual(overlays[1].props.command, { name: "tab.rename", args: { id: pane.tab } });
+  }
+});
+
+test("the pane name dialog saves only the clicked pane and reads its persisted name on reopen", async () => {
+  const pane = { pane: "remote/p2", tab: "remote/tab2", title: "Program title", terminal: null };
+  let saved = { p1: "Other pane", [pane.pane]: "Existing NAME" };
+  const closed = [];
+  const module = await load({
+    props: () => ({ tab: "rename-pane", overlay: "rename-1", target: { pane: pane.pane } }),
+    panes: () => [pane],
+    shared: () => saved,
+    setShared: (_key, value) => {
+      saved = JSON.parse(JSON.stringify(value));
+    },
+    closeOverlay: (id) => closed.push(id),
+    run: () => assert.fail("A pane alias must not issue a native rename"),
+  });
+  const view = new module.default();
+  const cx = { focus_handle: () => ({ focus() {} }) } as Parameters<typeof view.init>[1];
+  view.init({}, cx);
+  assert.equal(view.input.value(), "Existing NAME");
+  (view.input as unknown as { text: string }).text = "New NAME";
+  (view.input as unknown as { handlers: Record<string, () => void> }).handlers.submit();
+  assert.deepEqual(saved, { p1: "Other pane", [pane.pane]: "New NAME" });
+  assert.deepEqual(closed, ["rename-1"]);
+  const reopened = new module.default();
+  reopened.init({}, cx);
+  assert.equal(reopened.input.value(), "New NAME");
+  (reopened.input as unknown as { text: string }).text = "";
+  (reopened.input as unknown as { handlers: Record<string, () => void> }).handlers.submit();
+  assert.deepEqual(saved, { p1: "Other pane" });
+});
+
+test("Cancel and Esc discard pane name edits; the Save button persists them", async () => {
+  const pane = { pane: "p1", title: "Live title", tab: "tab1" };
+  let saved = { p1: "Original" };
+  const closed = [];
+  const module = await load({
+    props: () => ({ tab: "rename-pane", overlay: "rename-1", target: { pane: pane.pane } }),
+    panes: () => [pane],
+    shared: () => saved,
+    setShared: (_key, value) => {
+      saved = JSON.parse(JSON.stringify(value));
+    },
+    theme: () => ({}),
+    closeOverlay: (id) => closed.push(id),
+  });
+  const find = (node, id) =>
+    node?.elementId === id
+      ? node
+      : (node?.childNodes ?? []).map((child) => find(child, id)).find(Boolean);
+  const cx = { focus_handle: () => ({ focus() {} }), stop_propagation() {} };
+  for (const action of ["Cancel", "Esc", "Save"]) {
+    const view = new module.default();
+    view.init({}, cx as Parameters<typeof view.init>[1]);
+    (view.input as unknown as { text: string }).text = "Edited";
+    const tree = view.render({} as Parameters<typeof view.render>[0]) as any;
+    if (action === "Esc") tree.handlers.on_key_down({ key: "escape" }, cx);
+    else find(tree, action === "Save" ? "rename-save" : "rename-cancel").handlers.on_click({}, cx);
+    assert.equal(saved.p1, action === "Save" ? "Edited" : "Original");
+  }
+  assert.deepEqual(closed, ["rename-1", "rename-1", "rename-1"]);
+});
 
 test("the pane context menu gives Split down its downward-arrow icon", async () => {
   const icons: string[] = [];

@@ -11,7 +11,7 @@ import type { Context, AsyncContext, FocusHandle } from "gpui-kit";
 // runs hc rm).
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import {
   run,
   props,
@@ -30,6 +30,8 @@ import { hcOrToast } from "./agent-hc.ts";
 import { confirmForgetHistory, openAgentTab } from "./closed-agent-actions.ts";
 import { historyArgv, resumeArgv } from "./closed.ts";
 import { markUnread } from "./unread.ts";
+import { paneName, tabName, setPaneName } from "./pane-names.ts";
+import { button } from "./button.ts";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s: import("herdr").SpaceInfo) {
@@ -130,8 +132,29 @@ export function items(p: MenuProps, git: "main" | "linked" | null): MenuItem[] {
       const agent = term && agents().some((a) => a.address === term.address);
       // Once they go to the program, Shift+right-click still opens this menu.
       const toProgram = term?.labels?.["herdr.right-click"] === "program";
+      const pane = panes().find((p) => p.pane === tg.pane);
+      const space = pane && spaces().find((s) => s.tabs.some((tab) => tab.id === pane.tab));
+      const tab = space?.tabs.find((tab) => tab.id === pane.tab);
       return [
         ...(agent ? agentItems(term.address, term.cwd ?? "") : []),
+        ...(pane ? [["Rename pane", "rename-pane", { pane: pane.pane }]] : []),
+        ...(tab
+          ? [
+              [
+                "Rename tab",
+                "rename",
+                {
+                  what: "tab",
+                  id: tab.id,
+                  name: tabName(
+                    tab,
+                    panes().filter((p) => p.tab === tab.id),
+                    space,
+                  ),
+                },
+              ],
+            ]
+          : []),
         ["Split right", "pane.split", { direction: "right", pane: tg.pane }],
         ["Split down", "pane.split", { direction: "down", pane: tg.pane }],
         ["Zoom", "pane.zoom", { pane: tg.pane }],
@@ -230,7 +253,7 @@ function menuIcon(command: string, args: MenuArgs) {
   if (AGENT_ICONS[command]) return AGENT_ICONS[command];
   const name = command.endsWith(".close")
     ? "x"
-    : command.endsWith(".rename") || command === "rename"
+    : command.endsWith(".rename") || command === "rename" || command === "rename-pane"
       ? "square-pen"
       : command.endsWith(".new")
         ? "plus"
@@ -262,12 +285,21 @@ export default class Menu extends View {
   declare at: number;
   declare git: "main" | "linked" | null;
   declare handle: FocusHandle;
+  declare input: InputState;
   init(_props: unknown, cx: AsyncContext) {
     this.at = 0;
     this.git = null;
     this.handle = cx.focus_handle();
-    this.handle.focus();
     const p = props();
+    if (p?.tab === "rename-pane") {
+      const value = paneName(panes().find((pane) => pane.pane === p.target?.pane));
+      this.input = InputState.new({ value });
+      this.input.set_selected_range({ start: 0, end: value.length });
+      this.input.on("submit", () => this.savePaneName());
+      this.input.focus();
+      return;
+    }
+    this.handle.focus();
     // The frantss rail hands over what it already knows (target.checkout); else ask git.
     if (p?.target?.checkout !== undefined) {
       this.git = p.target.checkout;
@@ -329,11 +361,67 @@ export default class Menu extends View {
           command: { name: `${it[2].what}.rename`, args: { id: it[2].id } },
         },
       });
+    else if (it[1] === "rename-pane")
+      openOverlay({
+        mod: "frantss-menu",
+        kind: "dialog",
+        width: 400,
+        height: 210,
+        props: { tab: "rename-pane", target: { pane: it[2].pane } },
+      });
     else if (it[1] === "tab.close") closeTab(it[2].id, props().target.name ?? "tab");
     else run(it[1], it[2]);
   }
 
+  savePaneName() {
+    setPaneName(props().target.pane, this.input.value());
+    closeOverlay(props().overlay);
+  }
+
+  renderPaneName() {
+    const t = theme() as Record<string, `#${string}`>;
+    return v_flex()
+      .id("rename-pane")
+      .track_focus(this.handle)
+      .w_full()
+      .min_h(0)
+      .p(16)
+      .gap(12)
+      .bg(t.popover)
+      .text_color(t.foreground)
+      .text_size(12)
+      .on_key_down((e, cx) => {
+        if (e.key !== "escape") return;
+        closeOverlay(props().overlay);
+        cx.stop_propagation();
+      })
+      .child(div().text_size(15).font_semibold().child("Rename pane"))
+      .child(div().child("Name"))
+      .child(
+        Input.new(this.input)
+          .id("pane-name-input")
+          .accessibility_label("Pane name")
+          .h(34)
+          .px(10)
+          .rounded(3)
+          .border_1()
+          .border_color(t.accent)
+          .bg(t.background)
+          .text_color(t.foreground)
+          .text_size(12),
+      )
+      .child(div().text_size(11).text_color(t.muted).child("Leave empty to use the program title."))
+      .child(
+        h_flex()
+          .gap(8)
+          .justify_end()
+          .child(button("rename-cancel", "Cancel", () => closeOverlay(props().overlay)))
+          .child(button("rename-save", "Save", () => this.savePaneName(), { variant: "primary" })),
+      );
+  }
+
   render(_cx: Context) {
+    if (props()?.tab === "rename-pane") return this.renderPaneName();
     const t = theme() as Record<string, `#${string}`>;
     const list = items(props(), this.git);
     // A popup doesn't block presses: stop them before a click lands on what is behind the menu.
