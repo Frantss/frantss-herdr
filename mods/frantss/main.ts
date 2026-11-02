@@ -54,6 +54,9 @@ import {
   resetIn,
   usageWindow,
 } from "./subscriptions.ts";
+import { stampStatuses, type StatusStamps } from "./status-since.ts";
+import { BRANCH_STATUS_ARGS, parseBranchStatus, type BranchStatus } from "./branch-status.ts";
+import { assignColors } from "./workspace-colors.ts";
 
 type Theme = Record<string, `#${string}`>;
 type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
@@ -81,10 +84,11 @@ type RailRow = {
   lit?: boolean;
   dim?: boolean;
   strong?: boolean;
-  small?: boolean;
   indent?: number;
   lead?: Element | false;
   text: string;
+  // Dim context after the text, such as an agent's space.
+  tail?: Element;
   value?: string | Element;
   end?: Element;
   onClick: (event: ClickEvent, cx: Context) => unknown;
@@ -93,6 +97,8 @@ type RailRow = {
   hoverEnd?: Element;
   collapsed?: boolean;
   connector?: string;
+  // No first column: the row starts at its edge (a workspace, which no ❯ marks).
+  flush?: boolean;
   agent?: boolean;
 };
 type RailSection = {
@@ -101,19 +107,21 @@ type RailSection = {
   count?: number;
   status?: string;
   action?: Element;
+  // Shown at the header's end while the section is closed: its most urgent status.
+  urgent?: string;
   rows: RailRow[];
 };
 
 const GROUPS = [
-  { status: "blocked", label: "NEEDS YOU" },
-  { status: "done", label: "UNREAD" },
-  { status: "working", label: "WORKING" },
-  { status: "idle", label: "IDLE" },
+  { status: "blocked", label: "Needs you" },
+  { status: "done", label: "Unread" },
+  { status: "working", label: "Working" },
+  { status: "idle", label: "Idle" },
 ];
 
 // The rail places every item itself, so items, markers and the bar can glide between places.
 // `emptyGap`: after a section with no rows, so empty agent groups sit close together.
-const RAIL = { pad: 16, header: 24, row: 24, rowGap: 2, sectionGap: 16, emptyGap: 6 };
+const RAIL = { pad: 16, header: 24, row: 28, rowGap: 2, sectionGap: 20, emptyGap: 10 };
 // Close to the site's dock ease (300ms, no overshoot); gpui-kit has no cubic-bezier easing.
 const GLIDE = { response: 300, damping: 1 };
 const glide = (e: Element, y: number) => e.absolute().top(y).spring("top", GLIDE);
@@ -169,6 +177,12 @@ const statusDot = (t: Theme, status: string) =>
 // The rail's + is this wide, so rows without one can keep their dots in the same column.
 const PLUS_WIDTH = 20;
 const URGENT = GROUPS.map((g) => g.status).filter((status) => status !== "idle");
+const mostUrgent = (statuses: string[]) => URGENT.find((status) => statuses.includes(status));
+// Agent ages are in minutes, so the rail renders again this often.
+const AGE_REFRESH_MS = 30_000;
+// A place's ahead/behind counts are read again at the first render after this long.
+const BRANCH_REFRESH_MS = 60_000;
+const DEFAULT_BRANCHES = new Set(["main", "master"]);
 
 const base = (path: string) => path.replace(/\/+$/, "").split("/").pop();
 // A repo's own folder from its git folder (`frantssb/.git`); a bare repo is its git folder (`frantssb.git`).
@@ -224,6 +238,11 @@ const toggleCollapsed = (id: string) =>
       ? collapsedIds().filter((other) => other !== id)
       : [...collapsedIds(), id],
   );
+// Each workspace's avatar color by workspace key, a theme color name, kept in shared state (persisted).
+const WORKSPACE_COLORS = "frantss.workspaceColors";
+const workspaceColors = () => (shared(WORKSPACE_COLORS) as Record<string, string> | null) ?? {};
+// When each agent's status last changed (status-since.ts), kept in this mod's storage.
+const STATUS_STAMPS = "statusStamps";
 // The local agents the rail has seen, kept in shared state (persisted) so the rail lists them after
 // their tab closes (see closed.ts).
 const CLOSED_AGENTS = "frantss.closedAgents";
@@ -288,6 +307,11 @@ export default class Frantss extends View {
   // The focused agent the rail last looked up, so a render looks up only a newly focused one.
   declare contextFor: string | null;
   declare contextReading: boolean;
+  // Repo lookups still running, by place key: workspace keys can change until they finish.
+  declare lookingUp: Set<string>;
+  // Each place's commits ahead and behind its upstream (null outside a repo), and when it was read.
+  declare branches: Record<string, { checkedAt: number; status: BranchStatus | null }>;
+  declare statusStamps: StatusStamps;
   init(_p: unknown, cx: AsyncContext) {
     // The rail and the breadcrumb both name workspaces by repo.
     if (props()?.role !== "rail" && props()?.role !== "top") return;
@@ -313,6 +337,7 @@ export default class Frantss extends View {
       this.refreshSubscriptions(cx);
       cx.timer.every(SUBSCRIPTION_REFRESH_MS, (cx) => this.refreshSubscriptions(cx));
       cx.timer.every(CONTEXT_REFRESH_MS, (cx) => this.refreshContext(cx));
+      cx.timer.every(AGE_REFRESH_MS, (cx) => cx.notify());
     }
   }
 
@@ -574,12 +599,58 @@ export default class Frantss extends View {
   // The git folder a place shares with its worktrees. A machine that can't answer groups by folder.
   lookUp(key: string, cx: Context) {
     this.repos[key] = null;
+    this.lookingUp ??= new Set();
+    this.lookingUp.add(key);
     cx.spawn(async (cx) => {
       const found = await discoverRepository(key);
       this.repos[key] = found.repo;
       this.checkouts[key] = found.checkout;
+      this.lookingUp.delete(key);
       cx.notify();
     });
+  }
+
+  // Reads ahead/behind for the repo places it hasn't read lately.
+  trackBranches(cx: Context, places: Iterable<string>) {
+    this.branches ??= {};
+    const now = Date.now();
+    for (const key of new Set(places)) {
+      if (!this.repos?.[key] || now - (this.branches[key]?.checkedAt ?? 0) < BRANCH_REFRESH_MS)
+        continue;
+      this.branches[key] = { checkedAt: now, status: this.branches[key]?.status ?? null };
+      const [on, cwd] = JSON.parse(key);
+      cx.spawn(async (cx) => {
+        const result = await exec("git", BRANCH_STATUS_ARGS, { cwd, on }).catch((): null => null);
+        const status = result?.code === 0 ? parseBranchStatus(result.stdout) : null;
+        if (JSON.stringify(status) === JSON.stringify(this.branches[key].status)) return;
+        this.branches[key].status = status;
+        cx.notify();
+      });
+    }
+  }
+
+  // Stamps agents whose status changed, so their rows can say for how long.
+  trackStatusTimes(list: AgentInfo[]) {
+    if (!this.statusStamps) {
+      try {
+        this.statusStamps = JSON.parse(localStorage.getItem(STATUS_STAMPS) ?? "{}");
+      } catch {
+        this.statusStamps = {};
+      }
+    }
+    const next = stampStatuses(this.statusStamps, list, Date.now());
+    if (!next) return;
+    this.statusStamps = next;
+    localStorage.setItem(STATUS_STAMPS, JSON.stringify(next));
+  }
+
+  // Each workspace's color, giving new workspaces one once no repo lookup can still change their keys.
+  colorWorkspaces(keys: string[]) {
+    const colors = workspaceColors();
+    if (this.lookingUp?.size) return colors;
+    const next = assignColors(colors, keys);
+    if (next) setShared(WORKSPACE_COLORS, next);
+    return next ?? colors;
   }
 
   // Spaces in order, those of one repo (or, outside a repo, one folder) together where the first of them is.
@@ -703,13 +774,13 @@ export default class Frantss extends View {
     return h_flex().size_full().pl(RAIL.pad).pr(16).items_center().text_size(12).child(path);
   }
 
-  // One rail row: "❯ label ······ value" with a `value`, else "❯ label" with an optional `end` beside it.
-  // The ❯ is a separate marker that glides between rows. `lead`: the icon column, false for none.
-  // `lit`: bright without being current (a workspace, the active space); `dim`: faint (a workspace
-  // with nothing open). `strong`: medium weight (a workspace); `small`: smaller text (a tab), so each
-  // level of the tree reads apart. `collapsed`: a chevron in the first column, pointing the way what is
-  // under the row is (true closed, false open); none when undefined. `connector`: a tree glyph in that
-  // column instead (a tab's panes).
+  // One rail row: "❯ label · tail ······ value" with a `value`, else "❯ label" with an optional `end`
+  // beside it. The ❯ is a separate marker that glides between rows; the current row is also filled.
+  // `lead`: the icon column, false for none. `lit`: bright without being current (a workspace, the
+  // active space); `dim`: faint (a workspace with nothing open, a closed agent). `strong`: medium weight
+  // (a workspace). `collapsed`: a chevron in the first column, pointing the way what is under the row
+  // is (true closed, false open); none when undefined. `connector`: a tree glyph in that column instead
+  // (a tab's panes). `flush`: no first column at all.
   row(
     t: Theme,
     {
@@ -718,10 +789,10 @@ export default class Frantss extends View {
       lit,
       dim,
       strong,
-      small,
       indent,
       lead,
       text,
+      tail,
       value,
       end,
       onClick,
@@ -729,6 +800,7 @@ export default class Frantss extends View {
       hoverEnd,
       collapsed,
       connector,
+      flush,
     }: RailRow,
   ) {
     const hovered = Boolean(hoverEnd) && this.hovered === id;
@@ -745,10 +817,11 @@ export default class Frantss extends View {
         .rounded(3)
         .gap(8)
         .items_center()
-        .text_size(small ? 11 : 12)
+        .text_size(12)
         .when(Boolean(strong), (e) => e.font_medium())
         .text_color(current || lit ? t.foreground : dim ? t.dim : t.muted)
-        .hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .when(Boolean(current), (e) => e.bg(t.selected))
+        .when(!current, (e) => e.hover((s) => s.bg(t.hover).text_color(t.foreground)))
         .on_click(onClick)
         .when(Boolean(onMenu), (e) => e.on_mouse_down("right", onMenu))
         .when(Boolean(hoverEnd), (e) =>
@@ -759,16 +832,32 @@ export default class Frantss extends View {
           }),
         )
         // The chevron sits at the row's indent, in the column a ❯ marks on other rows.
-        .child(
-          h_flex()
-            .w(10 + (indent ?? 0))
-            .flex_none()
-            .justify_end()
-            .when(collapsed !== undefined, (e) => e.child(chevron(t, collapsed)))
-            .when(connector !== undefined, (e) => e.text_color(t.dim).child(connector)),
+        .when(!flush, (e) =>
+          e.child(
+            h_flex()
+              .w(10 + (indent ?? 0))
+              .flex_none()
+              .justify_end()
+              .when(collapsed !== undefined, (e) => e.child(chevron(t, collapsed)))
+              .when(connector !== undefined, (e) => e.text_color(t.dim).child(connector)),
+          ),
         )
         .when(lead !== false, (e) => e.child(lead ?? div().w(14).flex_none()))
-        .child(div().flex_1().min_w(0).truncate().child(text))
+        .child(
+          h_flex()
+            .flex_1()
+            .min_w(0)
+            .gap(5)
+            .items_center()
+            .child(
+              div()
+                .min_w(0)
+                .when(Boolean(tail), (e) => e.max_w(120))
+                .truncate()
+                .child(text),
+            )
+            .when(Boolean(tail), (e) => e.child(tail)),
+        )
         .when(hovered, (e) => e.child(hoverEnd))
         .when(!hovered && value !== undefined, (e) =>
           e.child(
@@ -780,7 +869,8 @@ export default class Frantss extends View {
   }
 
   // A section's header; clicking it opens or closes the section. `action`: a control at the header's
-  // end (the workspaces' +). The title takes its status's color, else the foreground.
+  // end (the workspaces' +). The title takes its status's color, else the foreground. Closed, it shows
+  // its `urgent` status's dot.
   header(
     t: Theme,
     {
@@ -789,6 +879,7 @@ export default class Frantss extends View {
       count,
       status,
       action,
+      urgent,
       collapsed,
     }: Omit<RailSection, "rows"> & { collapsed: boolean },
   ) {
@@ -812,7 +903,9 @@ export default class Frantss extends View {
           .child(title),
       )
       .child(div().text_size(11).text_color(t.muted).child(String(count)))
-      .when(Boolean(action), (e) => e.child(div().flex_1()).child(action));
+      .child(div().flex_1())
+      .when(collapsed && Boolean(urgent), (e) => e.child(statusDot(t, urgent)))
+      .when(Boolean(action), (e) => e.child(action));
   }
 
   // A small "+" in the rail; it doesn't select the row it sits on.
@@ -878,7 +971,7 @@ export default class Frantss extends View {
   rail(t: Theme, list: AgentInfo[], snapshot: WorkspaceSnapshot) {
     const all = snapshot.spaces;
     const groups = [
-      { status: "pinned", label: "PINNED", agents: list.filter((a) => a.pinned) },
+      { status: "pinned", label: "Pinned", agents: list.filter((a) => a.pinned) },
       ...GROUPS.map((g) => ({
         ...g,
         agents: list.filter((a) => !a.pinned && a.status === g.status),
@@ -924,13 +1017,52 @@ export default class Frantss extends View {
         : linked(s)
           ? branchIcon()
           : treeIcon(t, "mods/frantss/checkout.svg");
+    // A space's branch unless its row already names it or it is main or master, then its commits
+    // ahead and behind. A worktree standing for its tab keeps its branch icon even without a name.
+    const branchTail = (s: SpaceInfo, text: string) => {
+      const branch =
+        s.branch && !DEFAULT_BRANCHES.has(s.branch) && s.branch !== text ? s.branch : null;
+      const { ahead = 0, behind = 0 } =
+        this.branches?.[snapshot.placeBySpace.get(s.id)]?.status ?? {};
+      const icon = Boolean(branch) || (standsForTab(s) && linked(s));
+      if (!icon && !ahead && !behind) return null;
+      return h_flex()
+        .min_w(0)
+        .max_w(104)
+        .gap(4)
+        .items_center()
+        .text_size(11)
+        .text_color(t.dim)
+        .when(icon, (e) => e.child(branchIcon()))
+        .when(Boolean(branch), (e) => e.child(div().min_w(0).truncate().child(branch)))
+        .when(ahead > 0, (e) =>
+          e.child(
+            div()
+              .flex_none()
+              .text_color(t.ansi2 ?? t.working)
+              .child(`↑${ahead}`),
+          ),
+        )
+        .when(behind > 0, (e) =>
+          e.child(
+            div()
+              .flex_none()
+              .text_color(t.ansi1 ?? t.blocked)
+              .child(`↓${behind}`),
+          ),
+        );
+    };
+    const spaceText = (s: SpaceInfo) =>
+      standsForTab(s) ? tabName(s.tabs[0], tabPanes(s.tabs[0]), s) : spaceName(s);
     const spaceEnd = (s: SpaceInfo, plus?: Element) => {
       const dotted = dotEnd(s.status, plus);
-      if (!standsForTab(s) || !linked(s)) return dotted;
+      const tail = branchTail(s, spaceText(s));
+      if (!tail) return dotted;
       return h_flex()
+        .min_w(0)
         .gap(8)
         .items_center()
-        .child(branchIcon())
+        .child(tail)
         .child(dotted ?? div().w(6 + 8 + PLUS_WIDTH));
     };
     const paneMenu = (pane: PaneInfo) => menu("pane", { pane: pane.pane, terminal: pane.terminal });
@@ -944,7 +1076,6 @@ export default class Frantss extends View {
       id: `space-${s.id}`,
       current: s.active && standsForTab(s),
       lit: s.active,
-      indent: 14,
       lead: spaceIcon(s),
       end: spaceEnd(s),
       // Hovered, its + starts a thread as a new tab in this space (no repo: no Worktree choice).
@@ -957,7 +1088,7 @@ export default class Frantss extends View {
         }),
       ),
       collapsed: standsForTab(s) ? undefined : spaceClosed(s),
-      text: standsForTab(s) ? tabName(s.tabs[0], tabPanes(s.tabs[0]), s) : spaceName(s),
+      text: spaceText(s),
       onClick: () => (standsForTab(s) ? run("space.select", { id: s.id }) : toggleSpace(s)),
       onMenu: () =>
         standsForTab(s)
@@ -977,9 +1108,7 @@ export default class Frantss extends View {
       id: `tab-${tab.id}`,
       // A split tab's marker sits on its focused pane.
       current: s.active && tab.active && !split(tab),
-      indent: 28,
-      dim: true,
-      small: true,
+      indent: 14,
       lead: programIcon(t, snapshot.leadByTab.get(tab.id)?.program),
       end: dotEnd(tab.status),
       text: tabName(tab, tabPanes(tab), s),
@@ -990,10 +1119,8 @@ export default class Frantss extends View {
       (split(tab) ? tabPanes(tab) : []).map((pane, index, all) => ({
         id: `pane-${pane.pane}`,
         current: s.active && tab.active && pane.focused,
-        indent: 42,
+        indent: 28,
         connector: index === all.length - 1 ? "└" : "├",
-        dim: true,
-        small: true,
         lead: programIcon(t, pane.program),
         end: dotEnd(pane.status),
         text: paneName(pane),
@@ -1027,16 +1154,34 @@ export default class Frantss extends View {
       g.spaces.find((s) => !snapshot.cwdBySpace.get(s.id)?.includes("/.herdr/worktrees/")) ??
       g.spaces[0];
     const workspaceClosed = (g: SpaceGroup) => collapsed.includes(`workspace:${g.key}`);
+    // A workspace's letter in its color on a tint of it, like the rail's other marks.
+    const workspaceColor = (key: string) => t[colors[key]] ?? t.dim;
+    // `size` 12: the small copy on an agent's row.
+    const avatar = (key: string, name: string, faded = false, size = 14) =>
+      h_flex()
+        .size(size)
+        .flex_none()
+        .rounded(3)
+        .bg(`${workspaceColor(key)}26`)
+        .items_center()
+        .justify_center()
+        .text_size(size === 14 ? 9.5 : 8.5)
+        .line_height(`${size}px`)
+        .text_center()
+        .font_medium()
+        .text_color(workspaceColor(key))
+        .when(faded, (e) => e.opacity(0.55))
+        .child(name.slice(0, 1).toUpperCase() || "?");
     const groupRow = (g: SpaceGroup, saved: NamedWorkspace): RailRow => {
       const s = ownCheckout(g);
-      const status = URGENT.find((st) => g.spaces.some((space) => space.status === st));
+      const status = mostUrgent(g.spaces.map((space) => space.status));
       return {
         id: `group-${g.key}`,
         lit: true,
         strong: true,
-        lead: treeIcon(t, "mods/workspace-chrome/folder.svg"),
+        lead: avatar(g.key, saved?.name ?? g.name),
         text: saved?.name ?? g.name,
-        collapsed: workspaceClosed(g),
+        flush: true,
         end: dotEnd(status),
         hoverEnd: dotEnd(
           status,
@@ -1055,9 +1200,10 @@ export default class Frantss extends View {
     // A saved workspace with nothing open: clicking opens a space in its folder.
     const closedRow = (w: NamedWorkspace): RailRow => ({
       id: `group-${w.key}`,
+      flush: true,
       dim: true,
       strong: true,
-      lead: treeIcon(t, "mods/workspace-chrome/folder.svg"),
+      lead: avatar(w.key, w.name, true),
       text: w.name,
       hoverEnd: dotEnd("", newThread(w.key, { folder: w.folder, repo: w.repo })),
       onClick: () => run("space.new", { folder: w.folder }),
@@ -1074,6 +1220,8 @@ export default class Frantss extends View {
         return true;
       });
     const unsaved = open.filter((group) => !savedKeys.has(group.key));
+    const colors = this.colorWorkspaces([...savedKeys, ...unsaved.map((group) => group.key)]);
+    const spaceById = new Map(all.map((s) => [s.id, s]));
     const groupRows = (g: SpaceGroup, w: NamedWorkspace) => [
       groupRow(g, w),
       ...(workspaceClosed(g) ? [] : g.spaces.flatMap(withTabs)),
@@ -1091,11 +1239,35 @@ export default class Frantss extends View {
       const label = GROUPS.find((g) => g.status === a.status)?.label ?? a.status;
       return dot(t, a.status).id(`status-${a.address}`).tooltip(label).accessibility_label(label);
     };
+    // An agent's space after its name, with its workspace's avatar.
+    const workspaceNames = new Map<string, string>([
+      ...open.map((g): [string, string] => [g.key, g.name]),
+      ...saved.map((w): [string, string] => [w.key, w.name]),
+    ]);
+    const agentTail = (a: AgentInfo) => {
+      const s = spaceById.get(a.space);
+      const key = s && this.workspaceKey(s, snapshot);
+      const name = workspaceNames.get(key);
+      return h_flex()
+        .flex_1()
+        .min_w(0)
+        .gap(4)
+        .items_center()
+        .text_color(t.dim)
+        .child("·")
+        .when(Boolean(name), (e) => e.child(avatar(key, name, false, 12)))
+        .child(div().min_w(0).truncate().child(a.space_name));
+    };
+    const since = (a: AgentInfo) => {
+      const stamp = this.statusStamps?.[a.address];
+      return stamp ? age(now - stamp.at) : undefined;
+    };
     const sections: RailSection[] = [
       {
         id: "spaces",
-        title: "WORKSPACES",
+        title: "Workspaces",
         count: saved.length + unsaved.length,
+        urgent: mostUrgent(all.map((s) => s.status)),
         action: this.plus(t, "add-workspace", "Add workspace", (cx) => this.addWorkspace(cx)),
         rows: workspaceRows,
       },
@@ -1106,6 +1278,7 @@ export default class Frantss extends View {
           id: g.status,
           title: g.label,
           status: g.status,
+          urgent: mostUrgent(g.agents.map((a) => a.status)),
           rows: g.agents.map((a) => ({
             id: `agent-${a.address}`,
             current: a.focused,
@@ -1121,10 +1294,11 @@ export default class Frantss extends View {
             text: named.has(a.tab)
               ? a.tab_name
               : (threadTitle(a.title, a.program) ?? a.program.name).toLowerCase(),
+            tail: a.space_name ? agentTail(a) : undefined,
             value:
               a.focused && this.context?.address === a.address
                 ? this.contextMeter(t, this.context.usage)
-                : a.space_name,
+                : since(a),
             onClick: () => run("agent.focus", { terminal: a.address }),
             onMenu: () => menu("pane", { pane: a.pane, terminal: a.address }),
             hoverEnd: this.agentControls(t, a),
@@ -1243,7 +1417,7 @@ export default class Frantss extends View {
           )
           .child(chevron(t, !open))
           .child(
-            div().flex_none().text_size(11).font_medium().text_color(t.foreground).child("USAGE"),
+            div().flex_none().text_size(11).font_medium().text_color(t.foreground).child("Usage"),
           )
           .child(
             h_flex()
@@ -1365,7 +1539,7 @@ export default class Frantss extends View {
       .border_t(1)
       .border_color(t.border)
       .child(
-        this.header(t, { id: "closed", title: "RECENTLY CLOSED", count: rows.length, collapsed }),
+        this.header(t, { id: "closed", title: "Recently closed", count: rows.length, collapsed }),
       )
       .when(!collapsed, (e) =>
         e.child(
@@ -1503,9 +1677,11 @@ export default class Frantss extends View {
       return this.top(t, snapshot, space);
     }
     this.track(cx, snapshot.placeBySpace.values());
+    this.trackBranches(cx, snapshot.placeBySpace.values());
     this.publishWorkspaces(snapshot);
     const list = agents();
     this.trackAgents(cx, list, snapshot);
+    this.trackStatusTimes(list);
     // A newly focused agent's context shows at once; the timer keeps it current after.
     const focused = list.find((a) => a.focused);
     const focusedAddress = focused?.address ?? null;

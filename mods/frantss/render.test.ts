@@ -99,6 +99,10 @@ async function harness(role = "rail") {
     usageReads: [] as string[],
     contextReads: [] as unknown[],
     contextLine: "",
+    branchStatus: "# branch.ab +0 -0\n",
+    branchReads: [] as unknown[],
+    storage: new Map<string, string>(),
+    theme: {} as Record<string, string>,
   };
   function element(kind = "div", source?) {
     const node: any = {
@@ -128,7 +132,12 @@ async function harness(role = "rail") {
     return proxy;
   }
   const unused = () => assert.fail("Unexpected external command");
-  const context = vm.createContext({});
+  const context = vm.createContext({
+    localStorage: {
+      getItem: (name: string) => state.storage.get(name) ?? null,
+      setItem: (name: string, value: string) => state.storage.set(name, value),
+    },
+  });
   const natives = {
     "gpui-kit": {
       View: class {},
@@ -168,7 +177,7 @@ async function harness(role = "rail") {
         state.propsCalls++;
         return { role: state.role, pane: state.pane };
       },
-      theme: () => ({}),
+      theme: () => state.theme,
       settings: () => ({}),
       shared: (name) => state.shared.get(name) ?? null,
       setShared: (name, value) => state.shared.set(name, value),
@@ -182,6 +191,10 @@ async function harness(role = "rail") {
       openOverlay: (options) => state.overlays.push(options),
       terminals: () => state.terminals,
       exec: async (command, args, options) => {
+        if (command === "git") {
+          state.branchReads.push([options?.cwd, options?.on ?? null]);
+          return { code: 0, stdout: state.branchStatus, stderr: "" };
+        }
         assert.equal(command, "sh");
         if (args[1].startsWith("grep")) {
           state.contextReads.push([args.at(-1), options?.on ?? null]);
@@ -241,6 +254,10 @@ async function harness(role = "rail") {
     [key("/closed")]: null,
   };
   view.checkouts = { [key(worktree)]: "linked", [key("/project/live")]: "main" };
+  // Every place's ahead/behind was just read and found even; tests of the git tail clear this.
+  view.branches = Object.fromEntries(
+    Object.keys(view.repos).map((place) => [place, { checkedAt: Date.now(), status: null }]),
+  );
   const cx = {
     spawn: (task) => {
       state.tasks.push(task);
@@ -310,8 +327,9 @@ test("rail keeps workspace order, global-first cwd, tab names, worktree marks, a
       .map((node) => node?.source)
       .filter((source) => source && !source.includes("chevron"));
   assert.deepEqual(icons("space-primary"), ["mods/frantss/checkout.svg"]);
-  assert.deepEqual(icons(`group-${group}`), ["mods/workspace-chrome/folder.svg"]);
-  assert.deepEqual(icons(`group-${key("/closed")}`), ["mods/workspace-chrome/folder.svg"]);
+  assert.deepEqual(icons(`group-${group}`), []);
+  assert.equal(text(byId(tree, `group-${group}`)), "Pproject");
+  assert.equal(text(byId(tree, `group-${key("/closed")}`)), "Cclosed");
   assert.deepEqual(icons("tab-t-program"), ["mods/workspace-chrome/terminal.svg"]);
   assert.equal(byId(tree, `new-${group}`), null);
   byId(hoverRender(h, `group-${group}`), `new-${group}`).handlers.on_click({}, h.cx);
@@ -381,7 +399,7 @@ test("Pi session names reach tab rows, pane headers, and agent rows", async () =
   ];
   const tree = h.render();
   assert.equal(text(byId(tree, "tab-t-cwd")), "fix pi titles");
-  assert.equal(text(byId(tree, "agent-t-pi")), "fix pi titlesprimary");
+  assert.equal(text(byId(tree, "agent-t-pi")), "fix pi titles·Pprimarynow");
   h.state.role = "pane";
   h.state.pane = target.pane;
   assert.match(text(h.render()), /fix pi titles/);
@@ -595,7 +613,8 @@ test("a split worktree tab keeps its explicit name and returns to pane naming wh
   worktree.tabs[0].named = false;
   assert.equal(text(byId(h.render(), "tab-t-worktree")), "feature/Worktree");
   h.state.panes = h.state.panes.filter((each) => each.title !== "Zsh" || each.tab !== "t-worktree");
-  assert.equal(text(byId(h.render(), "space-worktree")), "feature");
+  // Standing for its tab, the worktree shows its branch where the tab's name doesn't say it.
+  assert.equal(text(byId(h.render(), "space-worktree")), "featurefeature/Worktree");
   assert.equal(worktree.tabs[0].name, "Feature");
 });
 
@@ -604,7 +623,7 @@ test("pane headers retain their single pane lookup without workspace indexing", 
   Object.assign(h.state.panes[2], { status: "blocked" });
   const tree = h.render();
   assert.match(text(tree), /fix api/);
-  assert.doesNotMatch(text(tree), /Claude Code|NEEDS YOU/);
+  assert.doesNotMatch(text(tree), /Claude Code|Needs you/);
   assert.match(text(tree), /main · agent/);
   assert.deepEqual(h.state.calls, { spaces: 0, panes: 1, paneVisits: 0 });
   // One props read for the role and one for the pane, not one per pane searched.
@@ -813,7 +832,7 @@ test("workspace membership key reads stay linear as saved and open workspaces gr
   const tree = h.render();
   const rows = descendants(tree).filter((node) => node?.elementId?.startsWith("group-"));
   assert.equal(rows.length, savedCount + unsavedCount);
-  assert.equal(text(byId(tree, "header-spaces")), "WORKSPACES400+");
+  assert.equal(text(byId(tree, "header-spaces")), "Workspaces400+");
   assert.ok(
     keyReads <= 20 * (savedCount + unsavedCount),
     `Expected linear key reads, received ${keyReads}`,
@@ -892,12 +911,12 @@ test("native pins lead every status group without duplicates and retain snapshot
     "header-idle",
     "header-usage",
   ]);
-  assert.equal(text(byId(tree, "header-pinned")), "PINNED4");
+  assert.equal(text(byId(tree, "header-pinned")), "Pinned4");
 });
 
 test("pinned rows retain each native status while unpinned rows keep their existing appearance", async () => {
   const h = await harness();
-  const labels = { blocked: "NEEDS YOU", done: "UNREAD", working: "WORKING", idle: "IDLE" };
+  const labels = { blocked: "Needs you", done: "Unread", working: "Working", idle: "Idle" };
   const palette = { blocked: "#ff0000", done: "#00ff00", working: "#0000ff", idle: "#888888" };
   h.state.agents = Object.keys(labels).flatMap((status) => [
     railAgent(`${status}-pin`, status, { pinned: true }),
@@ -925,7 +944,7 @@ test("pinned rows retain each native status while unpinned rows keep their exist
     );
     assert.equal(byId(tree, `status-${status}-normal`), null);
     const normal = byId(tree, `agent-${status}-normal`);
-    assert.equal(text(normal), `${status}-normalprimary`);
+    assert.equal(text(normal), `${status}-normal·primary`);
     assert.equal(
       descendants(normal).some((node) => node?.styles?.some(([name]) => name === "tooltip")),
       false,
@@ -968,6 +987,90 @@ test("native pin and unpin snapshots move existing rows while retaining their me
   assert.deepEqual(plain(h.state.agentOrder), agentRows(unpinned));
 });
 
+test("the current row is filled and tab rows keep the rail's text size", async () => {
+  const h = await harness();
+  h.state.agents = [railAgent("t1", "working", { focused: true }), railAgent("t2", "working")];
+  const palette = { selected: "#200000", dim: "#777777", muted: "#aaaaaa", foreground: "#ffffff" };
+  const tree = h.view.rail(palette, h.state.agents, {
+    ...h.view,
+    spaces: [],
+    leadByTab: new Map(),
+    panesByTab: new Map(),
+    cwdBySpace: new Map(),
+    placeBySpace: new Map(),
+  });
+  const filled = (id: string) =>
+    byId(tree, id).styles.some(([name, value]) => name === "bg" && value === palette.selected);
+  assert.equal(filled("agent-t1"), true);
+  assert.equal(filled("agent-t2"), false);
+  const rail = h.render();
+  assert.equal(
+    byId(rail, "tab-t-named").styles.some(([name, value]) => name === "text_size" && value !== 12),
+    false,
+  );
+});
+
+test("agent rows say how long they have been in their status", async () => {
+  const h = await harness();
+  h.state.agents = [railAgent("t1", "working")];
+  h.state.storage.set(
+    "statusStamps",
+    JSON.stringify({ t1: { status: "working", at: Date.now() - 5 * 60_000 } }),
+  );
+  assert.equal(text(byId(h.render(), "agent-t1")), "t1·Pprimary5m");
+  h.state.agents = [railAgent("t1", "done")];
+  assert.equal(text(byId(h.render(), "agent-t1")), "t1·Pprimarynow");
+  assert.equal(JSON.parse(h.state.storage.get("statusStamps")).t1.status, "idle");
+});
+
+test("space rows show commits ahead and behind their upstream", async () => {
+  const h = await harness();
+  h.view.branches = {};
+  h.state.branchStatus = "# branch.head main\n# branch.ab +2 -1\n";
+  h.render();
+  await Promise.all(h.state.tasks.splice(0).map((task) => task(h.cx)));
+  assert.ok(h.state.branchReads.some(([cwd]) => cwd === "/project/live"));
+  assert.equal(text(byId(h.render(), "space-primary")), "main↑2↓1");
+  // Read lately, a render doesn't ask git again.
+  const reads = h.state.branchReads.length;
+  h.render();
+  assert.equal(h.state.tasks.length, 0);
+  assert.equal(h.state.branchReads.length, reads);
+});
+
+test("workspaces get a color that their agents' rows share", async () => {
+  const h = await harness();
+  h.state.agents = [railAgent("t1", "working")];
+  h.state.theme = { accent: "#a78bfa" };
+  const tree = h.render();
+  const colors = h.state.shared.get("frantss.workspaceColors") as Record<string, string>;
+  const group = key("/project/.git");
+  assert.equal(colors[group], "accent");
+  const hasColor = (node) =>
+    descendants(node).some((each) =>
+      each?.styles?.some(
+        ([name, value]) => ["bg", "text_color"].includes(name) && value?.startsWith("#a78bfa"),
+      ),
+    );
+  assert.equal(hasColor(byId(tree, `group-${group}`)), true);
+  assert.equal(hasColor(byId(tree, "agent-t1")), true);
+});
+
+test("a closed section shows its most urgent status", async () => {
+  const h = await harness();
+  h.state.agents = [
+    railAgent("t1", "blocked", { pinned: true }),
+    railAgent("t2", "done", { pinned: true }),
+  ];
+  h.state.shared.set("frantss.collapsed", ["pinned"]);
+  const header = byId(h.render(), "header-pinned");
+  const dots = descendants(header).filter((node) =>
+    node?.styles?.some(([name, value]) => name === "size" && value === 6),
+  );
+  assert.equal(dots.length, 1);
+  assert.ok(dots[0].styles.some(([name]) => name === "loop"));
+});
+
 test("folded pinned and status sections retain the existing grouped navigation order", async () => {
   const h = await harness();
   h.state.agents = [
@@ -979,7 +1082,7 @@ test("folded pinned and status sections retain the existing grouped navigation o
   byId(tree, "header-pinned").handlers.on_click({}, h.cx);
   byId(tree, "header-blocked").handlers.on_click({}, h.cx);
   const folded = h.render();
-  assert.equal(text(byId(folded, "header-pinned")), "PINNED1");
+  assert.equal(text(byId(folded, "header-pinned")), "Pinned1");
   assert.deepEqual(agentRows(folded), ["t3"]);
   assert.deepEqual(plain(h.state.agentOrder), ["t1", "t2", "t3"]);
   byId(folded, "header-pinned").handlers.on_click({}, h.cx);
@@ -1009,8 +1112,8 @@ test("native statuses honor cross-client seen changes and ignore obsolete custom
   h.state.agents = [railAgent("t1", "idle"), railAgent("t2", "working"), railAgent("t3", "done")];
   const tree = h.render();
   assert.deepEqual(agentRows(tree), ["t3", "t2", "t1"]);
-  assert.equal(text(byId(tree, "header-done")), "UNREAD1");
-  assert.equal(text(byId(tree, "header-idle")), "IDLE1");
+  assert.equal(text(byId(tree, "header-done")), "Unread1");
+  assert.equal(text(byId(tree, "header-idle")), "Idle1");
   assert.equal(h.state.shared.get("frantss.unread"), oldMarks);
   h.state.agents = h.state.agents.map((a) => ({
     ...a,
@@ -1050,8 +1153,8 @@ test("the focused agent's row shows its context from its labeled session file", 
   await Promise.all(h.state.tasks.splice(0).map((task) => task(h.cx)));
   assert.deepEqual(plain(h.state.contextReads), [["/s/one.jsonl", null]]);
   const tree = h.render();
-  assert.equal(text(byId(tree, "agent-t1")), "x95%");
-  assert.equal(text(byId(tree, "agent-t2")), "xprimary");
+  assert.equal(text(byId(tree, "agent-t1")), "x·Pprimary95%");
+  assert.equal(text(byId(tree, "agent-t2")), "x·Pprimarynow");
   // Unchanged, the timer doesn't read the file again; a new seq does.
   h.view.refreshContext(h.cx);
   assert.equal(h.state.tasks.length, 0);
@@ -1077,11 +1180,11 @@ test("Pi's focused row follows context labels without reading a transcript", asy
   ];
   const labels = { "frantss.context": '{"tokens":95000,"window":100000}' };
   h.state.terminals = [{ address: "build/t1", state: "live", labels }];
-  assert.equal(text(byId(h.render(), "agent-build/t1")), "pi task95%");
+  assert.equal(text(byId(h.render(), "agent-build/t1")), "pi task·Premote95%");
   labels["frantss.context"] = '{"tokens":50000,"window":200000}';
-  assert.equal(text(byId(h.render(), "agent-build/t1")), "pi task25%");
+  assert.equal(text(byId(h.render(), "agent-build/t1")), "pi task·Premote25%");
   labels["frantss.context"] = "";
-  assert.equal(text(byId(h.render(), "agent-build/t1")), "pi taskremote");
+  assert.equal(text(byId(h.render(), "agent-build/t1")), "pi task·Premotenow");
   assert.equal(h.state.contextReads.length, 0);
 });
 
@@ -1192,7 +1295,7 @@ test("the rail records local agents and lists closed ones with history, resume, 
     .map((node) => node?.elementId)
     .filter((id) => id?.startsWith("closed-"));
   assert.deepEqual(ids, ["closed-t8", "closed-t7"]);
-  assert.match(text(byId(tree, "header-closed")), /RECENTLY CLOSED/);
+  assert.match(text(byId(tree, "header-closed")), /Recently closed/);
   assert.equal(text(byId(tree, "closed-t8")), "fix tabs5m");
 
   byId(tree, "closed-t8").handlers.on_click({}, h.cx);
@@ -1315,7 +1418,7 @@ test("open usage shows each window's reset and marks stale and failed reads", as
   };
   const usage = byId(h.render(), "subscription-usage");
   assert.equal(byId(usage, "usage-summary-claude"), null);
-  assert.match(text(byId(usage, "header-usage")), /USAGE15m ago/);
+  assert.match(text(byId(usage, "header-usage")), /Usage15m ago/);
   assert.equal(text(byId(usage, "usage-claude")), "ClaudeStale5h42%1h 0m7d——Offline");
   assert.equal(text(byId(usage, "usage-codex")), "CodexWaiting for usage…");
 });
