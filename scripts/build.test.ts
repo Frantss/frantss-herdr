@@ -4,6 +4,12 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { outputRoot, packageRoot } from "./paths.ts";
 
+test("terminal right-clicks use the custom menu selected at the layout root", () => {
+  const layout = JSON.parse(readFileSync(join(outputRoot, "layouts/frantss.json"), "utf8"));
+  assert.equal(layout.terminal_menu, "frantss-menu");
+  assert.ok(existsSync(join(outputRoot, "mods", layout.terminal_menu, "main.js")));
+});
+
 test("build emits native JavaScript entries and copies every required asset", () => {
   for (const group of ["layouts", "themes"])
     for (const name of readdirSync(join(packageRoot, group)))

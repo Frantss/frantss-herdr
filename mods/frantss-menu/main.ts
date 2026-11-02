@@ -196,7 +196,8 @@ const AGENT_ICONS: Record<string, string> = {
   "forget-history": "mods/frantss-files/trash.svg",
 };
 
-function menuIcon(command: string) {
+function menuIcon(command: string, args: Record<string, string>) {
+  if (command === "pane.split" && args.direction === "down") return "mods/frantss/split-down.svg";
   if (AGENT_ICONS[command]) return AGENT_ICONS[command];
   const name = command.endsWith(".close")
     ? "x"
@@ -362,7 +363,7 @@ export default class Menu extends View {
                     .text_color(t.accent)
                     .child(i === this.at ? "❯" : ""),
                 )
-                .child(svg(menuIcon(it[1])).size(13).flex_none().text_color(t.dim))
+                .child(svg(menuIcon(it[1], it[2])).size(13).flex_none().text_color(t.dim))
                 .child(div().flex_1().min_w(0).truncate().child(it[0]))
                 .child(
                   div().flex_none().text_size(11).text_color(t.dim).child(shortcut(it[1], it[2])),

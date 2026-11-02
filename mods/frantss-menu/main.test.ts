@@ -10,12 +10,33 @@ const records = [
   { address: "t3", cwd: "/repo" },
 ];
 
-async function load(overrides = {}) {
+async function load(overrides = {}, icons: string[] = []) {
   const context = vm.createContext({});
   const empty = () => {};
+  const element = () => {
+    const node = new Proxy(
+      {},
+      {
+        get:
+          (_target, key) =>
+          (...args) => {
+            if (key === "when" && args[0]) args[1](node);
+            return node;
+          },
+      },
+    );
+    return node;
+  };
   const natives: Record<string, Record<string, unknown>> = {
-    "gpui-kit": { View: class {}, div: empty, svg: empty },
-    "gpui-base": { v_flex: empty, h_flex: empty },
+    "gpui-kit": {
+      View: class {},
+      div: element,
+      svg: (path) => {
+        icons.push(path);
+        return element();
+      },
+    },
+    "gpui-base": { v_flex: element, h_flex: element },
     herdr: {
       run: empty,
       props: empty,
@@ -63,6 +84,23 @@ const paneMenu = async (terminal: string) =>
   JSON.parse(
     JSON.stringify((await load()).items({ tab: "pane", target: { pane: "p1", terminal } }, null)),
   ) as [string, string, Record<string, string>][];
+
+test("the pane context menu gives Split down its downward-arrow icon", async () => {
+  const icons: string[] = [];
+  const module = await load(
+    {
+      props: () => ({ tab: "pane", target: { pane: "p1" } }),
+      theme: () => ({}),
+    },
+    icons,
+  );
+  const view = new module.default();
+  view.render({} as Parameters<typeof view.render>[0]);
+  assert.deepEqual(icons.slice(0, 2), [
+    "mods/workspace-chrome/panel-right.svg",
+    "mods/frantss/split-down.svg",
+  ]);
+});
 
 test("an agent's pane menu starts with its actions and can send it back", async () => {
   assert.deepEqual(await paneMenu("t1"), [

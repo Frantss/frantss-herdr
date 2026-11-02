@@ -1,6 +1,7 @@
 {
   "id": "r9af5185cde1ea4518f548ca879ac5fcc",
   "type": "row",
+  "terminal_menu": "frantss-menu",
   "children": [
     {
       "id": "frantss-root",
@@ -182,8 +183,7 @@
       "terminal_opacity": 0,
       "resizable": false,
       "titlebar": "none",
-      "preview": "mods/frantss/preview.svg",
-      "terminal_menu": "frantss-menu"
+      "preview": "mods/frantss/preview.svg"
     }
   ],
   "theme": {

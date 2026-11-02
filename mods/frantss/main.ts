@@ -1445,7 +1445,7 @@ export default class Frantss extends View {
               t,
               "split-down",
               "Split down",
-              svg("mods/pane/split-down.svg").size(12),
+              svg("mods/frantss/split-down.svg").size(12),
               () => run("pane.split", { direction: "down", pane: pane.pane }),
             ),
           ),
