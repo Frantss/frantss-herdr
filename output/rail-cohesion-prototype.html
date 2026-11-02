@@ -1,0 +1,3487 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rail cohesion prototype</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --surface: #111111;
+        --canvas: #0a0a0a;
+        --chrome: #0a0a0a;
+        --popover: #111111;
+        --hover: #1b1b1b;
+        --selected: #201d28;
+        --border: #232323;
+        --input: #383838;
+        --fg: #ededed;
+        --muted: #a1a1a1;
+        --dim: #7d7d7d;
+        --accent: #a78bfa;
+        --accent-fg: #0a0a0a;
+        --working: #4ade80;
+        --blocked: #fb2c36;
+        --done: #facc15;
+        --idle: #7d7d7d;
+        --rail-w: 240px;
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          Roboto,
+          sans-serif;
+        font-size: 13px;
+        line-height: 1.4;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        background: var(--canvas);
+        color: var(--fg);
+      }
+      button,
+      select,
+      input,
+      textarea {
+        font: inherit;
+        color: inherit;
+      }
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+      h2 {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--muted);
+        margin: 0 0 8px;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+      }
+      h3 {
+        font-size: 12px;
+        font-weight: 600;
+        margin: 0 0 6px;
+      }
+      p {
+        margin: 0 0 8px;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .dim {
+        color: var(--dim);
+      }
+      small {
+        font-size: 11px;
+        color: var(--dim);
+      }
+      kbd {
+        font:
+          11px ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        border: 1px solid var(--input);
+        border-radius: 3px;
+        padding: 0 3px;
+        color: var(--muted);
+      }
+      code {
+        font:
+          11px ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+
+      .banner {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 16px;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--chrome);
+      }
+      .banner h1 {
+        font-size: 13px;
+        font-weight: 600;
+        margin: 0;
+      }
+      .badge {
+        font-size: 11px;
+        color: var(--done);
+        border: 1px solid #facc1555;
+        border-radius: 4px;
+        padding: 2px 6px;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: 300px minmax(0, 1fr) 300px;
+        min-height: calc(100vh - 44px);
+      }
+      .panel {
+        padding: 16px;
+        border-right: 1px solid var(--border);
+        min-width: 0;
+      }
+      .panel:last-child {
+        border-right: 0;
+      }
+      .group {
+        margin-bottom: 20px;
+      }
+      .btns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      .btn {
+        height: 26px;
+        padding: 0 10px;
+        border: 1px solid var(--input);
+        border-radius: 4px;
+        background: var(--surface);
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .btn:hover {
+        background: var(--hover);
+      }
+      .btn.primary {
+        background: var(--accent);
+        color: var(--accent-fg);
+        border-color: var(--accent);
+      }
+      .btn.danger {
+        background: var(--blocked);
+        color: var(--accent-fg);
+        border-color: var(--blocked);
+      }
+      .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .switch {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr);
+        gap: 2px 8px;
+        padding: 6px 0;
+        border-top: 1px solid var(--border);
+        cursor: pointer;
+      }
+      .switch input {
+        margin: 2px 0 0;
+        accent-color: var(--accent);
+        width: 14px;
+        height: 14px;
+      }
+      .switch .sw-title {
+        font-size: 12px;
+      }
+      .switch .sw-title b {
+        font-weight: 600;
+        margin-right: 4px;
+      }
+      .switch small {
+        grid-column: 2;
+      }
+      .sev {
+        font-size: 10px;
+        color: var(--dim);
+        margin-left: 4px;
+      }
+
+      .field {
+        display: grid;
+        gap: 4px;
+        margin-bottom: 10px;
+      }
+      .field label,
+      .field .lbl {
+        font-size: 12px;
+      }
+      .field select {
+        height: 26px;
+        border: 1px solid var(--input);
+        border-radius: 4px;
+        background: var(--surface);
+        padding: 0 6px;
+        max-width: 100%;
+      }
+      .check {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        font-size: 12px;
+        margin-bottom: 10px;
+        cursor: pointer;
+      }
+      .check input {
+        margin: 2px 0 0;
+        accent-color: var(--accent);
+      }
+      .pair {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 6px;
+      }
+
+      details {
+        border-top: 1px solid var(--border);
+        padding: 6px 0;
+      }
+      details summary {
+        cursor: pointer;
+        font-size: 12px;
+      }
+      details p,
+      details ul {
+        font-size: 12px;
+        color: var(--muted);
+        margin: 6px 0 4px;
+      }
+      details ul {
+        padding-left: 16px;
+      }
+
+      .preview .pv-head {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 4px 12px;
+        margin-bottom: 8px;
+      }
+      .pv-help {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .stage {
+        display: flex;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        overflow: hidden;
+        background: var(--surface);
+        min-width: 0;
+      }
+      .work {
+        flex: 1;
+        min-width: 0;
+        padding: 14px;
+        display: grid;
+        gap: 16px;
+        align-content: start;
+      }
+      .card {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 12px;
+        min-width: 0;
+      }
+      .card dl {
+        display: grid;
+        grid-template-columns: max-content minmax(0, 1fr);
+        gap: 4px 12px;
+        margin: 0;
+        font-size: 12px;
+      }
+      .card dt {
+        color: var(--dim);
+      }
+      .card dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+      .ok {
+        color: var(--working);
+      }
+      .warn {
+        color: var(--done);
+      }
+      .tag {
+        font-size: 10px;
+        color: var(--dim);
+        border: 1px solid var(--input);
+        border-radius: 3px;
+        padding: 0 4px;
+        margin-left: 4px;
+        font-weight: 400;
+        text-transform: none;
+        letter-spacing: 0;
+      }
+
+      .fix-focus {
+        position: sticky;
+        top: 12px;
+        z-index: 2;
+        padding: 14px;
+        margin-bottom: 14px;
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        background: var(--surface);
+      }
+      .fix-focus.trying {
+        position: static;
+      }
+      .fix-focus h3 {
+        font-size: 15px;
+        margin: 8px 0;
+      }
+      .fix-toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+      .fix-toolbar select {
+        min-width: 0;
+        max-width: 100%;
+        background: var(--surface);
+        border: 1px solid var(--input);
+        border-radius: 3px;
+        padding: 4px;
+      }
+      .fix-mode {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--accent);
+      }
+      .fix-example {
+        margin: 10px 0;
+        padding: 10px;
+        background: var(--canvas);
+        border-radius: 3px;
+        font-size: 12px;
+        max-height: 240px;
+        overflow: auto;
+        overflow-wrap: anywhere;
+      }
+      .fix-example ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .fix-example li {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 4px 12px;
+        padding: 5px;
+        border-bottom: 1px solid var(--border);
+      }
+      .fix-example .example-focus {
+        outline: 1px solid var(--accent);
+        outline-offset: -1px;
+        background: var(--selected);
+      }
+      .fix-example .example-disabled {
+        color: var(--muted);
+      }
+      .fix-example code {
+        display: block;
+        color: var(--fg);
+      }
+      .fix-focus .btn {
+        min-height: 32px;
+        height: auto;
+      }
+
+      /* Simulated rail: RAIL = { pad: 16, header: 24, row: 28, rowGap: 2, sectionGap: 20, emptyGap: 10 } */
+      .rail {
+        width: var(--rail-w);
+        max-width: 100%;
+        flex: none;
+        background: var(--chrome);
+        border-right: 1px solid var(--border);
+        padding: 16px 0 8px;
+        font-size: 12px;
+        user-select: none;
+        display: flex;
+        flex-direction: column;
+        min-height: 680px;
+      }
+      .rail .grow {
+        flex: 1;
+        min-height: 16px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 28px;
+        margin: 0 4px 2px;
+        padding: 0 8px;
+        border-radius: 3px;
+        color: var(--muted);
+        position: relative;
+        min-width: 0;
+        cursor: default;
+      }
+      .row.lit {
+        color: var(--fg);
+      }
+      .row.dimmed {
+        color: var(--dim);
+      }
+      .row.strong {
+        font-weight: 500;
+      }
+      .row:hover {
+        background: var(--hover);
+        color: var(--fg);
+      }
+      .row.current {
+        background: var(--selected);
+        color: var(--fg);
+      }
+      .row.hl {
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
+      .row:focus,
+      .hdr:focus {
+        outline: none;
+      }
+      .row:focus-visible,
+      .hdr:focus-visible {
+        background: var(--selected);
+        color: var(--fg);
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
+      .ind {
+        flex: none;
+        display: flex;
+        justify-content: flex-end;
+        color: var(--dim);
+      }
+      .ind .mark {
+        color: var(--accent);
+      }
+      .lead {
+        width: 14px;
+        height: 14px;
+        flex: none;
+        display: grid;
+        place-items: center;
+        color: var(--dim);
+        font-size: 11px;
+      }
+      .lead svg {
+        width: 12px;
+        height: 12px;
+      }
+      .txt {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        gap: 5px;
+        align-items: center;
+      }
+      .txt .t {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .txt .tail {
+        flex: none;
+        font-size: 10px;
+        color: var(--dim);
+      }
+      .val {
+        flex: none;
+        max-width: 80px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 11px;
+        color: var(--dim);
+      }
+      .end,
+      .he {
+        flex: none;
+        display: flex;
+        gap: 4px;
+        align-items: center;
+      }
+      .he {
+        display: none;
+      }
+      .row:hover .he,
+      .row:focus-within .he {
+        display: flex;
+      }
+      .row:hover .end.swap,
+      .row:focus-within .end.swap {
+        display: none;
+      }
+      .hdr {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 24px;
+        padding: 0 12px;
+        margin-bottom: 2px;
+        cursor: pointer;
+        font-size: 11px;
+      }
+      .hdr .ht {
+        font-weight: 500;
+      }
+      .hdr .hc {
+        color: var(--muted);
+      }
+      .hdr .sp {
+        flex: 1;
+      }
+      .chev {
+        display: inline-block;
+        width: 8px;
+        color: var(--dim);
+        transform: rotate(0deg);
+        text-align: center;
+        line-height: 1;
+      }
+      .chev.open {
+        transform: rotate(90deg);
+      }
+      .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        flex: none;
+        display: inline-block;
+      }
+      .avatar {
+        width: 14px;
+        height: 14px;
+        border-radius: 3px;
+        display: grid;
+        place-items: center;
+        font-size: 9.5px;
+        font-weight: 600;
+        line-height: 14px;
+      }
+      .avatar.small {
+        width: 12px;
+        height: 12px;
+        font-size: 8.5px;
+        line-height: 12px;
+      }
+      .ctl {
+        width: 18px;
+        height: 18px;
+        border: 0;
+        padding: 0;
+        border-radius: 3px;
+        background: transparent;
+        color: var(--dim);
+        display: grid;
+        place-items: center;
+        cursor: pointer;
+        font-size: 12px;
+        line-height: 1;
+      }
+      .ctl:hover {
+        background: var(--hover);
+        color: var(--fg);
+      }
+      .ctl svg {
+        width: 10px;
+        height: 10px;
+      }
+      .ctl.chip,
+      .chip {
+        width: auto;
+        height: 16px;
+        padding: 0 5px;
+        gap: 4px;
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--input);
+        border-radius: 8px;
+        font-size: 10px;
+        color: var(--muted);
+        background: none;
+      }
+      .static {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        height: 24px;
+        align-items: center;
+        margin: 0 4px;
+        padding: 0 8px 0 28px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      /* Popups and dialogs */
+      .pop {
+        position: fixed;
+        z-index: 50;
+        background: var(--popover);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: 0 8px 24px #000c;
+        padding: 4px;
+        font-size: 12px;
+        overflow: auto;
+        max-width: calc(100vw - 16px);
+      }
+      .pop:focus {
+        outline: none;
+      }
+      .pop .target {
+        font-size: 11px;
+        color: var(--muted);
+        padding: 6px 6px 4px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 2px;
+      }
+      .pop .target code {
+        display: block;
+      }
+      .mi {
+        height: 24px;
+        padding: 0 6px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 3px;
+        color: var(--muted);
+        cursor: default;
+        white-space: nowrap;
+      }
+      .mi .ic {
+        width: 13px;
+        flex: none;
+        text-align: center;
+        color: var(--dim);
+      }
+      .mi .pad {
+        width: 10px;
+        flex: none;
+      }
+      .mi .lab {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .mi .note {
+        font-size: 10px;
+        color: var(--dim);
+      }
+      .mi:hover:not([aria-disabled="true"]),
+      .mi:focus {
+        background: var(--hover);
+        color: var(--fg);
+        outline: none;
+      }
+      .mi:focus-visible {
+        box-shadow: inset 0 0 0 1px var(--accent);
+      }
+      .mi[aria-disabled="true"] {
+        color: var(--dim);
+      }
+      .sep {
+        height: 1px;
+        background: var(--border);
+        margin: 4px;
+      }
+      .mh {
+        font-size: 10px;
+        color: var(--dim);
+        padding: 6px 6px 2px;
+      }
+
+      dialog {
+        background: var(--popover);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+        width: min(420px, calc(100vw - 32px));
+      }
+      dialog::backdrop {
+        background: #000a;
+      }
+      dialog h2 {
+        text-transform: none;
+        font-size: 13px;
+        color: var(--fg);
+        letter-spacing: 0;
+      }
+      .dbody {
+        font-size: 12px;
+        color: var(--muted);
+        display: grid;
+        gap: 8px;
+        margin-bottom: 14px;
+      }
+      .dbody input[type="text"],
+      .dbody textarea {
+        width: 100%;
+        background: var(--surface);
+        border: 1px solid var(--input);
+        border-radius: 4px;
+        padding: 5px 8px;
+      }
+      .dbody pre {
+        margin: 0;
+        max-height: 220px;
+        overflow: auto;
+        background: var(--canvas);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 8px;
+        font:
+          11px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        color: var(--muted);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .dbody label {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .dact {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .gh-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 4px;
+      }
+      .gh-list li {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 10px;
+        padding: 6px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+      }
+      .gh-list li.hl {
+        background: var(--selected);
+        box-shadow: inset 2px 0 0 var(--accent);
+      }
+      .gh-list .name {
+        flex: 1;
+        min-width: 120px;
+      }
+      .gh-list .btn {
+        height: 22px;
+        padding: 0 8px;
+        font-size: 11px;
+      }
+
+      .state dl {
+        display: grid;
+        grid-template-columns: max-content minmax(0, 1fr);
+        gap: 4px 10px;
+        font-size: 12px;
+        margin: 0 0 16px;
+      }
+      .state dt {
+        color: var(--dim);
+      }
+      .state dd {
+        margin: 0;
+        overflow-wrap: anywhere;
+      }
+      .log {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        font-size: 12px;
+        display: grid;
+        gap: 4px;
+        max-height: 420px;
+        overflow: auto;
+      }
+      .log li {
+        border-left: 2px solid var(--input);
+        padding: 2px 0 2px 8px;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      .log li.warn {
+        border-color: var(--done);
+      }
+      .log li.sim {
+        border-color: var(--accent);
+      }
+      .log time {
+        color: var(--dim);
+        font-size: 10px;
+        margin-right: 6px;
+      }
+
+      @media (prefers-reduced-motion: no-preference) {
+        .row,
+        .ctl,
+        .mi,
+        .btn {
+          transition: background-color 80ms linear;
+        }
+      }
+      @media (max-width: 1180px) {
+        .layout {
+          grid-template-columns: 280px minmax(0, 1fr);
+        }
+        .state {
+          grid-column: 1 / -1;
+          border-top: 1px solid var(--border);
+          border-right: 0;
+        }
+      }
+      @media (max-width: 820px) {
+        .layout {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .panel {
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+        }
+        .controls .btn,
+        .controls select,
+        .state .btn {
+          min-height: 44px;
+        }
+        .switch {
+          min-height: 44px;
+        }
+        .stage {
+          flex-direction: column;
+        }
+        .rail {
+          width: min(var(--rail-w), 100%);
+          border-right: 0;
+          border-bottom: 1px solid var(--border);
+          min-height: 0;
+        }
+        .fix-focus {
+          position: static;
+        }
+        .fix-focus .btn,
+        .fix-toolbar select {
+          min-height: 44px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="banner">
+      <h1>Rail cohesion prototype · F1–F7</h1>
+      <span class="badge" role="note">Mock data · simulated actions · no Herdr connection</span>
+    </header>
+
+    <main class="layout">
+      <aside class="panel controls" aria-label="Prototype controls">
+        <section class="group" aria-labelledby="h-try">
+          <h2 id="h-try">How to try</h2>
+          <p class="muted" style="font-size: 12px">
+            Each switch now loads a focused example automatically. Watch <b>Fix in view</b>: it
+            shows the actual menu, target or keyboard path affected, without extra setup.
+          </p>
+          <p class="muted" style="font-size: 12px">
+            The example prepares sample data for that fix, but keeps your other switches unchanged.
+            Use <b>Try in preview</b> to interact with the selected behavior. These are behavior
+            changes, not a visual redesign.
+          </p>
+          <p style="font-size: 12px">
+            <a href="rail-cohesion-review-2026-11-02.md" style="color: var(--accent)"
+              >Read the source proposal</a
+            >
+          </p>
+        </section>
+        <section class="group" aria-labelledby="h-proposals">
+          <h2 id="h-proposals">Proposals</h2>
+          <div class="btns">
+            <button type="button" class="btn" id="all-on">All on</button>
+            <button type="button" class="btn" id="all-off">All off</button>
+            <button
+              type="button"
+              class="btn"
+              id="reset-all"
+              title="Turn all proposals on and restore the mock data"
+            >
+              Reset
+            </button>
+          </div>
+          <div id="switches"></div>
+        </section>
+
+        <section class="group" aria-labelledby="h-scenario">
+          <h2 id="h-scenario">Scenario</h2>
+          <div class="field">
+            <label for="sc-order">Herdr workspace spaces <span class="sev">F4</span></label>
+            <select id="sc-order">
+              <option value="main-first">Main checkout first</option>
+              <option value="external-first">External linked worktree first</option>
+              <option value="linked-only">Only linked worktrees open</option>
+            </select>
+          </div>
+          <label class="check"
+            ><input type="checkbox" id="sc-pending" /><span
+              >Checkout lookup still pending <span class="sev">F4</span></span
+            ></label
+          >
+          <div class="field">
+            <span class="lbl">fix-auth space <span class="sev">F3</span></span>
+            <button type="button" class="btn" id="sc-tab"></button>
+          </div>
+          <label class="check"
+            ><input type="checkbox" id="sc-settle" /><span
+              >Settle the <b>logs</b> tab <span class="sev">F6</span></span
+            ></label
+          >
+          <div class="field">
+            <span class="lbl" id="sc-status-lbl">Agent status <span class="sev">F6 F7</span></span>
+            <div class="pair">
+              <select id="sc-agent" aria-label="Agent"></select>
+              <select id="sc-status" aria-label="Status">
+                <option value="working">Working</option>
+                <option value="blocked">Needs you</option>
+                <option value="done">Unread</option>
+                <option value="idle">Idle</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label for="sc-width">Rail width</label>
+            <select id="sc-width">
+              <option value="160">160px (minimum)</option>
+              <option value="240">240px (default)</option>
+              <option value="400">400px (maximum)</option>
+            </select>
+          </div>
+        </section>
+
+        <section class="group" aria-labelledby="h-notes">
+          <h2 id="h-notes">Code-only notes</h2>
+          <p class="muted" style="font-size: 12px">
+            These simplifications change no visible behavior, so the preview does not show them.
+          </p>
+          <details>
+            <summary>S1 · One shared agent-list refresh</summary>
+            <p>
+              The rail, the thread picker and the new menu each refresh the agent list and store it
+              under <code>frantss.agents</code>. Use one machine-keyed refresh helper and one state
+              key.
+            </p>
+            <p>
+              Boundary: keep loading and error behavior per surface. Do not add a cache or retry
+              framework.
+            </p>
+          </details>
+          <details>
+            <summary>S2 · One saved-workspace contract</summary>
+            <p>
+              The saved-workspace key and type are repeated in the rail and in
+              <code>frantss-workspace</code>. Share one contract.
+            </p>
+            <p>Boundary: do not extend the schema to remote machines without a requirement.</p>
+          </details>
+          <details>
+            <summary>S3 · Shared space naming and rename prompt</summary>
+            <p>
+              The rail, toolbar and menu each build space display names and rename prompts. Share
+              the naming and prompt construction.
+            </p>
+            <p>Boundary: keep pane aliases, tab names and space names distinct.</p>
+          </details>
+          <details>
+            <summary>S4 · One small openThread helper</summary>
+            <p>
+              Thread-popup setup is repeated for the workspace + and the space +. Extract a helper
+              only if it makes the explicit target simpler.
+            </p>
+            <p>
+              Boundary: keep the real differences in machine, folder, existing space and repo
+              eligibility.
+            </p>
+          </details>
+          <details>
+            <summary>S5 · Delete the checkout path convention</summary>
+            <p>
+              F4 replaces the <code>/.herdr/worktrees/</code> path test with discovered checkout
+              state. Delete the path test.
+            </p>
+            <p>Boundary: keep the uncertainty visible while the repository lookup is pending.</p>
+          </details>
+          <details>
+            <summary>S6 · Small shared selectable list</summary>
+            <p>
+              Row and keyboard behavior differ across three popups. Reuse one small native
+              selectable-list pattern if F2 shows enough common behavior.
+            </p>
+            <p>Boundary: no generic action registry or menu framework.</p>
+          </details>
+          <details>
+            <summary>Alternative B · Merge the popups into frantss-menu</summary>
+            <p>
+              Add thread, workspace and composite-space modes to <code>frantss-menu</code>, migrate
+              every caller, then delete <code>frantss-thread</code> and
+              <code>frantss-workspace</code>.
+            </p>
+            <p>
+              This is not a switch: the visible behavior can match approach A. B changes code
+              ownership, needs separate approval, and risks state leaking between modes and popup
+              sizes (260×420, 220×120, 320×440). <code>pnpm check:mods</code> alone cannot prove
+              that dynamic callers are gone.
+            </p>
+          </details>
+        </section>
+      </aside>
+
+      <section class="panel preview" aria-labelledby="h-preview">
+        <div class="pv-head">
+          <h2 id="h-preview">Preview <span class="tag">simulated Herdr rail</span></h2>
+          <p class="pv-help">
+            Right-click a row for its menu. Hover a row for its controls. Baseline keyboard gaps
+            apply only inside this frame. With F1 on: <kbd>Tab</kbd> into the rail, then <kbd>↑</kbd
+            ><kbd>↓</kbd> <kbd>Enter</kbd> <kbd>←</kbd><kbd>→</kbd> <kbd>Shift</kbd>+<kbd>F10</kbd>.
+          </p>
+        </div>
+        <section class="fix-focus" id="fix-focus" aria-labelledby="fix-title">
+          <div class="fix-toolbar">
+            <label for="fix-choice">Fix in view</label>
+            <select id="fix-choice"></select>
+            <button type="button" class="btn" id="fix-toggle"></button>
+          </div>
+          <div id="fix-result" aria-live="polite"></div>
+          <div class="fix-example" id="fix-example"></div>
+          <button type="button" class="btn" id="fix-try">Try in preview</button>
+        </section>
+        <div class="stage">
+          <nav class="rail" id="rail" aria-label="Simulated rail"></nav>
+          <div class="work">
+            <section class="card" id="inspector" aria-labelledby="h-inspector"></section>
+            <section class="card" id="github" aria-labelledby="h-github"></section>
+          </div>
+        </div>
+      </section>
+
+      <aside class="panel state" aria-label="Current state and log">
+        <h2>Current state</h2>
+        <dl id="state"></dl>
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+          "
+        >
+          <h2 style="margin: 0">Log</h2>
+          <button type="button" class="btn" id="clear-log">Clear log</button>
+        </div>
+        <ol class="log" id="log" aria-live="polite"></ol>
+      </aside>
+    </main>
+
+    <dialog id="dlg" aria-labelledby="dlg-title"></dialog>
+
+    <script>
+      "use strict";
+      const $ = (s) => document.querySelector(s);
+      const esc = (s) =>
+        String(s ?? "").replace(
+          /[&<>"']/g,
+          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+        );
+
+      const PROPOSALS = [
+        {
+          id: "F1",
+          title: "Rail keyboard activation",
+          sev: "HIGH",
+          desc: "All actionable rows and headers share one focus contract: arrows move, Enter/Space activate, ←/→ fold, Shift+F10 opens the row menu. Off: only Other worktrees rows take keyboard focus.",
+        },
+        {
+          id: "F2",
+          title: "Picker arrow and Enter navigation",
+          sev: "HIGH",
+          desc: "Thread and workspace pickers support ↑/↓/Enter like the context menu, and focus survives async agent loading. Off: Escape only.",
+        },
+        {
+          id: "F3",
+          title: "Space actions on compressed rows",
+          sev: "MEDIUM",
+          desc: "A lone-pane space row keeps its pane and agent actions and adds a separate Space section. Off: pane menu only.",
+        },
+        {
+          id: "F4",
+          title: "Git-classified main checkout",
+          sev: "MEDIUM",
+          desc: "The workspace + targets the space Git classifies as main and shows the target. The first-space fallback stays. Off: path test for /.herdr/worktrees/.",
+        },
+        {
+          id: "F5",
+          title: "Resume needs a saved folder",
+          sev: "MEDIUM",
+          desc: "Rail, menu and GitHub agree. View history stays available. Off: the rail and menu offer Resume without a folder.",
+        },
+        {
+          id: "F6",
+          title: "Settled tabs fold and return",
+          sev: "MEDIUM",
+          desc: "Proposed policy: settled tabs fold into one row with Restore, and attention brings a tab back. Off: the rail ignores settled state.",
+        },
+        {
+          id: "F7",
+          title: "Interrupt eligibility matches",
+          sev: "LOW",
+          desc: "Hover controls and the menu offer Interrupt for working agents only. Off: the menu always offers it.",
+        },
+      ];
+      const GROUPS = [
+        { status: "blocked", label: "Needs you" },
+        { status: "done", label: "Unread" },
+        { status: "working", label: "Working" },
+        { status: "idle", label: "Idle" },
+      ];
+      const URGENCY = ["blocked", "done", "working", "idle"];
+      const STATUS_LABEL = {
+        blocked: "Needs you",
+        done: "Unread",
+        working: "Working",
+        idle: "Idle",
+      };
+      const APPS = {
+        claude: { name: "Claude", glyph: "✳" },
+        codex: { name: "Codex", glyph: "◎" },
+        omp: { name: "OMP", glyph: "ω" },
+        zsh: { name: "Terminal", glyph: "›" },
+      };
+      const PROVIDERS = ["claude", "codex", "omp"];
+      const RESUMABLE = ["claude", "codex", "omp"];
+      const PR_STATES = {
+        failing: { label: "Checks failing", color: "blocked" },
+        review: { label: "Review requested", color: "done" },
+        open: { label: "Open", color: "working" },
+        draft: { label: "Draft", color: "idle" },
+      };
+      const PR_ORDER = ["failing", "review", "open", "draft"];
+      const ICON = {
+        main: '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="6" cy="6" r="2"/><path d="M0.5 6h3.5M8 6h3.5"/></svg>',
+        linked:
+          '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="3" cy="2.5" r="1.3"/><circle cx="3" cy="9.5" r="1.3"/><circle cx="9" cy="4" r="1.3"/><path d="M3 3.8v4.4M9 5.3c0 2-3 1.8-5.6 3.2"/></svg>',
+        folder:
+          '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M1 3h3.5l1 1.2H11v5.8H1z"/></svg>',
+        eye: '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M0.8 6s2-3.6 5.2-3.6S11.2 6 11.2 6 9.2 9.6 6 9.6 0.8 6 0.8 6z"/><circle cx="6" cy="6" r="1.4"/></svg>',
+        stop: '<svg viewBox="0 0 12 12" fill="currentColor"><rect x="2.5" y="2.5" width="7" height="7" rx="1"/></svg>',
+        history:
+          '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M2 6a4 4 0 1 0 1.2-2.8M2 1.8v1.8h1.8M6 3.8V6l1.6 1"/></svg>',
+        resume:
+          '<svg viewBox="0 0 12 12" fill="currentColor"><path d="M3.5 2.2v7.6L9.6 6z"/></svg>',
+        remove:
+          '<svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M3 3l6 6M9 3l-6 6"/></svg>',
+      };
+
+      function initialModel() {
+        return {
+          n: 40,
+          workspaces: [
+            {
+              key: "herdr",
+              name: "herdr",
+              folder: "~/dev/herdr",
+              repo: true,
+              saved: true,
+              color: "#a78bfa",
+              other: [
+                { id: "wt-spike", name: "spike-ui", path: "~/dev/herdr/.herdr/worktrees/spike-ui" },
+              ],
+            },
+            {
+              key: "notes",
+              name: "notes",
+              folder: "~/notes",
+              repo: false,
+              saved: false,
+              color: "#29b8db",
+              other: [],
+            },
+          ],
+          spaces: [
+            {
+              id: "s-main",
+              ws: "herdr",
+              name: "herdr",
+              path: "~/dev/herdr",
+              checkout: "main",
+              tabs: [
+                {
+                  id: "t-agents",
+                  name: "agents",
+                  settled: false,
+                  panes: [
+                    { id: "p1", terminal: "term-1" },
+                    { id: "p2", terminal: "term-2" },
+                  ],
+                },
+                {
+                  id: "t-logs",
+                  name: "logs",
+                  settled: false,
+                  panes: [{ id: "p3", terminal: "term-5" }],
+                },
+              ],
+            },
+            {
+              id: "s-fix",
+              ws: "herdr",
+              name: "fix-auth",
+              path: "~/dev/herdr/.herdr/worktrees/fix-auth",
+              checkout: "linked",
+              tabs: [
+                {
+                  id: "t-fix",
+                  name: "fix-auth",
+                  settled: false,
+                  panes: [{ id: "p4", terminal: "term-3" }],
+                },
+              ],
+            },
+            {
+              id: "s-review",
+              ws: "herdr",
+              name: "review-212",
+              path: "~/dev/herdr-review",
+              checkout: "linked",
+              tabs: [
+                {
+                  id: "t-review",
+                  name: "review-212",
+                  settled: false,
+                  panes: [{ id: "p5", terminal: "term-4" }],
+                },
+              ],
+            },
+            {
+              id: "s-notes",
+              ws: "notes",
+              name: "notes",
+              path: "~/notes",
+              checkout: null,
+              tabs: [
+                {
+                  id: "t-notes",
+                  name: "zsh",
+                  settled: false,
+                  panes: [{ id: "p6", terminal: "term-6" }],
+                },
+              ],
+            },
+          ],
+          terminals: {
+            "term-1": {
+              address: "term-1",
+              name: "planner",
+              app: "claude",
+              agent: true,
+              status: "working",
+              pinned: true,
+              prs: [{ num: 212, state: "review" }],
+            },
+            "term-2": {
+              address: "term-2",
+              name: "tests",
+              app: "codex",
+              agent: true,
+              status: "blocked",
+              pinned: false,
+              prs: [],
+            },
+            "term-3": {
+              address: "term-3",
+              name: "fix-auth",
+              app: "claude",
+              agent: true,
+              status: "done",
+              pinned: false,
+              prs: [{ num: 214, state: "failing" }],
+            },
+            "term-4": {
+              address: "term-4",
+              name: "reviewer",
+              app: "codex",
+              agent: true,
+              status: "idle",
+              pinned: false,
+              prs: [{ num: 212, state: "open" }],
+            },
+            "term-5": {
+              address: "term-5",
+              name: "log-watch",
+              app: "claude",
+              agent: true,
+              status: "idle",
+              pinned: false,
+              prs: [],
+            },
+            "term-6": { address: "term-6", name: "zsh", app: "zsh", agent: false },
+          },
+          closed: [
+            {
+              id: "c1",
+              terminal: "term-31",
+              name: "migrate-db",
+              app: "claude",
+              cwd: "~/dev/herdr",
+              prs: [{ num: 209, state: "review" }],
+            },
+            {
+              id: "c2",
+              terminal: "term-28",
+              name: "old-spike",
+              app: "codex",
+              cwd: null,
+              prs: [{ num: 198, state: "draft" }],
+            },
+            { id: "c3", terminal: "term-22", name: "scratch", app: "zsh", cwd: "~/notes", prs: [] },
+          ],
+        };
+      }
+
+      function initialState() {
+        return {
+          toggles: Object.fromEntries(PROPOSALS.map((p) => [p.id, true])),
+          scenario: { order: "main-first", pending: false, width: 240 },
+          model: initialModel(),
+          ui: {
+            selection: { kind: "terminal", id: "term-3" },
+            collapsed: { usage: true },
+            roving: null,
+            ghHighlight: null,
+            statusAgent: "term-1",
+            demo: "F3",
+          },
+          log: [],
+        };
+      }
+      let S = initialState();
+      const on = (id) => S.toggles[id];
+
+      /* ---------- Model queries ---------- */
+      function spacesOf(key) {
+        let list = S.model.spaces.filter((s) => s.ws === key);
+        if (key !== "herdr") return list;
+        const order = S.scenario.order;
+        if (order === "linked-only") list = list.filter((s) => s.id !== "s-main");
+        const rank = {
+          "main-first": ["s-main", "s-fix", "s-review"],
+          "external-first": ["s-review", "s-main", "s-fix"],
+          "linked-only": ["s-fix", "s-review"],
+        }[order];
+        const r = (id) => (rank.indexOf(id) < 0 ? 99 : rank.indexOf(id));
+        return list
+          .map((s, i) => [s, i])
+          .sort((a, b) => r(a[0].id) - r(b[0].id) || a[1] - b[1])
+          .map((x) => x[0]);
+      }
+      const visibleSpaces = () => S.model.workspaces.flatMap((w) => spacesOf(w.key));
+      const wsOf = (space) => S.model.workspaces.find((w) => w.key === space.ws);
+      const term = (address) => S.model.terminals[address];
+      function findPane(address) {
+        for (const space of visibleSpaces())
+          for (const tab of space.tabs)
+            for (const pane of tab.panes)
+              if (pane.terminal === address) return { space, tab, pane };
+        return null;
+      }
+      const findSpace = (id) => visibleSpaces().find((s) => s.id === id);
+      function findTab(id) {
+        for (const space of visibleSpaces()) {
+          const tab = space.tabs.find((t) => t.id === id);
+          if (tab) return { space, tab };
+        }
+        return null;
+      }
+      const liveAgents = () =>
+        visibleSpaces()
+          .flatMap((s) => s.tabs.flatMap((t) => t.panes.map((p) => term(p.terminal))))
+          .filter((t) => t && t.agent);
+      const isCompressed = (s) => s.tabs.length === 1 && s.tabs[0].panes.length < 2;
+      const statusesOf = (panes) =>
+        panes
+          .map((p) => term(p.terminal))
+          .filter((t) => t && t.agent)
+          .map((t) => t.status);
+      const tabStatuses = (tab) => statusesOf(tab.panes);
+      const spaceStatuses = (s) => s.tabs.flatMap(tabStatuses);
+      const mostUrgent = (list) => URGENCY.find((u) => list.includes(u)) ?? null;
+      const paneName = (p) => p.alias || term(p.terminal)?.name || p.id;
+      const checkoutLabel = (s) =>
+        s.checkout === "main"
+          ? "main checkout"
+          : s.checkout === "linked"
+            ? "linked worktree"
+            : "folder";
+      const resumeProvider = (rec) => RESUMABLE.includes(rec.app);
+
+      function mostUrgentPr(prs) {
+        const states = (prs ?? []).map((p) => p.state);
+        return PR_ORDER.find((s) => states.includes(s)) ?? null;
+      }
+
+      /* Eligibility, one function per surface so the inspector can compare them. */
+      const interruptHover = (a) => a.status === "working";
+      const interruptMenu = (a) => (on("F7") ? a.status === "working" : true);
+      function resumeRail(rec) {
+        if (!resumeProvider(rec)) return { show: false, reason: "Provider not recognized" };
+        if (on("F5") && !rec.cwd) return { show: true, disabled: true, reason: "No saved folder" };
+        return { show: true };
+      }
+      function resumeGitHub(rec) {
+        if (!resumeProvider(rec)) return { show: false, reason: "Provider not recognized" };
+        if (!rec.cwd) return { show: true, disabled: true, reason: "No saved folder" };
+        return { show: true };
+      }
+
+      /* F4: which space the workspace + starts a thread in. */
+      function pathTarget(spaces) {
+        return spaces.find((s) => !s.path.includes("/.herdr/worktrees/")) ?? spaces[0];
+      }
+      function gitTarget(spaces) {
+        if (S.scenario.pending) return { space: spaces[0], how: "pending" };
+        const main = spaces.find((s) => s.checkout === "main");
+        return main ? { space: main, how: "main" } : { space: spaces[0], how: "fallback" };
+      }
+      function workspaceTarget(w) {
+        const spaces = spacesOf(w.key);
+        if (!spaces.length) return null;
+        if (!on("F4")) return { space: pathTarget(spaces), how: "path" };
+        return gitTarget(spaces);
+      }
+      function targetText(target, folder) {
+        if (!target) return { line: `New space in ${folder}`, path: folder };
+        const s = target.space;
+        const line = {
+          main: `New tab in ${s.name} · main checkout`,
+          fallback: `New tab in ${s.name} · ${checkoutLabel(s)} · no main checkout open, first space used`,
+          pending: `New tab in ${s.name} · checkout not verified yet`,
+          space: `New tab in ${s.name} · ${checkoutLabel(s)}`,
+        }[target.how];
+        return { line, path: s.path };
+      }
+
+      /* F6: proposed settled-tab policy. A settled tab returns when its agent needs attention. */
+      const returned = (tab) =>
+        tab.settled && tabStatuses(tab).some((st) => st === "blocked" || st === "done");
+      const folded = (tab) => on("F6") && tab.settled && !returned(tab);
+
+      /* ---------- Log ---------- */
+      function log(text, kind = "info") {
+        const time = new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        S.log.unshift({ time, text, kind });
+        S.log.length = Math.min(S.log.length, 80);
+      }
+      const sim = (text) => log(`Simulated: ${text}`, "sim");
+      const warn = (text) => log(text, "warn");
+
+      /* ---------- Rail model ---------- */
+      let rowMap = new Map();
+      let ctlMap = new Map();
+
+      function dot(status) {
+        if (!status || status === "idle") return "";
+        return `<span class="dot" style="background:var(--${status})" title="${esc(STATUS_LABEL[status])}"></span>`;
+      }
+      function avatar(w, small = false) {
+        return `<span class="avatar${small ? " small" : ""}" style="color:${w.color};background:${w.color}26">${esc(w.name.slice(0, 1).toUpperCase())}</span>`;
+      }
+      const appGlyph = (app) => `<span aria-hidden="true">${esc(APPS[app]?.glyph ?? "›")}</span>`;
+      function chipCtl(a, suffix) {
+        const state = mostUrgentPr(a.prs);
+        if (!state) return null;
+        const { label, color } = PR_STATES[state];
+        const n = a.prs.length;
+        return {
+          key: `pr:${a.address}:${suffix}`,
+          cls: "chip",
+          label: `${n} open pull request${n > 1 ? "s" : ""}, ${label}. Show in GitHub`,
+          html: `<span class="dot" style="background:var(--${color})"></span>${n} PR${n > 1 ? "s" : ""}`,
+          run: (ctx) => showInGitHub(a.address, ctx),
+        };
+      }
+
+      function select(kind, id) {
+        S.ui.selection = { kind, id };
+      }
+      function toggle(key) {
+        S.ui.collapsed[key] = !S.ui.collapsed[key];
+      }
+
+      function buildRail() {
+        const R = { top: [], bottom: [] };
+        const sel = S.ui.selection ?? {};
+        const C = S.ui.collapsed;
+        const selTerm = sel.kind === "terminal" ? sel.id : null;
+        const selLoc = selTerm ? findPane(selTerm) : null;
+        const activeSpaceId =
+          selLoc?.space.id ??
+          (sel.kind === "space" ? sel.id : sel.kind === "tab" ? findTab(sel.id)?.space.id : null);
+        const add = (list, r) => {
+          r.actionable = r.actionable ?? Boolean(r.activate || r.menu);
+          list.push(r);
+          return r;
+        };
+        const header = (list, key, title, count, extra = {}) =>
+          add(list, {
+            type: "header",
+            key,
+            title,
+            count,
+            collapsed: Boolean(C[key]),
+            activate: () => toggle(key),
+            fold: { open: !C[key], toggle: () => toggle(key) },
+            ...extra,
+          });
+
+        /* Workspaces */
+        const wsList = S.model.workspaces.filter(
+          (w) => spacesOf(w.key).length || w.saved || w.other.length,
+        );
+        header(R.top, "section:workspaces", "Workspaces", wsList.length, {
+          gap: 0,
+          action: {
+            key: "add-workspace",
+            label: "Add workspace",
+            html: "+",
+            run: () => sim("Add workspace opens the native folder picker (not mocked)."),
+          },
+        });
+        if (!C["section:workspaces"]) {
+          for (const w of wsList) {
+            const spaces = spacesOf(w.key);
+            const wsKey = `ws:${w.key}`;
+            const status = mostUrgent(spaces.flatMap(spaceStatuses));
+            const target = workspaceTarget(w);
+            add(R.top, {
+              type: "row",
+              key: wsKey,
+              text: w.name,
+              strong: true,
+              lit: true,
+              flush: true,
+              lead: avatar(w),
+              end: dot(status),
+              hoverEnd: [
+                { html: dot(status) },
+                {
+                  key: `new:${w.key}`,
+                  label: "New thread",
+                  html: "+",
+                  run: (ctx) =>
+                    openThread({ target, folder: w.folder, repo: w.repo, ws: w.key }, ctx),
+                },
+              ],
+              current: sel.kind === "workspace" && sel.id === w.key,
+              fold: { open: !C[wsKey], toggle: () => toggle(wsKey) },
+              activate: () => {
+                toggle(wsKey);
+                select("workspace", w.key);
+              },
+              menu: (ctx) => openWorkspacePopup(w, ctx),
+            });
+            if (C[wsKey]) continue;
+            for (const s of spaces) addSpaceRows(R.top, s, { selTerm, sel, activeSpaceId });
+            if (w.repo && w.other.length) {
+              const otherKey = `other:${w.key}`;
+              add(R.top, {
+                type: "row",
+                key: otherKey,
+                text: "Other worktrees",
+                value: String(w.other.length),
+                dimmed: true,
+                collapsed: Boolean(C[otherKey]),
+                fold: { open: !C[otherKey], toggle: () => toggle(otherKey) },
+                activate: () => toggle(otherKey),
+              });
+              if (!C[otherKey])
+                for (const wt of w.other) {
+                  add(R.top, {
+                    type: "row",
+                    key: `wt:${wt.id}`,
+                    indent: 14,
+                    text: wt.name,
+                    lead: ICON.linked,
+                    dimmed: true,
+                    baselineKeyboard: true,
+                    current: sel.kind === "worktree" && sel.id === wt.id,
+                    hoverEnd: [
+                      {
+                        key: `wt-new:${wt.id}`,
+                        label: "New thread",
+                        html: "+",
+                        run: () => {
+                          openOtherWorktree(w, wt);
+                        },
+                      },
+                      {
+                        key: `wt-remove:${wt.id}`,
+                        label: "Remove worktree",
+                        html: ICON.remove,
+                        run: (ctx) => removeOtherWorktreeDialog(w, wt, ctx.fk),
+                      },
+                    ],
+                    activate: () => openOtherWorktree(w, wt),
+                    menu: (ctx) =>
+                      openMenu(ctx, `Worktree ${wt.name}`, [
+                        { label: "Open", run: () => openOtherWorktree(w, wt) },
+                        { label: "New thread", run: () => openOtherWorktree(w, wt) },
+                        {
+                          label: "Remove worktree…",
+                          run: (fk) => removeOtherWorktreeDialog(w, wt, fk),
+                        },
+                      ]),
+                  });
+                }
+            }
+          }
+        }
+
+        /* Agent attention */
+        const agents = liveAgents();
+        const groups = [
+          { id: "pinned", label: "Pinned", status: null, list: agents.filter((a) => a.pinned) },
+          ...GROUPS.map((g) => ({
+            id: g.status,
+            label: g.label,
+            status: g.status,
+            list: agents.filter((a) => !a.pinned && a.status === g.status),
+          })),
+        ];
+        let gap = 20;
+        for (const g of groups) {
+          const key = `section:${g.id}`;
+          header(R.top, key, g.label, g.list.length, {
+            gap,
+            status: g.status,
+            urgent: mostUrgent(g.list.map((a) => a.status)),
+          });
+          gap = g.list.length && !C[key] ? 20 : 10;
+          if (C[key]) continue;
+          for (const a of g.list) {
+            const loc = findPane(a.address);
+            const w = wsOf(loc.space);
+            const chipEnd = chipCtl(a, "end");
+            const chipHover = chipCtl(a, "hover");
+            add(R.top, {
+              type: "row",
+              key: `agent:${a.address}`,
+              text: a.name,
+              lead: avatar(w, true),
+              current: selTerm === a.address,
+              hl: S.ui.ghHighlight === a.address,
+              endCtls: chipEnd ? [chipEnd] : null,
+              hoverEnd: [
+                {
+                  key: `peek:${a.address}`,
+                  label: "Peek",
+                  html: ICON.eye,
+                  run: () => sim(`terminal.peek ${a.name}`),
+                },
+                ...(interruptHover(a)
+                  ? [
+                      {
+                        key: `interrupt:${a.address}`,
+                        label: "Interrupt",
+                        html: ICON.stop,
+                        run: () => interrupt(a, "hover control"),
+                      },
+                    ]
+                  : []),
+                ...(chipHover ? [chipHover] : []),
+              ],
+              activate: () => select("terminal", a.address),
+              menu: (ctx) => openMenu(ctx, `${a.name} menu`, paneItems(loc)),
+            });
+          }
+        }
+
+        /* Recently closed, Usage and footer, pinned to the bottom */
+        header(R.bottom, "closed", "Recently closed", S.model.closed.length, { gap: 0 });
+        if (!C.closed)
+          for (const rec of S.model.closed) {
+            const resume = resumeRail(rec);
+            add(R.bottom, {
+              type: "row",
+              key: `closed:${rec.id}`,
+              text: rec.name,
+              dimmed: true,
+              lead: appGlyph(rec.app),
+              current: sel.kind === "closed" && sel.id === rec.id,
+              hoverEnd: [
+                {
+                  key: `history:${rec.id}`,
+                  label: "View history",
+                  html: ICON.history,
+                  run: (ctx) => historyDialog(rec, ctx.fk),
+                },
+                ...(resume.show && !resume.disabled
+                  ? [
+                      {
+                        key: `resume:${rec.id}`,
+                        label: "Resume",
+                        html: ICON.resume,
+                        run: (ctx) => resumeDialog(rec, "rail hover control", ctx.fk),
+                      },
+                    ]
+                  : []),
+              ],
+              activate: () => select("closed", rec.id),
+              menu: (ctx) => openMenu(ctx, `${rec.name} menu`, closedItems(rec)),
+            });
+          }
+        header(R.bottom, "usage", "Usage", "", { gap: 10, summary: "Claude 42% · Codex 18%" });
+        if (!C.usage) {
+          add(R.bottom, {
+            type: "static",
+            key: "usage:claude",
+            text: "Claude · 5-hour window",
+            value: "42%",
+            actionable: false,
+          });
+          add(R.bottom, {
+            type: "static",
+            key: "usage:codex",
+            text: "Codex · weekly",
+            value: "18%",
+            actionable: false,
+          });
+        }
+        add(R.bottom, {
+          type: "row",
+          key: "footer:settings",
+          text: "Settings",
+          lead: "⚙",
+          flush: false,
+          gapTop: 8,
+          activate: () => sim("Settings opens (not mocked)."),
+        });
+        add(R.bottom, {
+          type: "row",
+          key: "footer:machine",
+          text: "Add machine",
+          lead: "+",
+          activate: () => sim("Add machine dialog opens (not mocked)."),
+        });
+        return R;
+      }
+
+      function addSpaceRows(list, s, { selTerm, sel, activeSpaceId }) {
+        const add = (r) => {
+          r.actionable = r.actionable ?? Boolean(r.activate || r.menu);
+          list.push(r);
+          return r;
+        };
+        const C = S.ui.collapsed;
+        const comp = isCompressed(s);
+        const lone = comp ? s.tabs[0].panes[0] : null;
+        const spaceKey = `space:${s.id}`;
+        const status = mostUrgent(spaceStatuses(s));
+        const w = wsOf(s);
+        add({
+          type: "row",
+          key: spaceKey,
+          text: s.name,
+          lead: s.checkout ? ICON[s.checkout] : ICON.folder,
+          lit: activeSpaceId === s.id,
+          current: comp ? selTerm === lone?.terminal : sel.kind === "space" && sel.id === s.id,
+          end: dot(status),
+          hoverEnd: [
+            { html: dot(status) },
+            {
+              key: `new-tab:${s.id}`,
+              label: "New thread",
+              html: "+",
+              run: (ctx) =>
+                openThread(
+                  { target: { space: s, how: "space" }, folder: s.path, repo: w.repo, ws: w.key },
+                  ctx,
+                ),
+            },
+          ],
+          collapsed: comp ? undefined : Boolean(C[spaceKey]),
+          fold: comp ? null : { open: !C[spaceKey], toggle: () => toggle(spaceKey) },
+          activate: () =>
+            comp ? select("terminal", lone.terminal) : (toggle(spaceKey), select("space", s.id)),
+          menu: (ctx) => {
+            if (!comp) return openMenu(ctx, `${s.name} space menu`, spaceItems(s, false));
+            const loc = { space: s, tab: s.tabs[0], pane: lone };
+            const items = paneItems(loc);
+            if (on("F3"))
+              items.push({ sep: true }, { heading: `Space · ${s.name}` }, ...spaceItems(s, true));
+            openMenu(ctx, `${s.name} menu`, items);
+          },
+        });
+        if (comp || C[spaceKey]) return;
+        const foldedTabs = s.tabs.filter(folded);
+        for (const tab of s.tabs) {
+          if (folded(tab)) continue;
+          addTabRows(add, s, tab, { selTerm, sel, indent: 14 });
+        }
+        if (foldedTabs.length) {
+          const fk = `settled:${s.id}`;
+          const open = Boolean(C[fk + ":open"]);
+          add({
+            type: "row",
+            key: fk,
+            indent: 14,
+            text: `${foldedTabs.length} settled tab${foldedTabs.length > 1 ? "s" : ""}`,
+            tail: "proposed",
+            dimmed: true,
+            collapsed: !open,
+            fold: { open, toggle: () => toggle(fk + ":open") },
+            activate: () => toggle(fk + ":open"),
+          });
+          if (open)
+            for (const tab of foldedTabs) {
+              add({
+                type: "row",
+                key: `settled-tab:${tab.id}`,
+                indent: 28,
+                text: tab.name,
+                dimmed: true,
+                lead: appGlyph(term(tab.panes[0]?.terminal)?.app),
+                hoverEnd: [
+                  {
+                    key: `restore:${tab.id}`,
+                    label: `Restore ${tab.name}`,
+                    html: "↩",
+                    run: () => restoreTab(tab),
+                  },
+                ],
+                activate: () => restoreTab(tab),
+                menu: (ctx) =>
+                  openMenu(ctx, `${tab.name} menu`, [
+                    { label: "Restore", run: () => restoreTab(tab) },
+                    ...tabItems(s, tab),
+                  ]),
+              });
+            }
+        }
+      }
+
+      function addTabRows(add, s, tab, { selTerm, sel, indent }) {
+        const split = tab.panes.length > 1;
+        const lead = tab.panes[0] ? appGlyph(term(tab.panes[0].terminal)?.app) : "";
+        const back = on("F6") && returned(tab) ? "returned · needs attention" : null;
+        if (!split) {
+          const pane = tab.panes[0];
+          add({
+            type: "row",
+            key: `tab:${tab.id}`,
+            indent,
+            text: tab.name,
+            lead,
+            tail: back,
+            current: pane && selTerm === pane.terminal,
+            end: dot(mostUrgent(tabStatuses(tab))),
+            activate: () => pane && select("terminal", pane.terminal),
+            menu: (ctx) =>
+              openMenu(
+                ctx,
+                `${tab.name} menu`,
+                pane ? paneItems({ space: s, tab, pane }) : tabItems(s, tab),
+              ),
+          });
+          return;
+        }
+        add({
+          type: "row",
+          key: `tab:${tab.id}`,
+          indent,
+          text: tab.name,
+          lead,
+          tail: back,
+          current: sel.kind === "tab" && sel.id === tab.id,
+          end: dot(mostUrgent(tabStatuses(tab))),
+          activate: () => select("tab", tab.id),
+          menu: (ctx) => openMenu(ctx, `${tab.name} menu`, tabItems(s, tab)),
+        });
+        tab.panes.forEach((pane, i) => {
+          const t = term(pane.terminal);
+          add({
+            type: "row",
+            key: `pane:${pane.id}`,
+            indent: indent + 14,
+            connector: i === tab.panes.length - 1 ? "└" : "├",
+            text: paneName(pane),
+            lead: appGlyph(t?.app),
+            current: selTerm === pane.terminal,
+            end: dot(t?.agent ? t.status : null),
+            activate: () => select("terminal", pane.terminal),
+            menu: (ctx) =>
+              openMenu(ctx, `${paneName(pane)} menu`, paneItems({ space: s, tab, pane })),
+          });
+        });
+      }
+
+      /* ---------- Menu items ---------- */
+      function agentItems(a, cwd) {
+        return [
+          { label: "Peek", run: () => sim(`terminal.peek ${a.name}`) },
+          ...(a.status === "idle"
+            ? [{ label: "Mark as unread", run: () => setStatus(a, "done", "Mark as unread") }]
+            : []),
+          { label: a.pinned ? "Unpin" : "Pin", run: () => togglePin(a) },
+          { label: "Reply…", run: (fk) => replyDialog(a, fk) },
+          ...(interruptMenu(a)
+            ? [{ label: "Interrupt", run: () => interrupt(a, "context menu") }]
+            : []),
+          { label: "Copy address", run: () => sim(`copy ${a.address} (clipboard untouched)`) },
+          { label: "Copy folder", run: () => sim(`copy ${cwd} (clipboard untouched)`) },
+          { label: "Kill…", run: (fk) => killDialog(a, fk) },
+        ];
+      }
+      function paneItems(loc) {
+        const t = term(loc.pane.terminal);
+        return [
+          ...(t?.agent ? agentItems(t, loc.space.path) : []),
+          { label: "Rename pane", run: (fk) => renameDialog("pane", loc.pane, fk) },
+          { label: "Rename tab", run: (fk) => renameDialog("tab", loc.tab, fk) },
+          { label: "Split right", run: () => split(loc, "right") },
+          { label: "Split down", run: () => split(loc, "down") },
+          { label: "Zoom", run: () => sim(`pane.zoom ${paneName(loc.pane)}`) },
+          {
+            label: "Send right-clicks to pane",
+            run: () => sim(`terminal.right_click to program for ${paneName(loc.pane)}`),
+          },
+          ...(t?.agent
+            ? [
+                {
+                  label: "Send back",
+                  run: () =>
+                    sim(`terminal.park ${t.name} (kept running without a pane; not modelled)`),
+                },
+              ]
+            : []),
+          { label: "Close pane…", run: (fk) => closePaneDialog(loc, fk) },
+        ];
+      }
+      function spaceItems(s, composite) {
+        const suffix = composite ? " space" : "";
+        return [
+          { label: `Rename${suffix}`, run: (fk) => renameDialog("space", s, fk) },
+          { label: "New tab", run: () => newTab(s) },
+          ...(s.checkout
+            ? [
+                { label: "New worktree", run: () => newWorktree(wsOf(s), null) },
+                { label: "Open worktree", run: () => sim("worktree dialog, Open (not mocked)") },
+              ]
+            : []),
+          ...(s.checkout === "linked"
+            ? [{ label: "Remove worktree…", run: (fk) => removeWorktreeDialog(s, fk) }]
+            : []),
+          { label: `Close${suffix}…`, run: (fk) => closeSpaceDialog(s, fk) },
+        ];
+      }
+      function tabItems(s, tab) {
+        return [
+          { label: "Rename", run: (fk) => renameDialog("tab", tab, fk) },
+          { label: "New tab", run: () => newTab(s) },
+          { label: "Close…", run: (fk) => closeTabDialog(s, tab, fk) },
+        ];
+      }
+      function closedItems(rec) {
+        const resume = resumeRail(rec);
+        return [
+          { label: "View history", run: (fk) => historyDialog(rec, fk) },
+          ...(resume.show
+            ? [
+                resume.disabled
+                  ? { label: "Resume…", disabled: true, note: resume.reason }
+                  : { label: "Resume…", run: (fk) => resumeDialog(rec, "context menu", fk) },
+              ]
+            : []),
+          { label: "Forget history…", run: (fk) => forgetDialog(rec, fk) },
+        ];
+      }
+
+      /* ---------- Simulated actions ---------- */
+      function newId(prefix) {
+        S.model.n += 1;
+        return `${prefix}${S.model.n}`;
+      }
+      function newTerminal(app) {
+        const address = newId("term-");
+        const agent = Boolean(app);
+        S.model.terminals[address] = agent
+          ? {
+              address,
+              name: `${app}-${S.model.n}`,
+              app,
+              agent: true,
+              status: "working",
+              pinned: false,
+              prs: [],
+            }
+          : { address, name: "zsh", app: "zsh", agent: false };
+        return address;
+      }
+      function setStatus(a, status, why) {
+        a.status = status;
+        sim(`${why}: ${a.name} is now ${STATUS_LABEL[status]}`);
+      }
+      function togglePin(a) {
+        a.pinned = !a.pinned;
+        sim(`terminal.pin ${a.name} → ${a.pinned ? "pinned" : "unpinned"}`);
+      }
+      function interrupt(a, surface) {
+        if (a.status === "working") {
+          a.status = "idle";
+          sim(`Interrupt from ${surface}: ${a.name} stopped and is now Idle`);
+        } else
+          warn(
+            `Interrupt from ${surface} sent to ${a.name} while ${STATUS_LABEL[a.status]}: nothing to stop. F7 off lets the menu offer this.`,
+          );
+      }
+      function split(loc, dir) {
+        const address = newTerminal(null);
+        loc.tab.panes.push({ id: newId("p"), terminal: address });
+        sim(
+          `pane.split ${dir} in ${loc.tab.name}. ${loc.space.name} now has ${loc.tab.panes.length} panes.`,
+        );
+      }
+      function newTab(s, app = null) {
+        const address = newTerminal(app);
+        const tab = {
+          id: newId("t-"),
+          name: app ? term(address).name : "zsh",
+          settled: false,
+          panes: [{ id: newId("p"), terminal: address }],
+        };
+        s.tabs.push(tab);
+        select("terminal", address);
+        sim(`tab.new in ${s.name} (${checkoutLabel(s)}, ${s.path})`);
+      }
+      function newSpace(w, app = null, path = w.folder, checkout = w.repo ? "main" : null) {
+        const address = newTerminal(app);
+        const name = path.split("/").pop() || path;
+        const s = {
+          id: newId("s-"),
+          ws: w.key,
+          name,
+          path,
+          checkout,
+          tabs: [
+            {
+              id: newId("t-"),
+              name: app ? term(address).name : "zsh",
+              settled: false,
+              panes: [{ id: newId("p"), terminal: address }],
+            },
+          ],
+        };
+        S.model.spaces.push(s);
+        select("terminal", address);
+        return s;
+      }
+      function newWorktree(w, app) {
+        const name = `thread-${S.model.n + 1}`;
+        const s = newSpace(w, app, `${w.folder}/.herdr/worktrees/${name}`, "linked");
+        sim(`worktree dialog → new linked worktree ${s.name} at ${s.path}`);
+      }
+      function openOtherWorktree(w, wt) {
+        w.other = w.other.filter((x) => x !== wt);
+        const s = newSpace(w, null, wt.path, "linked");
+        s.name = wt.name;
+        sim(`Open worktree ${wt.name}: new space, no session moved or resumed`);
+      }
+      function restoreTab(tab) {
+        tab.settled = false;
+        sim(`Restore settled tab ${tab.name}`);
+      }
+      function removePane(loc) {
+        const t = term(loc.pane.terminal);
+        loc.tab.panes = loc.tab.panes.filter((p) => p !== loc.pane);
+        if (!loc.tab.panes.length) loc.space.tabs = loc.space.tabs.filter((x) => x !== loc.tab);
+        if (!loc.space.tabs.length) S.model.spaces = S.model.spaces.filter((x) => x !== loc.space);
+        if (t?.agent)
+          S.model.closed.unshift({
+            id: newId("c"),
+            terminal: t.address,
+            name: t.name,
+            app: t.app,
+            cwd: loc.space.path,
+            prs: t.prs ?? [],
+          });
+        delete S.model.terminals[loc.pane.terminal];
+        if (S.ui.selection?.kind === "terminal" && S.ui.selection.id === loc.pane.terminal)
+          S.ui.selection = null;
+      }
+      function removeSpace(s) {
+        for (const tab of [...s.tabs])
+          for (const pane of [...tab.panes]) removePane({ space: s, tab, pane });
+        S.model.spaces = S.model.spaces.filter((x) => x !== s);
+        if (S.ui.selection?.kind === "space" && S.ui.selection.id === s.id) S.ui.selection = null;
+      }
+
+      /* Thread picker actions */
+      function threadLocal(p, app) {
+        const target = p.target;
+        const w = S.model.workspaces.find((x) => x.key === p.ws);
+        if (!target) {
+          const s = newSpace(w, app);
+          sim(`space.new in ${s.path}`);
+          return;
+        }
+        newTab(target.space, app);
+      }
+      function threadWorktree(p, app) {
+        newWorktree(
+          S.model.workspaces.find((x) => x.key === p.ws),
+          app,
+        );
+      }
+
+      /* ---------- Popups (menus and pickers) ---------- */
+      let POP = null;
+      function anchorFrom(ctx) {
+        if (ctx.x !== undefined) return { x: ctx.x, y: ctx.y };
+        const r = ctx.el.getBoundingClientRect();
+        return { x: r.left, y: r.bottom + 4 };
+      }
+      function openMenu(ctx, label, items) {
+        openPopup({ type: "menu", label, items, keyboard: true, width: 230, maxH: 440, ctx });
+      }
+      function openWorkspacePopup(w, ctx) {
+        openPopup({
+          type: "workspace",
+          label: `${w.name} workspace`,
+          keyboard: on("F2"),
+          width: 220,
+          maxH: 120,
+          ctx,
+          items: [
+            {
+              key: "new-space",
+              label: "New space",
+              pad: true,
+              run: () => {
+                const s = newSpace(w);
+                sim(`space.new in ${s.path}`);
+              },
+            },
+            { sep: true },
+            w.saved
+              ? {
+                  key: "remove",
+                  label: "Remove workspace",
+                  pad: true,
+                  run: () => {
+                    w.saved = false;
+                    sim(`Forget workspace ${w.folder}. Its spaces and files stay.`);
+                  },
+                }
+              : {
+                  key: "keep",
+                  label: "Keep as workspace",
+                  pad: true,
+                  run: () => {
+                    w.saved = true;
+                    sim(`Keep ${w.folder} as a workspace`);
+                  },
+                },
+          ],
+        });
+      }
+      function openThread(p, ctx) {
+        const popup = {
+          type: "thread",
+          label: "New thread",
+          keyboard: on("F2"),
+          width: 260,
+          maxH: 420,
+          ctx,
+          loading: true,
+          ...p,
+        };
+        popup.items = threadItems(popup);
+        openPopup(popup);
+        setTimeout(() => {
+          if (POP !== popup) return;
+          popup.loading = false;
+          popup.items = threadItems(popup);
+          const focusedKey = document.activeElement?.dataset?.ik;
+          renderPopup();
+          if (focusedKey) focusItemByKey(focusedKey);
+          else if (popup.keyboard) focusItem(0);
+          log("Thread picker: agents loaded" + (focusedKey ? `; focus kept on ${focusedKey}` : ""));
+          renderSide();
+        }, 700);
+      }
+      function threadItems(p) {
+        const section = (kind, title, run) => [
+          { heading: title },
+          {
+            key: `${kind}:terminal`,
+            label: "Terminal",
+            glyph: "›",
+            pad: true,
+            run: () => run(null),
+          },
+          ...(p.loading
+            ? [{ key: `${kind}:loading`, label: "Loading agents…", pad: true, disabled: true }]
+            : PROVIDERS.map((app) => ({
+                key: `${kind}:${app}`,
+                label: APPS[app].name,
+                glyph: APPS[app].glyph,
+                pad: true,
+                run: () => run(app),
+              }))),
+        ];
+        return [
+          ...section("local", "LOCAL", (app) => threadLocal(p, app)),
+          ...(p.repo
+            ? [{ sep: true }, ...section("worktree", "WORKTREE", (app) => threadWorktree(p, app))]
+            : []),
+        ];
+      }
+
+      function openPopup(p) {
+        closePopup(false);
+        p.triggerFk = p.ctx.fk;
+        p.anchor = anchorFrom(p.ctx);
+        POP = p;
+        const el = document.createElement("div");
+        el.className = "pop";
+        el.id = "pop";
+        el.tabIndex = -1;
+        el.setAttribute("role", "menu");
+        el.setAttribute("aria-label", p.label);
+        document.body.append(el);
+        el.addEventListener("keydown", popupKey);
+        el.addEventListener("click", popupClick);
+        renderPopup();
+        if (p.keyboard) focusItem(0);
+        else el.focus();
+        log(
+          `Opened ${p.type === "menu" ? "menu" : p.type === "thread" ? "thread picker" : "workspace picker"}: ${p.label}${p.keyboard ? "" : " (Escape only, F2 off)"}`,
+        );
+        renderSide();
+      }
+      function renderPopup() {
+        const p = POP,
+          el = $("#pop");
+        if (!p || !el) return;
+        el.style.width = `${p.width}px`;
+        el.style.maxHeight = `${Math.min(p.maxH, window.innerHeight - 16)}px`;
+        let head = "";
+        if (p.type === "thread" && on("F4")) {
+          const t = targetText(p.target, p.folder);
+          head = `<div class="target">${esc(t.line)}<code>${esc(t.path)}</code></div>`;
+        }
+        el.innerHTML =
+          head +
+          p.items
+            .map((it, i) => {
+              if (it.sep) return '<div class="sep" role="separator"></div>';
+              if (it.heading) return `<div class="mh" role="presentation">${esc(it.heading)}</div>`;
+              return (
+                `<div class="mi" role="menuitem" tabindex="-1" data-i="${i}" data-ik="${esc(it.key ?? it.label)}"${it.disabled ? ' aria-disabled="true"' : ""}>` +
+                (it.pad ? '<span class="pad"></span>' : "") +
+                (it.glyph ? `<span class="ic" aria-hidden="true">${esc(it.glyph)}</span>` : "") +
+                `<span class="lab">${esc(it.label)}</span>` +
+                (it.note ? `<span class="note">${esc(it.note)}</span>` : "") +
+                "</div>"
+              );
+            })
+            .join("");
+        const w = el.offsetWidth,
+          h = el.offsetHeight;
+        el.style.left = `${Math.max(8, Math.min(p.anchor.x, window.innerWidth - w - 8))}px`;
+        el.style.top = `${Math.max(8, Math.min(p.anchor.y, window.innerHeight - h - 8))}px`;
+      }
+      const itemEls = () => [...document.querySelectorAll("#pop .mi:not([aria-disabled='true'])")];
+      function focusItem(index) {
+        const items = itemEls();
+        if (!items.length) {
+          $("#pop")?.focus();
+          return;
+        }
+        items[(index + items.length) % items.length].focus();
+      }
+      function focusItemByKey(key) {
+        const el = [...document.querySelectorAll("#pop .mi")].find((x) => x.dataset.ik === key);
+        if (el && el.getAttribute("aria-disabled") !== "true") el.focus();
+        else focusItem(0);
+      }
+      function popupKey(e) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          log(`Closed ${POP.label} with Escape`);
+          closePopup(true);
+          renderSide();
+          return;
+        }
+        if (e.key === "Tab") {
+          e.preventDefault();
+          return;
+        }
+        if (!POP.keyboard) return;
+        const items = itemEls();
+        const i = items.indexOf(document.activeElement);
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          focusItem(i + 1);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          focusItem(i < 0 ? -1 : i - 1);
+        } else if (e.key === "Home") {
+          e.preventDefault();
+          focusItem(0);
+        } else if (e.key === "End") {
+          e.preventDefault();
+          focusItem(-1);
+        } else if ((e.key === "Enter" || e.key === " ") && i >= 0) {
+          e.preventDefault();
+          runItem(+items[i].dataset.i);
+        }
+      }
+      function popupClick(e) {
+        const el = e.target.closest(".mi");
+        if (!el || el.getAttribute("aria-disabled") === "true") return;
+        runItem(+el.dataset.i);
+      }
+      function runItem(index) {
+        const p = POP,
+          item = p.items[index];
+        closePopup(true);
+        item.run(p.triggerFk);
+        render();
+      }
+      function closePopup(restore) {
+        const p = POP;
+        $("#pop")?.remove();
+        POP = null;
+        if (p && restore) restoreFocus(p.triggerFk);
+      }
+      function restoreFocus(fk) {
+        const el = fk && document.querySelector(`[data-fk="${CSS.escape(fk)}"]`);
+        if (el) el.focus({ preventScroll: true });
+        if (el && document.activeElement === el) return;
+        const row = el?.closest("[data-key]");
+        if (row) {
+          row.focus({ preventScroll: true });
+          return;
+        }
+        ($(`#rail [data-key][tabindex="0"]`) ?? $("#rail")).focus({ preventScroll: true });
+      }
+
+      document.addEventListener(
+        "mousedown",
+        (e) => {
+          if (POP && !$("#pop")?.contains(e.target)) {
+            closePopup(false);
+            renderSide();
+          }
+        },
+        true,
+      );
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && POP && !$("#pop")?.contains(document.activeElement)) {
+          closePopup(true);
+          renderSide();
+        }
+      });
+      window.addEventListener("resize", () => {
+        if (POP) {
+          closePopup(false);
+          renderSide();
+        }
+      });
+
+      /* ---------- Dialogs ---------- */
+      const dlg = $("#dlg");
+      function openDialog({ title, body, actions, returnFk, onOpen }) {
+        dlg.innerHTML =
+          `<form method="dialog"><h2 id="dlg-title">${esc(title)}</h2><div class="dbody">${body}</div><div class="dact">` +
+          actions
+            .map(
+              (a, i) =>
+                `<button class="btn ${a.cls ?? ""}" value="${i}"${a.autofocus ? " autofocus" : ""}${a.disabled ? " disabled" : ""}>${esc(a.label)}</button>`,
+            )
+            .join("") +
+          "</div></form>";
+        dlg._actions = actions;
+        dlg._returnFk = returnFk;
+        dlg.returnValue = "";
+        dlg.showModal();
+        onOpen?.(dlg);
+      }
+      dlg.addEventListener("close", () => {
+        const action = dlg._actions?.[Number(dlg.returnValue)];
+        if (dlg.returnValue !== "" && action?.run) action.run(dlg);
+        else if (dlg.returnValue === "" || !action?.run) log("Dialog closed without action");
+        render();
+        restoreFocus(dlg._returnFk);
+      });
+      dlg.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && e.target.matches("input[type=text]")) {
+          e.preventDefault();
+          dlg.querySelector(".btn.primary")?.click();
+        }
+      });
+      const cancel = { label: "Cancel", autofocus: true };
+
+      function confirmDialog({ title, text, confirm, run, returnFk }) {
+        openDialog({
+          title,
+          returnFk,
+          body: `<p>${text}</p><p class="dim">Simulation only. Nothing in Herdr changes.</p>`,
+          actions: [cancel, { label: confirm, cls: "danger", run }],
+        });
+      }
+      function renameDialog(kind, obj, returnFk) {
+        const current = kind === "pane" ? paneName(obj) : obj.name;
+        openDialog({
+          title: `Rename ${kind}`,
+          returnFk,
+          body: `<label for="rename-input" class="dim">New ${kind} name</label><input type="text" id="rename-input" value="${esc(current)}">`,
+          actions: [
+            { label: "Cancel" },
+            {
+              label: "Rename",
+              cls: "primary",
+              run: (d) => {
+                const value = d.querySelector("#rename-input").value.trim();
+                if (!value) return log("Rename skipped: empty name");
+                if (kind === "pane") obj.alias = value;
+                else obj.name = value;
+                sim(`${kind}.rename ${current} → ${value}`);
+              },
+            },
+          ],
+          onOpen: (d) => d.querySelector("#rename-input").select(),
+        });
+      }
+      function replyDialog(a, returnFk) {
+        openDialog({
+          title: `Reply to ${a.name}`,
+          returnFk,
+          body: `<label for="reply-input" class="dim">Message</label><textarea id="reply-input" rows="3"></textarea>`,
+          actions: [
+            { label: "Cancel" },
+            {
+              label: "Send",
+              cls: "primary",
+              run: (d) => {
+                const text = d.querySelector("#reply-input").value.trim();
+                sim(`reply to ${a.name}: “${text || "(empty)"}”`);
+                if (a.status === "blocked" || a.status === "done") a.status = "working";
+              },
+            },
+          ],
+          onOpen: (d) => d.querySelector("#reply-input").focus(),
+        });
+      }
+      function killDialog(a, returnFk) {
+        confirmDialog({
+          title: `Kill ${a.name}?`,
+          returnFk,
+          confirm: "Kill (simulated)",
+          text: `This ends the ${esc(APPS[a.app]?.name ?? a.app)} process. Its record moves to Recently closed.`,
+          run: () => {
+            const loc = findPane(a.address);
+            if (loc) removePane(loc);
+            sim(`kill ${a.name}`);
+          },
+        });
+      }
+      function closePaneDialog(loc, returnFk) {
+        confirmDialog({
+          title: `Close pane ${paneName(loc.pane)}?`,
+          returnFk,
+          confirm: "Close pane (simulated)",
+          text: "The pane closes. An agent in it moves to Recently closed. Native last-pane behavior is not verified.",
+          run: () => {
+            const name = paneName(loc.pane);
+            removePane(loc);
+            sim(`pane.close ${name}`);
+          },
+        });
+      }
+      function closeTabDialog(s, tab, returnFk) {
+        confirmDialog({
+          title: `Close tab ${tab.name}?`,
+          returnFk,
+          confirm: "Close tab (simulated)",
+          text: `All ${tab.panes.length} pane(s) in this tab close.`,
+          run: () => {
+            for (const pane of [...tab.panes]) removePane({ space: s, tab, pane });
+            sim(`tab.close ${tab.name}`);
+          },
+        });
+      }
+      function closeSpaceDialog(s, returnFk) {
+        confirmDialog({
+          title: `Close space ${s.name}?`,
+          returnFk,
+          confirm: "Close space (simulated)",
+          text: "All tabs and panes in this space close. Files and the checkout stay.",
+          run: () => {
+            removeSpace(s);
+            sim(`space.close ${s.name}`);
+          },
+        });
+      }
+      function removeWorktreeDialog(s, returnFk) {
+        confirmDialog({
+          title: `Remove worktree ${s.name}?`,
+          returnFk,
+          confirm: "Remove worktree (simulated)",
+          text: `Mock checks: not opening, clean, unlocked, no submodules. The branch <b>${esc(s.name)}</b> stays. The space closes and <code>${esc(s.path)}</code> is removed.`,
+          run: () => {
+            removeSpace(s);
+            sim(`remove worktree ${s.path}; branch kept`);
+          },
+        });
+      }
+      function removeOtherWorktreeDialog(w, wt, returnFk) {
+        confirmDialog({
+          title: `Remove worktree ${wt.name}?`,
+          returnFk,
+          confirm: "Remove worktree (simulated)",
+          text: `Mock checks: not open, clean, unlocked, no submodules. The branch stays. <code>${esc(wt.path)}</code> is removed.`,
+          run: () => {
+            w.other = w.other.filter((x) => x !== wt);
+            sim(`remove worktree ${wt.path}; branch kept`);
+          },
+        });
+      }
+      function forgetDialog(rec, returnFk) {
+        confirmDialog({
+          title: `Forget history of ${rec.name}?`,
+          returnFk,
+          confirm: "Forget (simulated)",
+          text: "The saved terminal output and this record go away.",
+          run: () => {
+            S.model.closed = S.model.closed.filter((x) => x !== rec);
+            if (S.ui.selection?.id === rec.id) S.ui.selection = null;
+            sim(`forget history ${rec.name}`);
+          },
+        });
+      }
+      function historyDialog(rec, returnFk) {
+        const lines = [
+          `$ ${rec.app === "zsh" ? "ls" : rec.app}`,
+          `${APPS[rec.app]?.name ?? rec.app} session ${rec.terminal}`,
+          `> working in ${rec.cwd ?? "(folder not saved)"}`,
+          "> read mods/frantss/main.ts",
+          "> ran pnpm test (mock output)",
+          "[process exited]",
+        ];
+        openDialog({
+          title: `History · ${rec.name}`,
+          returnFk,
+          body: `<p>Retained terminal output, read by terminal address. It does not need a folder.</p><pre>${esc(lines.join("\n"))}</pre>`,
+          actions: [{ label: "Close", autofocus: true }],
+        });
+        sim(`view history ${rec.name}`);
+      }
+      function resumeDialog(rec, surface, returnFk) {
+        const noFolder = !rec.cwd;
+        openDialog({
+          title: `Resume ${rec.name}`,
+          returnFk,
+          body:
+            `<p>Mock ${esc(APPS[rec.app]?.name ?? rec.app)} session picker. Resume opens the provider's picker; it does not guarantee the exact session.</p>
+      <label><input type="radio" name="session" value="a" checked> Latest session in this folder</label>
+      <label><input type="radio" name="session" value="b"> Earlier session</label>
+      <p>Folder: <code>${esc(rec.cwd ?? "none")}</code></p>` +
+            (noFolder
+              ? `<p class="warn">No saved folder. space.new gets no folder, so the space opens in the default folder (~). F5 removes this path.</p>`
+              : ""),
+          actions: [
+            { label: "Cancel", autofocus: true },
+            {
+              label: "Resume (simulated)",
+              cls: "primary",
+              run: (d) => {
+                const pick =
+                  d.querySelector("input[name=session]:checked")?.value === "b"
+                    ? "earlier"
+                    : "latest";
+                let w = rec.cwd
+                  ? S.model.workspaces.find((x) => rec.cwd.startsWith(x.folder))
+                  : null;
+                if (!w) {
+                  w = S.model.workspaces.find((x) => x.key === "home") ?? {
+                    key: "home",
+                    name: "~",
+                    folder: "~",
+                    repo: false,
+                    saved: false,
+                    color: "#7d7d7d",
+                    other: [],
+                  };
+                  if (!S.model.workspaces.includes(w)) S.model.workspaces.push(w);
+                }
+                const s = newSpace(w, rec.app, rec.cwd ?? "~", rec.cwd && w.repo ? "main" : null);
+                s.name = `${rec.name}-resumed`;
+                const message = `resume from ${surface}: ${rec.name} (${pick} session) in ${rec.cwd ?? "~ (no folder given)"}. History stays.`;
+                noFolder ? warn(`Simulated: ${message}`) : sim(message);
+              },
+            },
+          ],
+        });
+      }
+      function showInGitHub(address, ctx) {
+        S.ui.ghHighlight = address;
+        sim(`PR chip → GitHub Agents panel shows ${term(address)?.name}`);
+        render();
+        const el = document.querySelector(`#github [data-gh-row="${CSS.escape(address)}"]`);
+        el?.scrollIntoView({ block: "nearest" });
+        el?.querySelector("button")?.focus();
+      }
+
+      /* ---------- Rendering ---------- */
+      function rowTabIndex(r) {
+        if (!r.actionable) return null;
+        if (on("F1")) return r.key === S.ui.roving ? 0 : -1;
+        return r.baselineKeyboard ? 0 : -1;
+      }
+      function ctlHtml(c, rowKey) {
+        if (!c.key) return c.html;
+        ctlMap.set(c.key, c);
+        const ti = on("F1") && rowKey === S.ui.roving ? 0 : -1;
+        return `<button type="button" class="ctl ${c.cls ?? ""}" data-ctl="${esc(c.key)}" data-row="${esc(rowKey)}" data-fk="ctl:${esc(c.key)}" tabindex="${ti}" aria-label="${esc(c.label)}" title="${esc(c.label)}">${c.html}</button>`;
+      }
+      function itemHtml(r) {
+        rowMap.set(r.key, r);
+        const ti = rowTabIndex(r);
+        const tiAttr = ti === null ? "" : ` tabindex="${ti}"`;
+        const exp = r.fold ? ` aria-expanded="${r.fold.open}"` : "";
+        if (r.type === "header") {
+          const color = r.status ? `var(--${r.status})` : "var(--fg)";
+          return (
+            `<div class="hdr" role="button" data-key="${esc(r.key)}" data-fk="row:${esc(r.key)}"${tiAttr}${exp} style="margin-top:${r.gap ?? 0}px" aria-label="${esc(`${r.title} ${r.count}`)}">` +
+            `<span class="chev${r.collapsed ? "" : " open"}" aria-hidden="true">›</span>` +
+            `<span class="ht" style="color:${color}">${esc(r.title)}</span>` +
+            `<span class="hc">${esc(r.count)}</span>` +
+            (r.summary && r.collapsed ? `<span class="hc dim">${esc(r.summary)}</span>` : "") +
+            '<span class="sp"></span>' +
+            (r.collapsed && r.urgent ? dot(r.urgent) : "") +
+            (r.action ? ctlHtml(r.action, r.key) : "") +
+            "</div>"
+          );
+        }
+        if (r.type === "static") {
+          return `<div class="static"><span>${esc(r.text)}</span><span>${esc(r.value)}</span></div>`;
+        }
+        const cls = [
+          "row",
+          r.lit && "lit",
+          r.current && "current",
+          r.dimmed && !r.current && "dimmed",
+          r.strong && "strong",
+          r.hl && "hl",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        let ind = "";
+        if (!r.flush) {
+          let inner = "";
+          if (r.collapsed !== undefined)
+            inner = `<span class="chev${r.collapsed ? "" : " open"}" aria-hidden="true">›</span>`;
+          else if (r.connector) inner = `<span aria-hidden="true">${r.connector}</span>`;
+          else if (r.current) inner = '<span class="mark" aria-hidden="true">❯</span>';
+          ind = `<span class="ind" style="width:${10 + (r.indent ?? 0)}px">${inner}</span>`;
+        }
+        const endInner =
+          (r.end ?? "") + (r.endCtls ? r.endCtls.map((c) => ctlHtml(c, r.key)).join("") : "");
+        return (
+          `<div class="${cls}" role="${r.actionable ? "button" : "presentation"}" data-key="${esc(r.key)}" data-fk="row:${esc(r.key)}"${tiAttr}${exp}` +
+          `${r.current ? ' aria-current="true"' : ""} aria-label="${esc(r.text + (r.tail ? `, ${r.tail}` : ""))}"${r.gapTop ? ` style="margin-top:${r.gapTop}px"` : ""}>` +
+          ind +
+          (r.lead === undefined
+            ? '<span class="lead"></span>'
+            : `<span class="lead" aria-hidden="true">${r.lead}</span>`) +
+          `<span class="txt"><span class="t">${esc(r.text)}</span>${r.tail ? `<span class="tail">${esc(r.tail)}</span>` : ""}</span>` +
+          (r.value !== undefined ? `<span class="val">${esc(r.value)}</span>` : "") +
+          (endInner ? `<span class="end${r.hoverEnd ? " swap" : ""}">${endInner}</span>` : "") +
+          (r.hoverEnd
+            ? `<span class="he">${r.hoverEnd.map((c) => ctlHtml(c, r.key)).join("")}</span>`
+            : "") +
+          "</div>"
+        );
+      }
+
+      function currentRowKey(rows) {
+        return (
+          rows.find((r) => r.actionable && r.current)?.key ??
+          rows.find((r) => r.actionable)?.key ??
+          null
+        );
+      }
+      function renderRail() {
+        rowMap = new Map();
+        ctlMap = new Map();
+        const R = buildRail();
+        const rows = [...R.top, ...R.bottom];
+        if (!rows.some((r) => r.actionable && r.key === S.ui.roving))
+          S.ui.roving = currentRowKey(rows);
+        $("#rail").innerHTML =
+          R.top.map(itemHtml).join("") +
+          '<div class="grow"></div>' +
+          R.bottom.map(itemHtml).join("");
+        $("#rail").style.setProperty("--rail-w", `${S.scenario.width}px`);
+        document.documentElement.style.setProperty("--rail-w", `${S.scenario.width}px`);
+      }
+      const actionableKeys = () =>
+        [...document.querySelectorAll("#rail [data-key]")]
+          .filter((el) => rowMap.get(el.dataset.key)?.actionable)
+          .map((el) => el.dataset.key);
+      function applyRoving() {
+        for (const el of document.querySelectorAll("#rail [data-key]")) {
+          const r = rowMap.get(el.dataset.key);
+          const ti = r && rowTabIndex(r);
+          if (ti !== null && ti !== undefined) el.tabIndex = ti;
+        }
+        for (const el of document.querySelectorAll("#rail [data-ctl]"))
+          el.tabIndex = on("F1") && el.dataset.row === S.ui.roving ? 0 : -1;
+      }
+
+      function eligibilityRow(label, a, b) {
+        const same = a === b;
+        return `<dt>${esc(label)}</dt><dd>${a} / ${b} <span class="${same ? "ok" : "warn"}">${same ? "consistent" : "differs"}</span></dd>`;
+      }
+      const yes = (v) => (v ? "offered" : "not offered");
+      const resumeWord = (r) =>
+        !r.show ? "not offered" : r.disabled ? `unavailable (${r.reason})` : "offered";
+
+      function renderInspector() {
+        const sel = S.ui.selection;
+        let body = "";
+        const dl = (pairs) =>
+          `<dl>${pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
+        if (!sel) body = '<p class="muted">Nothing selected. Click a row in the preview.</p>';
+        else if (sel.kind === "terminal") {
+          const loc = findPane(sel.id),
+            t = term(sel.id);
+          if (!loc || !t)
+            body = '<p class="muted">This terminal is not open in the current scenario.</p>';
+          else {
+            const comp = isCompressed(loc.space);
+            body = dl([
+              ["Object", t.agent ? "Agent terminal" : "Terminal"],
+              ["Name", esc(t.name)],
+              ["Program", esc(APPS[t.app]?.name ?? t.app)],
+              ...(t.agent
+                ? [
+                    ["Status", esc(STATUS_LABEL[t.status])],
+                    ["Pinned", t.pinned ? "yes" : "no"],
+                  ]
+                : []),
+              ["Location", esc(`${wsOf(loc.space).name} › ${loc.space.name} › ${loc.tab.name}`)],
+              ["Folder", `<code>${esc(loc.space.path)}</code> · ${esc(checkoutLabel(loc.space))}`],
+              ["Views", "Same terminal in the workspace tree and the attention list"],
+              ...(t.agent && t.prs?.length
+                ? [
+                    [
+                      "PRs",
+                      esc(t.prs.map((p) => `#${p.num} ${PR_STATES[p.state].label}`).join(", ")),
+                    ],
+                  ]
+                : []),
+              ["Space row", comp ? "Compressed (one tab, one pane)" : "Separate space row"],
+              ...(comp
+                ? [
+                    [
+                      "Space actions from row menu",
+                      on("F3")
+                        ? '<span class="ok">yes, separate Space section</span>'
+                        : '<span class="warn">no, pane actions only</span>',
+                    ],
+                  ]
+                : []),
+            ]);
+            if (t.agent)
+              body += `<h3 style="margin-top:12px">Eligibility across surfaces</h3><dl>${eligibilityRow("Interrupt (hover / menu)", yes(interruptHover(t)), yes(interruptMenu(t)))}</dl>`;
+          }
+        } else if (sel.kind === "space") {
+          const s = findSpace(sel.id);
+          body = s
+            ? dl([
+                ["Object", "Space"],
+                ["Name", esc(s.name)],
+                ["Folder", `<code>${esc(s.path)}</code>`],
+                ["Checkout (Git)", esc(checkoutLabel(s))],
+                [
+                  "Path test says",
+                  s.path.includes("/.herdr/worktrees/") ? "Herdr worktree" : "own checkout",
+                ],
+                [
+                  "Tabs",
+                  esc(s.tabs.map((t) => t.name + (t.settled ? " (settled)" : "")).join(", ")),
+                ],
+                ["Compressed", isCompressed(s) ? "yes" : "no"],
+              ])
+            : '<p class="muted">This space is not open in the current scenario.</p>';
+        } else if (sel.kind === "tab") {
+          const f = findTab(sel.id);
+          body = f
+            ? dl([
+                ["Object", "Tab"],
+                ["Name", esc(f.tab.name)],
+                ["Space", esc(f.space.name)],
+                ["Panes", String(f.tab.panes.length)],
+                ["Settled", f.tab.settled ? "yes" : "no"],
+              ])
+            : '<p class="muted">Tab not open.</p>';
+        } else if (sel.kind === "workspace") {
+          const w = S.model.workspaces.find((x) => x.key === sel.id);
+          const spaces = spacesOf(w.key);
+          const path = spaces.length ? pathTarget(spaces) : null;
+          const git = spaces.length ? gitTarget(spaces) : null;
+          body = dl([
+            ["Object", "Workspace"],
+            ["Folder", `<code>${esc(w.folder)}</code>`],
+            ["Saved", w.saved ? "yes" : "no"],
+            ["Repository", w.repo ? "yes" : "no"],
+            ...(w.repo && spaces.length
+              ? [
+                  ["+ target, path test", esc(`${path.name} (${checkoutLabel(path)})`)],
+                  [
+                    "+ target, Git",
+                    esc(
+                      `${git.space.name} (${git.how === "main" ? "main checkout" : git.how === "pending" ? "not verified yet" : "fallback: first space"})`,
+                    ),
+                  ],
+                  [
+                    "In use",
+                    `${on("F4") ? "Git classification" : "path test"} ${path === git.space ? '<span class="ok">same result</span>' : '<span class="warn">results differ</span>'}`,
+                  ],
+                ]
+              : []),
+          ]);
+        } else if (sel.kind === "closed") {
+          const rec = S.model.closed.find((x) => x.id === sel.id);
+          if (!rec) body = '<p class="muted">Record forgotten.</p>';
+          else {
+            const rail = resumeRail(rec),
+              gh = resumeGitHub(rec);
+            const hover =
+              rail.show && !rail.disabled
+                ? "offered"
+                : rail.show
+                  ? `hidden (${rail.reason})`
+                  : "not offered";
+            body = dl([
+              ["Object", "Closed agent record"],
+              ["Name", esc(rec.name)],
+              ["Program", esc(APPS[rec.app]?.name ?? rec.app)],
+              [
+                "Saved folder",
+                rec.cwd ? `<code>${esc(rec.cwd)}</code>` : '<span class="warn">none</span>',
+              ],
+              ["View history", '<span class="ok">available</span> (reads by terminal address)'],
+            ]);
+            const menuWord = resumeWord(rail),
+              ghWord = rec.prs?.length ? resumeWord(gh) : "no PR, not listed";
+            const comparable = rec.prs?.length ? ghWord : menuWord;
+            body +=
+              `<h3 style="margin-top:12px">Resume across surfaces</h3><dl>` +
+              `<dt>Rail hover</dt><dd>${esc(hover)}</dd><dt>Context menu</dt><dd>${esc(menuWord)}</dd><dt>GitHub panel</dt><dd>${esc(ghWord)}</dd>` +
+              `<dt>Result</dt><dd>${menuWord === comparable ? '<span class="ok">consistent</span>' : '<span class="warn">differs by entry point</span>'}</dd></dl>`;
+          }
+        } else if (sel.kind === "worktree") {
+          body = '<p class="muted">Unopened worktree.</p>';
+        }
+        $("#inspector").innerHTML = `<h2 id="h-inspector">Selected object</h2>${body}`;
+      }
+
+      function renderGitHub() {
+        const live = liveAgents().filter((a) => a.prs?.length);
+        const closed = S.model.closed.filter((r) => r.prs?.length);
+        const prText = (prs) =>
+          prs.map((p) => `#${p.num} · ${PR_STATES[p.state].label}`).join(", ");
+        const items = [
+          ...live.map(
+            (a) =>
+              `<li data-gh-row="${esc(a.address)}" class="${S.ui.ghHighlight === a.address ? "hl" : ""}">` +
+              `<span class="name">${esc(a.name)} <span class="dim">· ${esc(STATUS_LABEL[a.status])}</span><br><small>${esc(prText(a.prs))}</small></span>` +
+              `<button type="button" class="btn" data-gh="show" data-id="${esc(a.address)}" data-fk="gh:show:${esc(a.address)}">Show agent</button></li>`,
+          ),
+          ...closed.map((r) => {
+            const res = resumeGitHub(r);
+            return (
+              `<li data-gh-row="${esc(r.id)}" class="${S.ui.ghHighlight === r.id ? "hl" : ""}">` +
+              `<span class="name">${esc(r.name)} <span class="dim">· closed</span><br><small>${esc(prText(r.prs))}</small></span>` +
+              `<button type="button" class="btn" data-gh="show-closed" data-id="${esc(r.id)}" data-fk="gh:show-closed:${esc(r.id)}">Show</button>` +
+              (res.show
+                ? `<button type="button" class="btn" data-gh="resume" data-id="${esc(r.id)}" data-fk="gh:resume:${esc(r.id)}"${res.disabled ? ` disabled title="${esc(res.reason)}"` : ""}>Resume…</button>${res.disabled ? `<small>${esc(res.reason)}</small>` : ""}`
+                : "") +
+              "</li>"
+            );
+          }),
+        ];
+        $("#github").innerHTML =
+          `<h2 id="h-github">GitHub · Agents <span class="tag">mock panel</span></h2>` +
+          `<ul class="gh-list">${items.join("") || '<li class="dim">No agent pull requests.</li>'}</ul>`;
+      }
+
+      function renderState() {
+        const sel = S.ui.selection;
+        const onList = PROPOSALS.filter((p) => on(p.id)).map((p) => p.id);
+        const herdr = S.model.workspaces.find((w) => w.key === "herdr");
+        const spaces = spacesOf("herdr");
+        const target = herdr && spaces.length ? workspaceTarget(herdr) : null;
+        const settled = S.model.spaces.flatMap((s) =>
+          s.tabs
+            .filter((t) => t.settled)
+            .map(
+              (t) =>
+                `${t.name}${on("F6") ? (returned(t) ? " (returned)" : " (folded)") : " (rail ignores)"}`,
+            ),
+        );
+        const selName = !sel
+          ? "none"
+          : sel.kind === "terminal"
+            ? term(sel.id)?.name
+            : sel.kind === "space"
+              ? findSpace(sel.id)?.name
+              : sel.kind === "tab"
+                ? findTab(sel.id)?.tab.name
+                : sel.kind === "closed"
+                  ? S.model.closed.find((r) => r.id === sel.id)?.name
+                  : sel.id;
+        const pairs = [
+          ["Proposals on", onList.length ? onList.join(" ") : "none (baseline)"],
+          ["Selected", sel ? `${sel.kind} · ${selName ?? "gone"}` : "none"],
+          [
+            "Popup",
+            POP ? `${POP.label}${POP.keyboard ? " · keyboard" : " · Escape only"}` : "none",
+          ],
+          [
+            "Herdr + target",
+            target
+              ? `${target.space.name} (${target.how === "path" ? "path test" : target.how})`
+              : "new space",
+          ],
+          ["Spaces order", S.scenario.order + (S.scenario.pending ? ", lookup pending" : "")],
+          ["Settled tabs", settled.join(", ") || "none"],
+          ["Live agents", String(liveAgents().length)],
+          ["Closed records", String(S.model.closed.length)],
+          ["Rail width", `${S.scenario.width}px`],
+        ];
+        $("#state").innerHTML = pairs
+          .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`)
+          .join("");
+      }
+      function renderLog() {
+        $("#log").innerHTML =
+          S.log
+            .map((l) => `<li class="${l.kind}"><time>${esc(l.time)}</time>${esc(l.text)}</li>`)
+            .join("") || '<li class="dim">No actions yet.</li>';
+      }
+      function renderSide() {
+        renderState();
+        renderLog();
+      }
+
+      function syncControls() {
+        for (const p of PROPOSALS) $(`#tg-${p.id}`).checked = on(p.id);
+        $("#sc-order").value = S.scenario.order;
+        $("#sc-pending").checked = S.scenario.pending;
+        $("#sc-width").value = String(S.scenario.width);
+        const fix = S.model.spaces.find((s) => s.id === "s-fix");
+        const tabBtn = $("#sc-tab");
+        tabBtn.disabled = !fix;
+        tabBtn.textContent = !fix
+          ? "fix-auth space is closed"
+          : fix.tabs.length > 1
+            ? "Remove extra tabs (compress again)"
+            : "Add a second tab";
+        const logs = S.model.spaces.flatMap((s) => s.tabs).find((t) => t.id === "t-logs");
+        $("#sc-settle").disabled = !logs;
+        $("#sc-settle").checked = Boolean(logs?.settled);
+        const agents = Object.values(S.model.terminals).filter((t) => t.agent);
+        if (!agents.some((a) => a.address === S.ui.statusAgent))
+          S.ui.statusAgent = agents[0]?.address ?? null;
+        $("#sc-agent").innerHTML = agents
+          .map((a) => `<option value="${esc(a.address)}">${esc(a.name)}</option>`)
+          .join("");
+        $("#sc-agent").value = S.ui.statusAgent ?? "";
+        $("#sc-agent").disabled = $("#sc-status").disabled = !agents.length;
+        const current = term(S.ui.statusAgent);
+        if (current) $("#sc-status").value = current.status;
+      }
+
+      function render() {
+        const fk = document.activeElement?.dataset?.fk;
+        const inPreview = document.activeElement?.closest?.(".preview");
+        renderRail();
+        renderInspector();
+        renderGitHub();
+        renderSide();
+        renderFixExample();
+        syncControls();
+        if (fk && inPreview) {
+          const el = document.querySelector(`[data-fk="${CSS.escape(fk)}"]`);
+          if (el) el.focus({ preventScroll: true });
+          else if (fk.startsWith("row:") || fk.startsWith("ctl:"))
+            $(`#rail [data-key][tabindex="0"]`)?.focus({ preventScroll: true });
+        }
+      }
+
+      /* ---------- Rail events ---------- */
+      const rail = $("#rail");
+      rail.addEventListener("click", (e) => {
+        const c = e.target.closest("[data-ctl]");
+        if (c) {
+          e.stopPropagation();
+          ctlMap.get(c.dataset.ctl)?.run({ fk: c.dataset.fk, el: c });
+          if (!POP && !dlg.open) render();
+          return;
+        }
+        const el = e.target.closest("[data-key]");
+        const r = el && rowMap.get(el.dataset.key);
+        if (r?.activate) {
+          r.activate();
+          render();
+        }
+      });
+      rail.addEventListener("contextmenu", (e) => {
+        const el = e.target.closest("[data-key]");
+        const r = el && rowMap.get(el.dataset.key);
+        if (!r?.menu) return;
+        e.preventDefault();
+        r.menu({ x: e.clientX, y: e.clientY, fk: `row:${r.key}` });
+      });
+      rail.addEventListener("focusin", (e) => {
+        if (!on("F1")) return;
+        const el = e.target.closest("[data-key]");
+        if (el && rowMap.get(el.dataset.key)?.actionable && S.ui.roving !== el.dataset.key) {
+          S.ui.roving = el.dataset.key;
+          applyRoving();
+        }
+      });
+      rail.addEventListener("keydown", (e) => {
+        const el = e.target.closest("[data-key]");
+        const r = el && rowMap.get(el.dataset.key);
+        if (!r) return;
+        const onRow = e.target === el;
+        if (!on("F1")) {
+          if (onRow && r.baselineKeyboard && (e.key === "Enter" || e.key === " ")) {
+            e.preventDefault();
+            r.activate();
+            render();
+          }
+          return;
+        }
+        if ((e.key === "F10" && e.shiftKey) || e.key === "ContextMenu") {
+          if (r.menu) {
+            e.preventDefault();
+            r.menu({ el, fk: `row:${r.key}` });
+          }
+          return;
+        }
+        if (!onRow) return;
+        const keys = actionableKeys();
+        const i = keys.indexOf(r.key);
+        const move = (k) => {
+          e.preventDefault();
+          if (!k) return;
+          S.ui.roving = k;
+          applyRoving();
+          document.querySelector(`#rail [data-key="${CSS.escape(k)}"]`)?.focus();
+        };
+        if (e.key === "ArrowDown") move(keys[Math.min(i + 1, keys.length - 1)]);
+        else if (e.key === "ArrowUp") move(keys[Math.max(i - 1, 0)]);
+        else if (e.key === "Home") move(keys[0]);
+        else if (e.key === "End") move(keys[keys.length - 1]);
+        else if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          r.activate?.();
+          render();
+        } else if (e.key === "ArrowRight" && r.fold && !r.fold.open) {
+          e.preventDefault();
+          r.fold.toggle();
+          render();
+        } else if (e.key === "ArrowLeft" && r.fold && r.fold.open) {
+          e.preventDefault();
+          r.fold.toggle();
+          render();
+        }
+      });
+
+      $("#github").addEventListener("click", (e) => {
+        const b = e.target.closest("[data-gh]");
+        if (!b) return;
+        const id = b.dataset.id;
+        if (b.dataset.gh === "show") {
+          select("terminal", id);
+          S.ui.ghHighlight = id;
+          sim(`GitHub Show: focus ${term(id)?.name} in the rail`);
+          render();
+          document.querySelector(`#rail [data-key="agent:${CSS.escape(id)}"]`)?.focus();
+        } else if (b.dataset.gh === "show-closed") {
+          select("closed", id);
+          S.ui.ghHighlight = id;
+          sim(`GitHub Show: select closed record ${S.model.closed.find((r) => r.id === id)?.name}`);
+          render();
+        } else if (b.dataset.gh === "resume") {
+          const rec = S.model.closed.find((r) => r.id === id);
+          if (rec) resumeDialog(rec, "GitHub panel", b.dataset.fk);
+        }
+      });
+
+      function prepareFixExample(id) {
+        closePopup(false);
+        S.ui.demo = id;
+        S.ui.demoTrying = false;
+        const fixture = initialModel();
+        const ensureSpace = (spaceId) => {
+          let space = S.model.spaces.find((s) => s.id === spaceId);
+          if (!space) {
+            space = fixture.spaces.find((s) => s.id === spaceId);
+            S.model.spaces.push(space);
+          }
+          return space;
+        };
+        for (const w of fixture.workspaces) {
+          if (!S.model.workspaces.some((existing) => existing.key === w.key))
+            S.model.workspaces.push(w);
+        }
+        for (const [address, agent] of Object.entries(fixture.terminals)) {
+          if (!term(address)) S.model.terminals[address] = agent;
+        }
+        S.ui.collapsed["section:workspaces"] = false;
+        S.ui.collapsed["ws:herdr"] = false;
+        S.ui.collapsed["space:s-main"] = false;
+        S.ui.collapsed["other:herdr"] = false;
+        if (id === "F1") {
+          const workspace = S.model.workspaces.find((w) => w.key === "herdr");
+          if (!workspace.other.some((wt) => wt.id === "wt-spike"))
+            workspace.other.push(fixture.workspaces[0].other[0]);
+        }
+        S.scenario.order = "main-first";
+        if (id === "F3") {
+          const space = ensureSpace("s-fix");
+          if (!isCompressed(space)) space.tabs = fixture.spaces.find((s) => s.id === "s-fix").tabs;
+          select("terminal", "term-3");
+        } else if (id === "F4") {
+          ensureSpace("s-main");
+          ensureSpace("s-review");
+          S.scenario.order = "external-first";
+          S.scenario.pending = false;
+          select("workspace", "herdr");
+        } else if (id === "F5") {
+          if (!S.model.closed.some((r) => r.id === "c2"))
+            S.model.closed.push(fixture.closed.find((r) => r.id === "c2"));
+          S.ui.collapsed.closed = false;
+          select("closed", "c2");
+        } else if (id === "F6") {
+          const space = ensureSpace("s-main");
+          let tab = space.tabs.find((t) => t.id === "t-logs");
+          if (!tab) {
+            tab = fixture.spaces[0].tabs.find((t) => t.id === "t-logs");
+            space.tabs.push(tab);
+          }
+          tab.settled = true;
+          term("term-5").status = "idle";
+          select("tab", "t-logs");
+        } else if (id === "F7") {
+          ensureSpace("s-review");
+          term("term-4").status = "idle";
+          S.ui.collapsed["section:idle"] = false;
+          select("terminal", "term-4");
+        } else {
+          ensureSpace("s-main");
+          select("workspace", "herdr");
+          S.ui.roving = "section:workspaces";
+        }
+      }
+
+      function renderFixExample() {
+        const id = S.ui.demo,
+          enabled = on(id);
+        const proposal = PROPOSALS.find((p) => p.id === id);
+        const list = (items) =>
+          `<ul>${items
+            .filter((it) => !it.sep && !it.heading)
+            .map(
+              (it, i) =>
+                `<li class="${it.disabled ? "example-disabled" : id === "F2" && enabled && i === 0 ? "example-focus" : ""}"><span>${esc(it.label)}</span>${it.note ? `<span>${esc(it.note)}</span>` : ""}</li>`,
+            )
+            .join("")}</ul>`;
+        let outcome, explanation, example;
+        if (id === "F1") {
+          outcome = enabled
+            ? "The rail has a continuous keyboard path"
+            : "Most rail rows are pointer-only";
+          explanation =
+            "The rows below come from the current preview. Try in preview focuses the real rail; press Down to compare.";
+          example = list(
+            ["section:workspaces", "ws:herdr", "space:s-fix", "agent:term-4", "wt:wt-spike"]
+              .map((key) => rowMap.get(key))
+              .filter(Boolean)
+              .map((r) => ({
+                label: r.title ?? r.text,
+                note: enabled || r.baselineKeyboard ? "Keyboard reachable" : "Pointer only",
+              })),
+          );
+        } else if (id === "F2") {
+          outcome = enabled
+            ? "The picker has a focused item and arrow navigation"
+            : "The picker has no keyboard selection";
+          explanation = enabled
+            ? "Down moves from Terminal to Claude; Enter starts the selected item."
+            : "Down and Enter do not choose an item. Only Escape closes the baseline picker.";
+          example = list(
+            threadItems({ loading: false, repo: false }).map((item) => ({
+              ...item,
+              note: enabled
+                ? item.key === "local:terminal"
+                  ? "Keyboard selection"
+                  : "Arrow-key reachable"
+                : "Pointer only",
+            })),
+          );
+        } else if (id === "F3") {
+          const space = findSpace("s-fix");
+          outcome = enabled
+            ? "Parent-space actions stay available"
+            : "Parent-space actions disappear";
+          explanation =
+            "Example: right-click fix-auth, a compressed one-pane space. Pane and agent actions remain in both modes.";
+          example =
+            enabled && space
+              ? list(spaceItems(space, true))
+              : "<p>No Rename space, New tab, worktree actions or Close space in this row's pane menu.</p>";
+        } else if (id === "F4") {
+          const workspace = S.model.workspaces.find((w) => w.key === "herdr");
+          const target = workspaceTarget(workspace);
+          outcome = target?.space
+            ? `New thread targets ${target.space.name}`
+            : "New thread creates a space";
+          explanation =
+            S.scenario.order === "external-first"
+              ? `An external linked worktree is ordered before main. ${enabled ? "Git classification selects the main checkout." : "The path heuristic selects the external worktree as though it were main."}`
+              : S.scenario.order === "linked-only"
+                ? "Only linked worktrees are open. The existing first-space fallback is preserved."
+                : "Main is ordered first, so both methods choose the same target. Toggle F4 to load the external-worktree example again.";
+          example = `<p>${esc(target?.space ? checkoutLabel(target.space) : "New space")}</p><code>${esc(target?.space?.path ?? workspace.folder)}</code>`;
+        } else if (id === "F5") {
+          const record = S.model.closed.find((r) => r.id === "c2");
+          outcome = enabled
+            ? "Resume is unavailable without a saved folder"
+            : "Resume can launch in an arbitrary folder";
+          explanation =
+            "Example: old-spike has no saved folder. View history remains available in both modes.";
+          example = record
+            ? list(closedItems(record))
+            : "<p>Record forgotten. Toggle the fix to reload its sample.</p>";
+        } else if (id === "F6") {
+          const summary = rowMap.get("settled:s-main"),
+            logs = rowMap.get("tab:t-logs");
+          outcome = summary
+            ? "The settled logs tab is folded away"
+            : "The logs tab stays in the main list";
+          explanation =
+            "Proposed policy: settled tabs fold, Restore brings them back, and Needs you or Unread returns them automatically. The example starts with logs settled and idle.";
+          example = list([
+            {
+              label: summary?.text ?? logs?.text ?? "logs restored",
+              note: summary ? "Expand to reach Restore" : "Visible alongside active tabs",
+            },
+          ]);
+        } else {
+          const agent = term("term-4");
+          outcome =
+            interruptMenu(agent) !== interruptHover(agent)
+              ? "The idle agent still offers Interrupt in its menu"
+              : interruptMenu(agent)
+                ? "Hover and menu agree: Interrupt available"
+                : "Hover and menu agree: nothing to interrupt";
+          explanation = `Example: reviewer is ${STATUS_LABEL[agent.status].toLowerCase()}. Toggle F7 to load the idle-agent comparison again.`;
+          example = list([
+            {
+              label: "Hover controls",
+              note: interruptHover(agent) ? "Interrupt offered" : "No Interrupt",
+            },
+            {
+              label: "Context menu",
+              note: interruptMenu(agent) ? "Interrupt offered" : "No Interrupt",
+            },
+          ]);
+        }
+        $("#fix-choice").value = id;
+        $("#fix-toggle").textContent = `Turn ${id} ${enabled ? "off" : "on"}`;
+        $("#fix-result").innerHTML =
+          `<p class="fix-mode">${id} ${enabled ? "ON · Proposal" : "OFF · Baseline"}</p><h3 id="fix-title">${esc(outcome)}</h3><p class="muted">${esc(explanation)}</p>`;
+        $("#fix-example").innerHTML = example;
+        $("#fix-focus").setAttribute("aria-label", `${id}: ${proposal.title}`);
+        $("#fix-focus").classList.toggle("trying", Boolean(S.ui.demoTrying));
+      }
+
+      $("#fix-choice").innerHTML = PROPOSALS.map(
+        (p) => `<option value="${p.id}">${esc(p.id + " · " + p.title)}</option>`,
+      ).join("");
+      $("#fix-choice").addEventListener("change", (e) => {
+        prepareFixExample(e.target.value);
+        render();
+      });
+      $("#fix-toggle").addEventListener("click", () => $(`#tg-${S.ui.demo}`).click());
+      $("#fix-try").addEventListener("click", () => {
+        const id = S.ui.demo,
+          ctx = { fk: "fix-try", el: $("#fix-try") };
+        S.ui.demoTrying = true;
+        $("#fix-focus").classList.add("trying");
+        if (id === "F1") {
+          const row = on(id)
+            ? $("#rail [data-key='section:workspaces']")
+            : $("#rail [data-key='wt:wt-spike']");
+          row?.scrollIntoView({ block: "nearest" });
+          row?.focus();
+        } else if (id === "F2" || id === "F4") {
+          const workspace = S.model.workspaces.find((w) => w.key === "herdr");
+          openThread(
+            {
+              target: workspaceTarget(workspace),
+              folder: workspace.folder,
+              repo: workspace.repo,
+              ws: workspace.key,
+            },
+            ctx,
+          );
+        } else if (id === "F3") {
+          rowMap.get("space:s-fix")?.menu?.(ctx);
+        } else if (id === "F5") {
+          rowMap.get("closed:c2")?.menu?.(ctx);
+        } else if (id === "F6") {
+          const row = $("#rail [data-key='settled:s-main']") ?? $("#rail [data-key='tab:t-logs']");
+          row?.scrollIntoView({ block: "nearest" });
+          row?.focus();
+        } else {
+          rowMap.get("agent:term-4")?.menu?.(ctx);
+        }
+      });
+
+      /* ---------- Controls ---------- */
+      $("#switches").innerHTML = PROPOSALS.map(
+        (p) =>
+          `<label class="switch"><input type="checkbox" role="switch" id="tg-${p.id}" data-id="${p.id}">` +
+          `<span class="sw-title"><b>${p.id}</b>${esc(p.title)}<span class="sev">${p.sev}</span></span><small>${esc(p.desc)}</small></label>`,
+      ).join("");
+      $("#switches").addEventListener("change", (e) => {
+        const id = e.target.dataset.id;
+        S.toggles[id] = e.target.checked;
+        prepareFixExample(id);
+        log(
+          `${id} ${e.target.checked ? "on" : "off"}: ${PROPOSALS.find((p) => p.id === id).title}`,
+        );
+        render();
+        if (window.innerWidth <= 820) $("#fix-focus").scrollIntoView({ block: "start" });
+      });
+      function setAll(value) {
+        for (const p of PROPOSALS) S.toggles[p.id] = value;
+        log(value ? "All proposals on" : "All proposals off (baseline)");
+        render();
+      }
+      $("#all-on").addEventListener("click", () => setAll(true));
+      $("#all-off").addEventListener("click", () => setAll(false));
+      $("#reset-all").addEventListener("click", () => {
+        closePopup(false);
+        S = initialState();
+        log("Reset: all proposals on, mock data restored");
+        render();
+      });
+      $("#clear-log").addEventListener("click", () => {
+        S.log = [];
+        renderLog();
+      });
+      $("#sc-order").addEventListener("change", (e) => {
+        S.scenario.order = e.target.value;
+        log(`Scenario: herdr spaces ${e.target.selectedOptions[0].textContent.toLowerCase()}`);
+        render();
+      });
+      $("#sc-pending").addEventListener("change", (e) => {
+        S.scenario.pending = e.target.checked;
+        log(`Scenario: checkout lookup ${e.target.checked ? "pending" : "finished"}`);
+        render();
+      });
+      $("#sc-tab").addEventListener("click", () => {
+        const fix = S.model.spaces.find((s) => s.id === "s-fix");
+        if (!fix) return;
+        if (fix.tabs.length > 1) {
+          for (const tab of fix.tabs.slice(1))
+            for (const pane of [...tab.panes]) removePane({ space: fix, tab, pane });
+          fix.tabs = fix.tabs.slice(0, 1);
+          log("Scenario: fix-auth back to one tab; the row compresses");
+        } else {
+          const address = newTerminal(null);
+          fix.tabs.push({
+            id: newId("t-"),
+            name: "notes",
+            settled: false,
+            panes: [{ id: newId("p"), terminal: address }],
+          });
+          log("Scenario: second tab in fix-auth; the space row has its own space menu");
+        }
+        render();
+      });
+      $("#sc-settle").addEventListener("change", (e) => {
+        const tab = S.model.spaces.flatMap((s) => s.tabs).find((t) => t.id === "t-logs");
+        if (!tab) return;
+        tab.settled = e.target.checked;
+        log(`Scenario: logs tab ${tab.settled ? "settled" : "not settled"}`);
+        render();
+      });
+      $("#sc-agent").addEventListener("change", (e) => {
+        S.ui.statusAgent = e.target.value;
+        syncControls();
+      });
+      $("#sc-status").addEventListener("change", (e) => {
+        const a = term(S.ui.statusAgent);
+        if (!a) return;
+        a.status = e.target.value;
+        log(`Scenario: ${a.name} is now ${STATUS_LABEL[a.status]}`);
+        render();
+      });
+      $("#sc-width").addEventListener("change", (e) => {
+        S.scenario.width = Number(e.target.value);
+        log(`Scenario: rail width ${S.scenario.width}px`);
+        render();
+      });
+
+      log("Prototype loaded. Mock data only; no Herdr connection.");
+      render();
+    </script>
+  </body>
+</html>
