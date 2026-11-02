@@ -63,10 +63,10 @@ export default class Thread extends View {
   }
 
   local(agent: ThreadAgent) {
-    const { space, folder } = props(),
+    const { space, folder, machine } = props(),
       argv = agent.run ? { argv: agentArgv(agent.run) } : {};
     closeOverlay(props().overlay);
-    if (!space) return run("space.new", { folder, ...argv });
+    if (!space) return run("space.new", { folder, machine: machine ?? "", ...argv });
     run("space.select", { id: space });
     run("tab.new", { space, ...argv });
   }

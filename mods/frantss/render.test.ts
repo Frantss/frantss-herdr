@@ -79,6 +79,7 @@ async function harness(role = "rail") {
     agents: [] as any[],
     overlays: [] as any[],
     commands: [] as any[],
+    bulkRemovalResults: [] as any[],
     onCommand: (_name: string, _args: any) => {},
     calls: { spaces: 0, panes: 0, paneVisits: 0 },
     tasks: [] as ((cx: unknown) => Promise<void>)[],
@@ -101,6 +102,21 @@ async function harness(role = "rail") {
     contextLine: "",
     branchStatus: "# branch.ab +0 -0\n",
     branchReads: [] as unknown[],
+    worktreeReads: [] as unknown[],
+    worktreeOutput: "",
+    worktreeFailure: false,
+    removalGitReads: [] as [string[], { cwd?: string; on?: string | null }][],
+    dirtyWorktree: false,
+    dirtyWorktrees: new Set<string>(),
+    submoduleWorktrees: new Set<string>(),
+    worktreeRemoveResult: { code: 0, stdout: "", stderr: "" },
+    focusedHandle: null as unknown,
+    rendering: false,
+    focusAllocations: 0,
+    focusTimers: [] as ((cx: unknown) => void)[],
+    propagationStops: 0,
+    onWorktreeRemoval: (_path: string) => {},
+    onWorktreeStatus: async (_path: string) => {},
     storage: new Map<string, string>(),
     theme: {} as Record<string, string>,
   };
@@ -112,6 +128,18 @@ async function harness(role = "rail") {
       childNodes: [],
       styles: [],
       handlers: {},
+      parent: undefined,
+    };
+    const append = (child) => {
+      if (child && typeof child === "object" && "kind" in child) {
+        assert.equal(
+          child.parent,
+          undefined,
+          "Elements are single-use values, not reusable children",
+        );
+        child.parent = node;
+      }
+      node.childNodes.push(child);
     };
     const proxy = new Proxy(node, {
       get(target, name) {
@@ -120,8 +148,8 @@ async function harness(role = "rail") {
         return (...args) => {
           if (name === "when") {
             if (args[0]) args[1](proxy);
-          } else if (name === "child") node.childNodes.push(args[0]);
-          else if (name === "children") node.childNodes.push(...args[0]);
+          } else if (name === "child") append(args[0]);
+          else if (name === "children") args[0].forEach(append);
           else if (name === "id") node.elementId = args[0];
           else if (String(name).startsWith("on_")) node.handlers[name] = args.at(-1);
           else node.styles.push([name, ...args]);
@@ -189,12 +217,62 @@ async function harness(role = "rail") {
         state.agentOrder = addresses;
       },
       run: (...args) => {
+        if (args[0].startsWith("frantss-worktree-removal.result:")) {
+          state.bulkRemovalResults.push(
+            JSON.parse(
+              decodeURIComponent(args[0].slice("frantss-worktree-removal.result:".length)),
+            ),
+          );
+          return;
+        }
         state.commands.push(args);
         state.onCommand(args[0], args[1]);
       },
       openOverlay: (options) => state.overlays.push(options),
       terminals: () => state.terminals,
       exec: async (command, args, options) => {
+        if (command === "git" && args[0] === "--git-dir") {
+          state.removalGitReads.push([Array.from(args), options]);
+          if (args[3] === "list")
+            return {
+              code: state.worktreeFailure ? 128 : 0,
+              stdout: state.worktreeOutput,
+              stderr: "Inventory unavailable",
+            };
+          assert.equal(args[3], "remove");
+          if (state.worktreeRemoveResult.code === 0) state.onWorktreeRemoval(args[4]);
+          return state.worktreeRemoveResult;
+        }
+        if (command === "git" && args[0] === "rev-parse") {
+          state.removalGitReads.push([Array.from(args), options]);
+          return { code: 0, stdout: `${options.cwd}\n`, stderr: "" };
+        }
+        if (command === "git" && args[0] === "status") {
+          state.removalGitReads.push([Array.from(args), options]);
+          await state.onWorktreeStatus(options.cwd);
+          return {
+            code: 0,
+            stdout:
+              state.dirtyWorktree || state.dirtyWorktrees.has(options.cwd) ? "?? local.txt\0" : "",
+            stderr: "",
+          };
+        }
+        if (command === "git" && args[0] === "ls-files") {
+          state.removalGitReads.push([Array.from(args), options]);
+          return {
+            code: 0,
+            stdout: state.submoduleWorktrees.has(options.cwd) ? "160000 abc 0\tchild\0" : "",
+            stderr: "",
+          };
+        }
+        if (command === "git" && args[0] === "worktree") {
+          state.worktreeReads.push([Array.from(args), options?.cwd, options?.on ?? null]);
+          return {
+            code: state.worktreeFailure ? 128 : 0,
+            stdout: state.worktreeOutput,
+            stderr: "",
+          };
+        }
         if (command === "git") {
           state.branchReads.push([options?.cwd, options?.on ?? null]);
           return { code: 0, stdout: state.branchStatus, stderr: "" };
@@ -263,15 +341,54 @@ async function harness(role = "rail") {
     Object.keys(view.repos).map((place) => [place, { checkedAt: Date.now(), status: null }]),
   );
   const cx = {
+    focus_handle: () => {
+      assert.equal(state.rendering, false, "focus handles must not be created during render");
+      state.focusAllocations++;
+      const handle = {
+        focus: () => {
+          state.focusedHandle = handle;
+        },
+        is_focused: () => state.focusedHandle === handle,
+        release: () => {
+          assert.equal(state.rendering, false, "focus handles must not be released during render");
+          if (state.focusedHandle === handle) state.focusedHandle = null;
+          return true;
+        },
+      };
+      return handle;
+    },
     spawn: (task) => {
       state.tasks.push(task);
       return { cancel: () => state.cancelled.push(task) };
     },
-    stop_propagation() {},
+    stop_propagation() {
+      state.propagationStops++;
+    },
     notify() {},
-    timer: { every: (ms, callback) => state.timers.push({ ms, callback }) },
+    timer: {
+      every: (ms, callback) => state.timers.push({ ms, callback }),
+      after: (ms, callback) => {
+        assert.equal(ms, 0);
+        state.focusTimers.push(callback);
+      },
+    },
   };
-  return { state, view, cx, render: () => view.render(cx) };
+  return {
+    state,
+    view,
+    cx,
+    render: () => {
+      state.rendering = true;
+      let tree;
+      try {
+        tree = view.render(cx);
+      } finally {
+        state.rendering = false;
+      }
+      if (view.syncingWorktreeFocus) state.focusTimers.pop()(cx);
+      return tree;
+    },
+  };
 }
 
 function byId(node, id) {
@@ -972,13 +1089,18 @@ test("pinned rows retain each native status while unpinned rows keep their exist
     railAgent(`${status}-pin`, status, { pinned: true }),
     railAgent(`${status}-normal`, status),
   ]);
-  let tree = h.view.rail(palette, h.state.agents, {
-    spaces: [],
-    leadByTab: new Map(),
-    panesByTab: new Map(),
-    cwdBySpace: new Map(),
-    placeBySpace: new Map(),
-  });
+  let tree = h.view.rail(
+    palette,
+    h.state.agents,
+    {
+      spaces: [],
+      leadByTab: new Map(),
+      panesByTab: new Map(),
+      cwdBySpace: new Map(),
+      placeBySpace: new Map(),
+    },
+    h.cx,
+  );
   for (const [status, label] of Object.entries(labels)) {
     const indicator = byId(tree, `status-${status}-pin`);
     assert.ok(indicator, `${status} pin has a status indicator`);
@@ -1041,14 +1163,19 @@ test("the current row is filled and tab rows keep the rail's text size", async (
   const h = await harness();
   h.state.agents = [railAgent("t1", "working", { focused: true }), railAgent("t2", "working")];
   const palette = { selected: "#200000", dim: "#777777", muted: "#aaaaaa", foreground: "#ffffff" };
-  const tree = h.view.rail(palette, h.state.agents, {
-    ...h.view,
-    spaces: [],
-    leadByTab: new Map(),
-    panesByTab: new Map(),
-    cwdBySpace: new Map(),
-    placeBySpace: new Map(),
-  });
+  const tree = h.view.rail(
+    palette,
+    h.state.agents,
+    {
+      ...h.view,
+      spaces: [],
+      leadByTab: new Map(),
+      panesByTab: new Map(),
+      cwdBySpace: new Map(),
+      placeBySpace: new Map(),
+    },
+    h.cx,
+  );
   const filled = (id: string) =>
     byId(tree, id).styles.some(([name, value]) => name === "bg" && value === palette.selected);
   assert.equal(filled("agent-t1"), true);
@@ -1471,6 +1598,662 @@ test("open usage shows each window's reset and marks stale and failed reads", as
   assert.match(text(byId(usage, "header-usage")), /Usage15m ago/);
   assert.equal(text(byId(usage, "usage-claude")), "ClaudeStale5h42%1h 0m7d——Offline");
   assert.equal(text(byId(usage, "usage-codex")), "CodexWaiting for usage…");
+});
+
+const checkoutOutput = (trees: { path: string; branch?: string }[]) =>
+  trees
+    .map(
+      (tree) =>
+        `worktree ${tree.path}\0HEAD 0123456789abcdef\0${tree.branch ? `branch refs/heads/${tree.branch}` : "detached"}\0\0`,
+    )
+    .join("");
+
+async function worktreeHarness() {
+  const h = await harness();
+  h.state.worktreeOutput = checkoutOutput([
+    { path: "/project", branch: "main" },
+    { path: "/home/.herdr/worktrees/project/feature", branch: "feature" },
+    { path: "/new checkout", branch: "new-branch" },
+    { path: "/detached" },
+  ]);
+  h.view.checkoutRoots[key("/project/live")] = "/project";
+  return h;
+}
+
+async function finishWorktreeRefresh(h) {
+  if (h.view.pendingBulkRemoval && !h.view.pendingBulkRemoval.started)
+    h.view.inspectBulkWorktreeRemoval(h.view.pendingBulkRemoval.token, h.cx);
+  await h.state.tasks.pop()(h.cx);
+}
+
+test("worktree discovery is lazy, never runs during render, and routes one query per repository", async () => {
+  const h = await worktreeHarness();
+  const group = key("/project/.git");
+  let tree = h.render();
+  assert.equal(text(byId(tree, `worktrees-${group}`)), "Other worktrees");
+  const refresh = byId(tree, `worktrees-refresh-${group}`);
+  assert.ok(refresh);
+  assert.ok(descendants(refresh).some((node) => node?.source === "mods/github/refresh.svg"));
+  assert.equal(text(refresh), "");
+  assert.deepEqual(h.state.worktreeReads, []);
+  h.view.refreshWorktrees(h.cx);
+  assert.deepEqual(h.state.worktreeReads, []);
+  byId(tree, `worktrees-${group}`).handlers.on_click({}, h.cx);
+  assert.match(text(byId(h.render(), `worktrees-loading-${group}`)), /Checking worktrees/);
+  assert.deepEqual(h.state.worktreeReads, []);
+  await finishWorktreeRefresh(h);
+  assert.deepEqual(plain(h.state.worktreeReads), [
+    [["worktree", "list", "--porcelain", "-z"], "/home/.herdr/worktrees/project/feature", null],
+  ]);
+  tree = h.render();
+  assert.equal(text(byId(tree, `worktrees-${group}`)), "Other worktrees2");
+  assert.match(text(tree), /new-branch/);
+  assert.match(text(tree), /01234567/);
+  h.render();
+  h.view.refreshWorktrees(h.cx);
+  await finishWorktreeRefresh(h);
+  assert.equal(h.state.worktreeReads.length, 1);
+  byId(tree, `worktrees-${group}`).handlers.on_click({}, h.cx);
+  const taskCount = h.state.tasks.length;
+  h.view.refreshWorktrees(h.cx);
+  assert.equal(h.state.tasks.length, taskCount);
+});
+
+test("worktree entries open on their machine, deduplicate clicks, and select a newly opened space", async () => {
+  const h = await worktreeHarness();
+  const group = key("/project/.git", "build");
+  h.state.shared.set("frantss.collapsed", [`worktrees:${group}`]);
+  h.view.refreshWorktrees(h.cx);
+  await finishWorktreeRefresh(h);
+  const rowId = `worktree-${JSON.stringify([group, "/new checkout"])}`;
+  const row = byId(h.render(), rowId);
+  assert.ok(row);
+  assert.ok(row.styles.some(([name, value]) => name === "tab_index" && value === 0));
+  assert.ok(row.styles.some(([name]) => name === "focus"));
+  h.view.worktreeFocus.get(rowId).focus();
+  row.handlers.on_key_down({ key: "enter" }, h.cx);
+  row.handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands), [
+    ["space.new", { folder: "/new checkout", machine: "build" }],
+  ]);
+  h.state.spaces.push(space("new-space", "/new checkout", [], { machine: "build" }));
+  h.view.repos[key("/new checkout", "build")] = "/project/.git";
+  await finishWorktreeRefresh(h);
+  row.handlers.on_key_down({ key: "space" }, h.cx);
+  assert.deepEqual(plain(h.state.commands.at(-1)), ["space.select", { id: "new-space" }]);
+  assert.equal(byId(h.render(), rowId), null);
+  const localGroup = key("/project/.git");
+  h.state.shared.set("frantss.collapsed", [`worktrees:${localGroup}`, `worktrees:${group}`]);
+  h.view.refreshWorktrees(h.cx);
+  await finishWorktreeRefresh(h);
+  const localRow = byId(h.render(), `worktree-${JSON.stringify([localGroup, "/new checkout"])}`);
+  assert.ok(localRow);
+  localRow.handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands.at(-1)), [
+    "space.new",
+    { folder: "/new checkout", machine: "" },
+  ]);
+});
+
+test("the refresh icon stays in the heading and refreshes a collapsed list without expanding it", async () => {
+  const h = await worktreeHarness();
+  const group = key("/project/.git");
+  const tree = h.render();
+  const header = byId(tree, `worktrees-${group}`);
+  assert.ok(
+    descendants(header).some((node) => node?.source === "mods/workspace-chrome/branch.svg"),
+    "Other worktrees must fill the same icon column as sibling checkout rows",
+  );
+  const sibling = byId(tree, "space-primary");
+  for (const property of ["h", "text_size"])
+    assert.deepEqual(
+      header.styles.find(([name]) => name === property),
+      sibling.styles.find(([name]) => name === property),
+    );
+  assert.deepEqual(header.childNodes[0].styles, sibling.childNodes[0].styles);
+  const refresh = byId(header, `worktrees-refresh-${group}`);
+  assert.ok(refresh);
+  assert.equal(text(refresh), "");
+  assert.equal(text(tree).includes("Refresh worktrees"), false);
+  refresh.handlers.on_click({}, h.cx);
+  assert.equal(h.state.propagationStops, 1);
+  assert.equal(h.state.shared.has("frantss.collapsed"), false);
+  await finishWorktreeRefresh(h);
+  assert.equal(h.state.worktreeReads.length, 1);
+  const taskCount = h.state.tasks.length;
+  h.view.refreshWorktrees(h.cx);
+  assert.equal(h.state.tasks.length, taskCount);
+});
+
+test("worktree controls appear on hover and remain visible while the row or a control has focus", async () => {
+  const h = await worktreeHarness();
+  const group = key("/project/.git", "build");
+  h.state.shared.set("frantss.collapsed", [`worktrees:${group}`]);
+  h.view.refreshWorktrees(h.cx);
+  await finishWorktreeRefresh(h);
+  const id = `worktree-${JSON.stringify([group, "/new checkout"])}`;
+  let tree = h.render();
+  for (const action of ["open", "thread", "remove"])
+    assert.equal(byId(tree, `${id}-${action}`), null);
+  tree = hoverRender(h, id);
+  for (const action of ["open", "thread", "remove"]) assert.ok(byId(tree, `${id}-${action}`));
+  h.view.hovered = null;
+  h.view.worktreeFocus.get(id).focus();
+  tree = h.render();
+  assert.ok(byId(tree, `${id}-open`));
+  h.view.worktreeFocus.get(`${id}-thread`).focus();
+  tree = h.render();
+  assert.ok(byId(tree, `${id}-thread`));
+  byId(tree, id).handlers.on_key_down({ key: "enter" }, h.cx);
+  assert.equal(h.state.commands.length, 0, "a child's key must not activate its parent row");
+  byId(tree, `${id}-thread`).handlers.on_click({}, h.cx);
+  assert.equal(h.state.propagationStops, 1);
+  assert.deepEqual(plain(h.state.overlays.at(-1)), {
+    mod: "frantss-thread",
+    kind: "popup",
+    width: 260,
+    height: 420,
+    props: { folder: "/new checkout", machine: "build", repo: false },
+  });
+  assert.equal(h.state.commands.length, 0);
+  h.view.worktreeFocus.get(`${id}-thread`).release();
+  assert.equal(byId(h.render(), `${id}-thread`), null);
+  assert.equal(h.state.worktreeReads.length, 1);
+  h.state.shared.set("frantss.collapsed", []);
+  h.render();
+  assert.equal(h.view.worktreeFocus.has(id), false);
+  assert.equal(h.view.worktreeFocus.has(`${id}-thread`), false);
+  h.state.shared.set("frantss.collapsed", ["spaces"]);
+  h.render();
+  assert.equal(h.view.worktreeFocus.size, 0);
+});
+
+test("the main checkout has no Remove control and cannot start removal", async () => {
+  const h = await worktreeHarness();
+  const group = key("/project/.git");
+  h.state.spaces = h.state.spaces.filter((space) => space.id === "worktree");
+  h.state.panes = h.state.panes.filter((pane) => pane.tab === "t-worktree");
+  h.state.shared.set("frantss.collapsed", [`worktrees:${group}`]);
+  h.view.refreshWorktrees(h.cx);
+  await finishWorktreeRefresh(h);
+  const id = `worktree-${JSON.stringify([group, "/project"])}`;
+  const tree = hoverRender(h, id);
+  assert.ok(byId(tree, `${id}-open`));
+  assert.ok(byId(tree, `${id}-thread`));
+  assert.equal(byId(tree, `${id}-remove`), null);
+  const main = h.view.worktrees.state(group).worktrees.find((tree) => tree.path === "/project");
+  const tasks = h.state.tasks.length;
+  h.view.requestWorktreeRemoval(main, group, h.cx);
+  assert.equal(h.state.tasks.length, tasks);
+  assert.equal(h.state.removalGitReads.length, 0);
+});
+
+async function removalHarness() {
+  const h = await worktreeHarness();
+  const group = key("/project/.git", "build");
+  h.state.shared.set("frantss.collapsed", [`worktrees:${group}`]);
+  h.view.refreshWorktrees(h.cx);
+  await finishWorktreeRefresh(h);
+  const id = `worktree-${JSON.stringify([group, "/new checkout"])}`;
+  byId(hoverRender(h, id), `${id}-remove`).handlers.on_click({}, h.cx);
+  return { ...h, group, id };
+}
+
+function removalToken(h) {
+  return h.state.overlays.at(-1).props.command.name.slice("frantss.remove-worktree:".length);
+}
+
+test("removal checks local changes first and only deletes after confirmation, keeping normal Git guards", async () => {
+  const h = await removalHarness();
+  assert.equal(h.state.removalGitReads.length, 0);
+  await finishWorktreeRefresh(h);
+  assert.equal(h.state.removalGitReads.length, 3);
+  assert.equal(h.state.commands.length, 0);
+  const dialog = h.state.overlays.at(-1);
+  assert.equal(dialog.mod, "confirm");
+  assert.match(dialog.props.title, /Remove new-branch/);
+  assert.match(dialog.props.detail, /including ignored files/);
+  assert.match(dialog.props.detail, /Git branch is kept/);
+  assert.match(dialog.props.detail, /new local changes/);
+  const token = removalToken(h);
+  h.state.onWorktreeRemoval = (path) => {
+    assert.equal(path, "/new checkout");
+    h.state.worktreeOutput = checkoutOutput([
+      { path: "/project", branch: "main" },
+      { path: "/detached" },
+    ]);
+  };
+  h.view.confirmedWorktreeRemoval(token, h.cx);
+  h.view.confirmedWorktreeRemoval(token, h.cx);
+  await finishWorktreeRefresh(h);
+  assert.equal(h.state.removalGitReads.length, 6);
+  assert.deepEqual(plain(h.state.removalGitReads.at(-1)), [
+    ["--git-dir", "/project/.git", "worktree", "remove", "/new checkout"],
+    { on: "build" },
+  ]);
+  await finishWorktreeRefresh(h);
+  assert.equal(byId(h.render(), h.id), null);
+  assert.equal(h.state.errors.length, 0);
+  assert.equal(
+    h.state.commands.some(([name]) => name === "space.close"),
+    false,
+  );
+});
+
+test("dirty worktrees stop before confirmation and an opened worktree stops before deletion", async () => {
+  const dirty = await removalHarness();
+  dirty.state.dirtyWorktree = true;
+  await finishWorktreeRefresh(dirty);
+  assert.equal(dirty.state.overlays.length, 0);
+  assert.match(plain(dirty.state.errors)[0].body, /Commit or move/);
+  assert.equal(dirty.state.removalGitReads.length, 3);
+  assert.equal(dirty.view.pendingRemoval, null);
+  const opened = await removalHarness();
+  await finishWorktreeRefresh(opened);
+  opened.state.spaces.push(space("opened", "/new checkout", [], { machine: "build" }));
+  opened.view.confirmedWorktreeRemoval(removalToken(opened), opened.cx);
+  await finishWorktreeRefresh(opened);
+  assert.equal(opened.state.removalGitReads.length, 3);
+  assert.match(plain(opened.state.errors)[0].body, /Close its Herdr space first/);
+});
+
+test("a worktree opened while inspection runs never receives a removal confirmation", async () => {
+  const h = await removalHarness();
+  h.state.onWorktreeStatus = async () => {
+    h.state.spaces.push(space("opened", "/new checkout", [], { machine: "build" }));
+  };
+  await finishWorktreeRefresh(h);
+  assert.equal(h.state.overlays.length, 0);
+  assert.match(plain(h.state.errors)[0].body, /Close its Herdr space first/);
+  assert.equal(h.state.removalGitReads.length, 3);
+});
+
+test("pending space opens block removal and active removal blocks this rail's launch actions", async () => {
+  const pending = await removalHarness();
+  pending.view.openingWorktrees.add(JSON.stringify([pending.group, "/new checkout"]));
+  await finishWorktreeRefresh(pending);
+  assert.equal(pending.state.overlays.length, 0);
+  assert.match(plain(pending.state.errors)[0].body, /Close its Herdr space first/);
+  const h = await removalHarness();
+  await finishWorktreeRefresh(h);
+  h.view.confirmedWorktreeRemoval(removalToken(h), h.cx);
+  const tree = h.view.worktrees
+    .state(h.group)
+    .worktrees.find((tree) => tree.path === "/new checkout");
+  h.view.openWorktree(tree, h.group, h.cx);
+  h.view.newWorktreeThread(tree, h.group);
+  assert.equal(h.state.commands.length, 0);
+  assert.equal(h.state.overlays.length, 1);
+  assert.equal(h.state.errors.length, 2);
+  assert.equal(h.view.removingWorktrees.size, 1);
+  h.state.worktreeRemoveResult = { code: 128, stdout: "", stderr: "Locked worktree" };
+  await finishWorktreeRefresh(h);
+  assert.equal(h.view.removingWorktrees.size, 0);
+});
+
+test("failed removal reports Git's refusal without force, and stale confirmations do nothing", async () => {
+  const h = await removalHarness();
+  await finishWorktreeRefresh(h);
+  const oldToken = removalToken(h);
+  const tree = h.view.worktrees
+    .state(h.group)
+    .worktrees.find((tree) => tree.path === "/new checkout");
+  h.view.requestWorktreeRemoval(tree, h.group, h.cx);
+  await finishWorktreeRefresh(h);
+  const tasks = h.state.tasks.length;
+  h.view.confirmedWorktreeRemoval(oldToken, h.cx);
+  assert.equal(h.state.tasks.length, tasks);
+  h.state.worktreeRemoveResult = { code: 128, stdout: "", stderr: "Worktree has local changes" };
+  h.view.confirmedWorktreeRemoval(removalToken(h), h.cx);
+  await finishWorktreeRefresh(h);
+  assert.match(plain(h.state.errors)[0].body, /Worktree has local changes/);
+  assert.equal(
+    h.state.removalGitReads.some(([args]) => args.includes("--force")),
+    false,
+  );
+  assert.ok(byId(h.render(), h.id));
+});
+
+test("bulk removal opens the checking dialog before any Git checks start", async () => {
+  const h = await worktreeHarness();
+  const group = key("/project/.git", "build");
+  h.view.requestBulkWorktreeRemoval(group, h.cx);
+  assert.equal(h.state.overlays.at(-1)?.mod, "frantss-worktree-removal");
+  assert.equal(h.state.overlays.at(-1).props.token, h.view.pendingBulkRemoval.token);
+  assert.equal(h.view.pendingBulkRemoval.plan, null);
+  assert.equal(h.state.removalGitReads.length, 0);
+});
+
+async function bulkRemovalHarness() {
+  const h = await worktreeHarness();
+  const group = key("/project/.git", "build");
+  h.view.requestBulkWorktreeRemoval(group, h.cx);
+  return { ...h, group };
+}
+
+function bulkRemovalToken(h) {
+  return h.state.overlays.at(-1).props.command.name.slice("frantss.remove-worktrees:".length);
+}
+
+test("Remove all is a heading hover/focus control and does not expand the list or query during render", async () => {
+  const h = await worktreeHarness();
+  const group = key("/project/.git");
+  const header = `worktrees-${group}`;
+  const id = `worktrees-remove-all-${group}`;
+  assert.equal(byId(h.render(), id), null);
+  assert.ok(byId(hoverRender(h, header), id));
+  h.view.hovered = null;
+  h.view.worktreeFocus.get(id).focus();
+  const tree = h.render();
+  assert.ok(byId(tree, id));
+  assert.ok(byId(tree, `worktrees-refresh-${group}`));
+  assert.deepEqual(h.state.removalGitReads, []);
+  byId(tree, id).handlers.on_click({}, h.cx);
+  assert.equal(h.state.propagationStops, 1);
+  assert.equal(h.state.shared.has("frantss.collapsed"), false);
+  await finishWorktreeRefresh(h);
+  assert.equal(h.state.overlays.at(-1).mod, "frantss-worktree-removal");
+  assert.equal(
+    h.state.removalGitReads.some(([args]) => args.includes("remove")),
+    false,
+  );
+});
+
+test("bulk removal confirms fresh candidates, reports skips and keeps branches and machine routing", async () => {
+  const h = await bulkRemovalHarness();
+  await finishWorktreeRefresh(h);
+  const dialog = h.state.overlays.at(-1);
+  assert.equal(dialog.mod, "frantss-worktree-removal");
+  assert.deepEqual(plain(h.state.bulkRemovalResults.at(-1).paths), [
+    "/detached",
+    "/home/.herdr/worktrees/project/feature",
+    "/new checkout",
+  ]);
+  assert.match(h.state.bulkRemovalResults.at(-1).skipped[0].reason, /Main checkout is protected/);
+  const token = bulkRemovalToken(h);
+  h.view.confirmedBulkWorktreeRemoval(token, h.cx);
+  h.view.confirmedBulkWorktreeRemoval(token, h.cx);
+  assert.equal(h.view.removingWorktrees.size, 3);
+  await finishWorktreeRefresh(h);
+  const removals = h.state.removalGitReads.filter(([args]) => args[3] === "remove");
+  assert.equal(removals.length, 3);
+  for (const [args, options] of removals) {
+    assert.equal(options.on, "build");
+    assert.equal(args.includes("--force"), false);
+  }
+  assert.equal(h.view.removingWorktrees.size, 0);
+  assert.equal(h.view.busyBulkRemoval.size, 0);
+  assert.match(plain(h.state.errors).at(-1).title, /Removed 3 worktrees; skipped 1/);
+  assert.equal(h.state.commands.length, 0);
+});
+
+test("bulk removal skips newly opened and dirty candidates, and blocks rail launches while running", async () => {
+  const h = await bulkRemovalHarness();
+  await finishWorktreeRefresh(h);
+  h.state.spaces.push(space("opened", "/detached", [], { machine: "build" }));
+  h.state.dirtyWorktrees.add("/new checkout");
+  h.view.confirmedBulkWorktreeRemoval(bulkRemovalToken(h), h.cx);
+  const tree = { path: "/new checkout", main: false };
+  h.view.openWorktree(tree, h.group, h.cx);
+  h.view.newWorktreeThread(tree, h.group);
+  assert.equal(h.state.commands.length, 0);
+  assert.equal(h.state.overlays.length, 1);
+  await finishWorktreeRefresh(h);
+  const paths = h.state.removalGitReads
+    .filter(([args]) => args[3] === "remove")
+    .map(([args]) => args[4]);
+  assert.deepEqual(plain(paths), ["/home/.herdr/worktrees/project/feature"]);
+  const summary = plain(h.state.errors).at(-1);
+  assert.match(summary.title, /Removed 1 worktree; skipped 3/);
+  assert.match(summary.body, /local changes/);
+  assert.match(summary.body, /open or opening/);
+});
+
+test("bulk removal protects spaces in checkout subdirectories before discovery or root lookup", async () => {
+  for (const duringInspection of [false, true]) {
+    const h = await bulkRemovalHarness();
+    const addSpace = () =>
+      h.state.spaces.push(space("nested", "/new checkout/src", [], { machine: "build" }));
+    if (duringInspection)
+      h.state.onWorktreeStatus = async (path) => {
+        if (path === "/new checkout") addSpace();
+      };
+    else addSpace();
+    assert.equal(h.view.worktrees.state(h.group), undefined);
+    await finishWorktreeRefresh(h);
+    assert.equal(
+      h.view.pendingBulkRemoval.plan.targets.some((target) => target.path === "/new checkout"),
+      false,
+    );
+    assert.ok(
+      h.view.pendingBulkRemoval.plan.skipped.some(
+        (item) => item.path === "/new checkout" && /open or opening/.test(item.reason),
+      ),
+    );
+  }
+});
+
+test("bulk removal with no eligible candidates updates the existing dialog without enabling removal", async () => {
+  const h = await bulkRemovalHarness();
+  h.state.dirtyWorktree = true;
+  await finishWorktreeRefresh(h);
+  assert.equal(h.state.overlays.length, 1);
+  assert.deepEqual(plain(h.state.bulkRemovalResults.at(-1).paths), []);
+  assert.match(h.state.bulkRemovalResults.at(-1).skipped[0].reason, /local changes/);
+  assert.equal(h.view.busyBulkRemoval.size, 0);
+});
+
+test("slow inspection keeps the dialog visible, blocks early confirmation and drops cancelled results", async () => {
+  const h = await bulkRemovalHarness();
+  const token = bulkRemovalToken(h);
+  let entered;
+  const checking = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  h.state.onWorktreeStatus = async () => {
+    entered();
+    await gate;
+  };
+  h.view.inspectBulkWorktreeRemoval(token, h.cx);
+  const task = h.state.tasks.pop()(h.cx);
+  await checking;
+  assert.equal(h.state.overlays.length, 1);
+  assert.equal(h.view.pendingBulkRemoval.plan, null);
+  const count = h.state.tasks.length;
+  h.view.confirmedBulkWorktreeRemoval(token, h.cx);
+  assert.equal(h.state.tasks.length, count);
+  h.view.cancelBulkWorktreeRemoval(token);
+  release();
+  await task;
+  assert.equal(h.state.bulkRemovalResults.length, 0);
+  assert.equal(h.view.pendingBulkRemoval, null);
+  assert.equal(h.view.busyBulkRemoval.size, 0);
+});
+
+test("superseded inspection cannot publish results or unlock a newer inspection", async () => {
+  const h = await bulkRemovalHarness();
+  const oldToken = bulkRemovalToken(h);
+  let entered;
+  const checking = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  let release;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  h.state.onWorktreeStatus = async () => {
+    entered();
+    await gate;
+  };
+  h.view.inspectBulkWorktreeRemoval(oldToken, h.cx);
+  const oldTask = h.state.tasks.pop()(h.cx);
+  await checking;
+  h.view.cancelBulkWorktreeRemoval(oldToken);
+  h.view.requestBulkWorktreeRemoval(h.group, h.cx);
+  const token = bulkRemovalToken(h);
+  release();
+  await oldTask;
+  assert.equal(h.state.bulkRemovalResults.length, 0);
+  assert.equal(h.view.pendingBulkRemoval.token, token);
+  assert.ok(h.view.busyBulkRemoval.has(h.group));
+  await finishWorktreeRefresh(h);
+  assert.equal(h.state.bulkRemovalResults.at(-1).token, token);
+});
+
+test("inventory failures update the open dialog without allowing confirmation", async () => {
+  const h = await bulkRemovalHarness();
+  h.state.worktreeFailure = true;
+  await finishWorktreeRefresh(h);
+  assert.equal(h.state.overlays.length, 1);
+  assert.match(h.state.bulkRemovalResults.at(-1).error, /Inventory unavailable/);
+  assert.equal(h.view.pendingBulkRemoval.plan, null);
+  const tasks = h.state.tasks.length;
+  h.view.confirmedBulkWorktreeRemoval(bulkRemovalToken(h), h.cx);
+  assert.equal(h.state.tasks.length, tasks);
+});
+
+test("bulk removal deduplicates inspection, fails closed and ignores superseded confirmation tokens", async () => {
+  const h = await bulkRemovalHarness();
+  const tasks = h.state.tasks.length;
+  h.view.requestBulkWorktreeRemoval(h.group, h.cx);
+  assert.equal(h.state.tasks.length, tasks);
+  await finishWorktreeRefresh(h);
+  const oldToken = bulkRemovalToken(h);
+  h.view.requestBulkWorktreeRemoval(h.group, h.cx);
+  await finishWorktreeRefresh(h);
+  const before = h.state.tasks.length;
+  h.view.confirmedBulkWorktreeRemoval(oldToken, h.cx);
+  assert.equal(h.state.tasks.length, before);
+  h.state.worktreeFailure = true;
+  h.view.confirmedBulkWorktreeRemoval(bulkRemovalToken(h), h.cx);
+  await finishWorktreeRefresh(h);
+  assert.equal(
+    h.state.removalGitReads.some(([args]) => args[3] === "remove"),
+    false,
+  );
+  assert.match(plain(h.state.errors).at(-1).title, /Removed 0 worktrees/);
+  assert.equal(h.view.removingWorktrees.size, 0);
+});
+
+test("collapsed workspace and section stop discovery, and remote checks retain machine identity", async () => {
+  const h = await worktreeHarness();
+  const group = key("/project/.git", "build");
+  for (const closed of ["spaces", `workspace:${group}`]) {
+    h.state.shared.set("frantss.collapsed", [`worktrees:${group}`, closed]);
+    const taskCount = h.state.tasks.length;
+    h.view.refreshWorktrees(h.cx);
+    assert.equal(h.state.tasks.length, taskCount);
+  }
+  h.state.shared.set("frantss.collapsed", [`worktrees:${group}`]);
+  h.view.refreshWorktrees(h.cx);
+  await finishWorktreeRefresh(h);
+  assert.equal(h.state.worktreeReads.length, 1);
+  assert.equal(h.state.worktreeReads[0][2], "build");
+});
+
+test("worktree matching uses checkout roots, preserves multiple spaces, and prefers nested checkouts", async () => {
+  const h = await worktreeHarness();
+  const group = key("/project/.git");
+  h.state.worktreeOutput = checkoutOutput([
+    { path: "/project", branch: "main" },
+    { path: "/project/nested", branch: "nested" },
+  ]);
+  h.state.spaces = [space("a", "/project/nested/src", []), space("b", "/project/nested/src", [])];
+  h.state.panes = [];
+  h.view.repos[key("/project/nested/src")] = "/project/.git";
+  h.state.shared.set("frantss.collapsed", [`worktrees:${group}`]);
+  h.view.refreshWorktrees(h.cx);
+  await finishWorktreeRefresh(h);
+  const tree = h.render();
+  assert.ok(byId(tree, "space-a"));
+  assert.ok(byId(tree, "space-b"));
+  assert.ok(byId(tree, `worktree-${JSON.stringify([group, "/project"])}`));
+  assert.equal(byId(tree, `worktree-${JSON.stringify([group, "/project/nested"])}`), null);
+});
+
+test("Unix backslashes remain distinct from directory separators in checkout paths", async () => {
+  const h = await worktreeHarness();
+  const group = key("/project/.git");
+  const literal = "/project/a\\b";
+  const nested = "/project/a/b";
+  h.state.worktreeOutput = checkoutOutput([
+    { path: literal, branch: "literal" },
+    { path: nested, branch: "nested" },
+  ]);
+  h.state.spaces = [space("literal", literal, [])];
+  h.state.panes = [];
+  h.view.repos[key(literal)] = "/project/.git";
+  h.view.checkoutRoots[key(literal)] = literal;
+  h.state.shared.set("frantss.collapsed", [`worktrees:${group}`]);
+  h.view.refreshWorktrees(h.cx);
+  await finishWorktreeRefresh(h);
+  const tree = h.render();
+  assert.equal(byId(tree, `worktree-${JSON.stringify([group, literal])}`), null);
+  const unopened = byId(tree, `worktree-${JSON.stringify([group, nested])}`);
+  assert.ok(unopened);
+  unopened.handlers.on_click({}, h.cx);
+  assert.deepEqual(plain(h.state.commands.at(-1)), ["space.new", { folder: nested, machine: "" }]);
+});
+
+test("unqueried worktrees do no matching and cached matching visits only each repository's spaces", async () => {
+  const h = await harness();
+  const count = 100;
+  h.state.spaces = Array.from({ length: count }, (_, i) => space(`s${i}`, `/repo-${i}`, []));
+  h.state.panes = [];
+  h.state.shared.set("frantss.workspaces", []);
+  h.view.repos = Object.fromEntries(
+    h.state.spaces.map((space) => [key(space.folder), `${space.folder}/.git`]),
+  );
+  h.view.checkoutRoots = Object.fromEntries(
+    h.state.spaces.map((space) => [key(space.folder), space.folder]),
+  );
+  const match = h.view.worktreeSpaces;
+  let visits = 0;
+  h.view.worktreeSpaces = function (key, snapshot, list) {
+    visits += (list ?? snapshot.spaces).length;
+    return match.call(this, key, snapshot, list);
+  };
+  h.render();
+  assert.equal(visits, 0);
+  h.view.worktrees.state = (group) => {
+    const [, gitDir] = JSON.parse(group);
+    return { worktrees: [{ path: gitDir.slice(0, -5), branch: "main", head: "abc" }] };
+  };
+  h.render();
+  assert.equal(visits, count);
+  assert.equal(h.state.worktreeReads.length, 0);
+});
+
+test("worktree errors retain cached rows, show stale state, and allow explicit retry", async () => {
+  const h = await worktreeHarness();
+  const group = key("/project/.git");
+  h.state.shared.set("frantss.collapsed", [`worktrees:${group}`]);
+  h.state.worktreeFailure = true;
+  h.view.refreshWorktrees(h.cx);
+  await finishWorktreeRefresh(h);
+  assert.match(text(byId(h.render(), `worktrees-${group}`)), /Unavailable/);
+  h.state.worktreeFailure = false;
+  byId(h.render(), `worktrees-refresh-${group}`).handlers.on_click({}, h.cx);
+  await finishWorktreeRefresh(h);
+  h.state.worktreeFailure = true;
+  byId(h.render(), `worktrees-refresh-${group}`).handlers.on_click({}, h.cx);
+  await finishWorktreeRefresh(h);
+  assert.match(text(byId(h.render(), `worktrees-${group}`)), /Stale/);
+  assert.ok(byId(h.render(), `worktree-${JSON.stringify([group, "/new checkout"])}`));
+  h.state.worktreeFailure = false;
+  h.state.worktreeOutput = checkoutOutput([
+    { path: "/project", branch: "main" },
+    { path: "/home/.herdr/worktrees/project/feature", branch: "feature" },
+  ]);
+  byId(h.render(), `worktrees-refresh-${group}`).handlers.on_click({}, h.cx);
+  await finishWorktreeRefresh(h);
+  assert.match(text(byId(h.render(), `worktrees-empty-${group}`)), /No other worktrees/);
+  assert.equal(byId(h.render(), `worktree-${JSON.stringify([group, "/new checkout"])}`), null);
+  assert.ok(byId(h.render(), "space-worktree"));
 });
 
 test("only the rail reads usage on startup, every five minutes, and on manual refresh", async () => {

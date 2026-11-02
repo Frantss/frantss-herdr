@@ -125,7 +125,7 @@ test("thread launches isolate Codex in existing spaces, new spaces, and worktree
   byId(h.render(), "local-codex").handlers.on_click();
   assert.deepEqual(plain(h.state.commands.at(-1)), [
     "space.new",
-    { folder: "/repo", argv: ["codex", "--no-daemon"] },
+    { folder: "/repo", machine: "build", argv: ["codex", "--no-daemon"] },
   ]);
   byId(h.render(), "worktree-codex").handlers.on_click();
   assert.deepEqual(plain(h.state.overlays.at(-1).props), {

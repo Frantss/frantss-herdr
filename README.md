@@ -89,6 +89,30 @@ and persist in this Herdr installation. Clear a pane name to use the program's
 title again. An unnamed tab with one pane follows that pane's name; an explicit
 tab name stays separate. Pane names are removed when their panes close.
 
+## Other worktrees
+
+Under an open repository, expand **Other worktrees** to find Git checkouts that
+have no open Herdr space, including ones created by agents or other tools. Click
+a checkout to open it; this does not move or resume an existing agent session.
+Hover or focus a checkout to show **Open**, **New thread**, and **Remove…** controls.
+Removal is available only for linked worktrees, requires confirmation, and stops
+if the checkout is open or has local changes. It deletes the checkout folder,
+including ignored files, but keeps the Git branch. Git's lock and submodule
+safety checks still apply.
+
+Hover or focus **Other worktrees** to reveal **Remove all eligible worktrees…**
+beside refresh. It checks the repository again and confirms the checkout paths
+before removal. Main, open or opening, dirty, locked, and submodule checkouts are
+skipped. Each candidate is checked again before deletion; a refusal does not stop
+the remaining candidates. The result lists removals and skips. Branches are kept.
+
+The list refreshes on expansion when its cache is older than ten seconds, and
+checks every ten seconds while expanded. Collapsing the list, repository, or
+Workspaces section stops periodic checks. The refresh icon beside **Other worktrees**
+checks immediately, even while the list is collapsed;
+a failed check keeps the previous list marked **Stale** and retries less often.
+With many expanded repositories, checks are spread across refresh cycles.
+
 ## Agent usage
 
 The rail's **Usage** section shows Claude and Codex subscription quota consumed.

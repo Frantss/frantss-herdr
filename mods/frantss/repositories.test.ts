@@ -150,6 +150,9 @@ test("repository discovery preserves worktree classification and machine identit
   assert.equal(view.checkouts[place("/worktree")], "linked");
   assert.equal(view.repos[place("/repo", "build")], "/remote/.git");
   assert.equal(view.checkouts[place("/repo", "build")], "main");
+  assert.equal(view.checkoutRoots[place("/repo")], "/repo");
+  assert.equal(view.checkoutRoots[place("/worktree")], "/worktree");
+  assert.equal(view.checkoutRoots[place("/repo", "build")], "/remote");
 });
 
 test("completed results are shared within a module generation and reloaded in the next", async () => {
@@ -187,5 +190,7 @@ test("lookup errors keep successful repository discovery and preserve the non-re
   assert.equal(view.repos[place("/worktree")], null);
   assert.equal(view.repos[place("/outside")], null);
   assert.equal(view.checkouts[place("/outside")], null);
+  assert.equal(view.checkoutRoots[place("/repo")], null);
+  assert.equal(view.checkoutRoots[place("/outside")], null);
   assert.equal(cx.notifications(), 3);
 });

@@ -1,4 +1,12 @@
-import type { Context, AsyncContext, Element, ClickEvent, MouseButtonEvent, Task } from "gpui-kit";
+import type {
+  Context,
+  AsyncContext,
+  Element,
+  ClickEvent,
+  MouseButtonEvent,
+  Task,
+  FocusHandle,
+} from "gpui-kit";
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import {
@@ -57,10 +65,23 @@ import {
 import { stampStatuses, type StatusStamps } from "./status-since.ts";
 import { BRANCH_STATUS_ARGS, parseBranchStatus, type BranchStatus } from "./branch-status.ts";
 import { assignColors } from "./workspace-colors.ts";
+import { WorktreeDiscovery, type Worktree, type WorktreeTarget } from "./worktrees.ts";
+import {
+  inspectWorktree,
+  removeWorktree,
+  planWorktreeRemoval,
+  removeWorktrees,
+  type RemovalTarget,
+  type RemovalPlan,
+} from "./worktree-removal.ts";
 
 type Theme = Record<string, `#${string}`>;
 type KnownAgent = Awaited<ReturnType<typeof knownAgents>>[number];
-type RepositoryLookup = { repo: string | null; checkout: "main" | "linked" | null };
+type RepositoryLookup = {
+  repo: string | null;
+  top: string | null;
+  checkout: "main" | "linked" | null;
+};
 type SavedWorkspace = { folder: string };
 type NamedWorkspace = SavedWorkspace & { key: string; repo: boolean; name: string };
 type SpaceGroup = {
@@ -91,7 +112,10 @@ type RailRow = {
   tail?: Element;
   value?: string | Element;
   end?: Element;
-  onClick: (event: ClickEvent, cx: Context) => unknown;
+  onClick?: (event: ClickEvent, cx: Context) => unknown;
+  activate?: (cx: Context) => unknown;
+  focus?: FocusHandle;
+  controlFocus?: FocusHandle[];
   onMenu?: (event: MouseButtonEvent, cx: Context) => unknown;
   // Controls shown in place of `value` and `end` while the row is hovered.
   hoverEnd?: Element;
@@ -203,7 +227,7 @@ function discoverRepository(key: string): Promise<RepositoryLookup> {
       const repo = common?.code === 0 ? common.stdout.trim() : null;
       const checkout =
         repo && top?.code === 0 ? (repo === `${top.stdout.trim()}/.git` ? "main" : "linked") : null;
-      return { repo, checkout };
+      return { repo, top: top?.code === 0 ? top.stdout.trim() : null, checkout };
     })();
     repositoryLookups.set(key, lookup);
   }
@@ -293,6 +317,30 @@ const spaceName = (s: SpaceInfo) => (s.named ? s.name : (s.branch ?? s.name));
 export default class Frantss extends View {
   subscriptionUsage = new SubscriptionUsage();
   movingTabs = new Set<string>();
+  checkoutRoots: Record<string, string | null> = {};
+  openingWorktrees = new Set<string>();
+  worktreeFocus = new Map<string, FocusHandle>();
+  usedWorktreeFocus = new Set<string>();
+  syncingWorktreeFocus = false;
+  removingWorktrees = new Set<string>();
+  checkingRemoval = new Set<string>();
+  pendingRemoval: { token: string; target: RemovalTarget } | null = null;
+  pendingBulkRemoval: {
+    token: string;
+    key: string;
+    plan: RemovalPlan | null;
+    started: boolean;
+  } | null = null;
+  busyBulkRemoval = new Set<string>();
+  removalSequence = 0;
+  worktrees = new WorktreeDiscovery(async ({ cwd, machine }) => {
+    const result = await exec("git", ["worktree", "list", "--porcelain", "-z"], {
+      cwd,
+      on: machine,
+    });
+    if (result.code !== 0) throw new Error("Could not list worktrees");
+    return result.stdout;
+  });
   declare repos: Record<string, string | null>;
   declare checkouts: Record<string, "main" | "linked" | null>;
   declare marks: Record<string, number>;
@@ -326,6 +374,14 @@ export default class Frantss extends View {
         for (;;) {
           const command = await nextCommand();
           if (command === "refresh-usage") this.refreshSubscriptions(cx);
+          if (command.startsWith("inspect-worktrees:"))
+            this.inspectBulkWorktreeRemoval(command.slice("inspect-worktrees:".length), cx);
+          if (command.startsWith("cancel-worktrees:"))
+            this.cancelBulkWorktreeRemoval(command.slice("cancel-worktrees:".length));
+          if (command.startsWith("remove-worktrees:"))
+            this.confirmedBulkWorktreeRemoval(command.slice("remove-worktrees:".length), cx);
+          if (command.startsWith("remove-worktree:"))
+            this.confirmedWorktreeRemoval(command.slice("remove-worktree:".length), cx);
           if (command.startsWith("forget-history:"))
             await this.forgetHistory(decodeURIComponent(command.slice("forget-history:".length)));
           if (command.startsWith("move-pane:")) {
@@ -338,6 +394,8 @@ export default class Frantss extends View {
       cx.timer.every(SUBSCRIPTION_REFRESH_MS, (cx) => this.refreshSubscriptions(cx));
       cx.timer.every(CONTEXT_REFRESH_MS, (cx) => this.refreshContext(cx));
       cx.timer.every(AGE_REFRESH_MS, (cx) => cx.notify());
+      cx.timer.every(10_000, (cx) => this.refreshWorktrees(cx));
+      this.refreshWorktrees(cx);
     }
   }
 
@@ -605,8 +663,287 @@ export default class Frantss extends View {
       const found = await discoverRepository(key);
       this.repos[key] = found.repo;
       this.checkouts[key] = found.checkout;
+      this.checkoutRoots[key] = found.top;
       this.lookingUp.delete(key);
       cx.notify();
+    });
+  }
+
+  refreshWorktrees(cx: Context, forceKey?: string) {
+    const collapsed = collapsedIds();
+    if (
+      collapsed.includes("spaces") ||
+      (!forceKey && !collapsed.some((id) => id.startsWith("worktrees:")))
+    )
+      return;
+    const snapshot = workspaceSnapshot();
+    const targets: WorktreeTarget[] = this.spaceGroups(snapshot)
+      .filter(
+        (g) =>
+          g.repo &&
+          !collapsed.includes(`workspace:${g.key}`) &&
+          (collapsed.includes(`worktrees:${g.key}`) || forceKey === g.key),
+      )
+      .map((g) => ({
+        key: g.key,
+        cwd: snapshot.cwdBySpace.get(g.spaces[0].id),
+        machine: g.spaces[0].machine ?? null,
+      }));
+    if (targets.length)
+      cx.spawn((cx) => this.worktrees.refresh(targets, () => cx.notify(), forceKey));
+  }
+
+  worktreeSpaces(key: string, snapshot: WorkspaceSnapshot, list = snapshot.spaces) {
+    const [machine] = JSON.parse(key);
+    const normalize = (path: string) => {
+      const windows = /^[a-z]:[\\/]/i.test(path) || path.startsWith("\\\\");
+      return (windows ? path.replace(/\\/g, "/") : path).replace(/(.)\/$/, "$1");
+    };
+    const roots = (this.worktrees.state(key)?.worktrees ?? [])
+      .map((tree) => normalize(tree.path))
+      .sort((a, b) => b.length - a.length);
+    const open = new Map<string, SpaceInfo>();
+    for (const space of list) {
+      if ((space.machine ?? null) !== machine) continue;
+      const place = snapshot.placeBySpace.get(space.id);
+      const top = this.checkoutRoots[place];
+      const cwd = normalize(snapshot.cwdBySpace.get(space.id) ?? "");
+      const root = top
+        ? normalize(top)
+        : (roots.find((root) => cwd === root || cwd.startsWith(`${root}/`)) ?? cwd);
+      if (!open.has(root)) open.set(root, space);
+    }
+    return { open, normalize };
+  }
+
+  openWorktree(worktree: Worktree, key: string, cx: Context) {
+    if (this.removingWorktrees.has(JSON.stringify([key, worktree.path]))) {
+      notify({ title: "Worktree removal is in progress", level: "error" });
+      return;
+    }
+    const { open, normalize } = this.worktreeSpaces(key, workspaceSnapshot());
+    const existing = open.get(normalize(worktree.path));
+    if (existing) return run("space.select", { id: existing.id });
+    const openingKey = JSON.stringify([key, worktree.path]);
+    if (this.openingWorktrees.has(openingKey)) return;
+    this.openingWorktrees.add(openingKey);
+    const [machine] = JSON.parse(key);
+    run("space.new", { folder: worktree.path, machine: machine ?? "" });
+    cx.spawn(async (cx) => {
+      try {
+        for (let attempt = 0; attempt < 100; attempt++) {
+          const { open } = this.worktreeSpaces(key, workspaceSnapshot());
+          if (open.has(normalize(worktree.path))) return;
+          await cx.sleep(100);
+        }
+        notify({ title: "Could not open worktree", body: worktree.path, level: "error" });
+      } finally {
+        this.openingWorktrees.delete(openingKey);
+      }
+    });
+  }
+
+  worktreeFocusHandle(id: string) {
+    this.usedWorktreeFocus.add(id);
+    return this.worktreeFocus.get(id);
+  }
+
+  syncWorktreeFocus(cx: Context) {
+    if (
+      this.syncingWorktreeFocus ||
+      (this.worktreeFocus.size === this.usedWorktreeFocus.size &&
+        [...this.usedWorktreeFocus].every((id) => this.worktreeFocus.has(id)))
+    )
+      return;
+    this.syncingWorktreeFocus = true;
+    cx.timer.after(0, (cx) => {
+      for (const [id, handle] of this.worktreeFocus) {
+        if (this.usedWorktreeFocus.has(id)) continue;
+        handle.release();
+        this.worktreeFocus.delete(id);
+      }
+      for (const id of this.usedWorktreeFocus)
+        if (!this.worktreeFocus.has(id)) this.worktreeFocus.set(id, cx.focus_handle());
+      this.syncingWorktreeFocus = false;
+      cx.notify();
+    });
+  }
+
+  newWorktreeThread(tree: Worktree, key: string) {
+    if (this.removingWorktrees.has(JSON.stringify([key, tree.path]))) {
+      notify({ title: "Worktree removal is in progress", level: "error" });
+      return;
+    }
+    const [machine] = JSON.parse(key);
+    const { open, normalize } = this.worktreeSpaces(key, workspaceSnapshot());
+    const existing = open.get(normalize(tree.path));
+    openOverlay({
+      mod: "frantss-thread",
+      kind: "popup",
+      width: 260,
+      height: 420,
+      props: { folder: tree.path, machine, space: existing?.id, repo: false },
+    });
+  }
+
+  requestWorktreeRemoval(tree: Worktree, key: string, cx: Context) {
+    const target = { key, path: tree.path };
+    const removalKey = JSON.stringify([key, tree.path]);
+    if (tree.main || this.checkingRemoval.has(removalKey) || this.removingWorktrees.has(removalKey))
+      return;
+    this.checkingRemoval.add(removalKey);
+    this.pendingRemoval = null;
+    if (this.pendingBulkRemoval) this.cancelBulkWorktreeRemoval(this.pendingBulkRemoval.token);
+    cx.spawn(async () => {
+      try {
+        const { open, normalize } = this.worktreeSpaces(key, workspaceSnapshot());
+        if (open.has(normalize(tree.path))) throw new Error("Close its Herdr space first.");
+        const inspection = await inspectWorktree(target, exec);
+        if (inspection.dirty)
+          throw new Error("Commit or move this checkout's local changes before removing it.");
+        const latest = this.worktreeSpaces(key, workspaceSnapshot());
+        if (latest.open.has(latest.normalize(tree.path)) || this.openingWorktrees.has(removalKey))
+          throw new Error("Close its Herdr space first.");
+        const token = String(++this.removalSequence);
+        if (this.pendingBulkRemoval) this.cancelBulkWorktreeRemoval(this.pendingBulkRemoval.token);
+        this.pendingRemoval = { token, target };
+        openOverlay({
+          mod: "confirm",
+          kind: "dialog",
+          width: 440,
+          height: 210,
+          props: {
+            title: `Remove ${tree.branch ?? tree.head.slice(0, 8)}?`,
+            detail: `Deletes the checkout folder, including ignored files:\n${tree.path}\n\nThe Git branch is kept. Git will refuse removal if the checkout has new local changes, is locked, or contains submodules.`,
+            command: { name: `frantss.remove-worktree:${token}` },
+          },
+        });
+      } catch (error) {
+        notify({ title: "Could not remove worktree", body: String(error), level: "error" });
+      } finally {
+        this.checkingRemoval.delete(removalKey);
+      }
+    });
+  }
+
+  confirmedWorktreeRemoval(token: string, cx: Context) {
+    if (this.pendingRemoval?.token !== token) return;
+    const { target } = this.pendingRemoval;
+    this.pendingRemoval = null;
+    const removalKey = JSON.stringify([target.key, target.path]);
+    this.removingWorktrees.add(removalKey);
+    cx.spawn(async (cx) => {
+      try {
+        const { open, normalize } = this.worktreeSpaces(target.key, workspaceSnapshot());
+        if (open.has(normalize(target.path)) || this.openingWorktrees.has(removalKey))
+          throw new Error("Close its Herdr space first.");
+        await removeWorktree(target, exec, (target) => this.worktreeRemovalBlock(target, false));
+        this.refreshWorktrees(cx, target.key);
+      } catch (error) {
+        notify({ title: "Could not remove worktree", body: String(error), level: "error" });
+      } finally {
+        this.removingWorktrees.delete(removalKey);
+      }
+    });
+  }
+
+  worktreeRemovalBlock(target: RemovalTarget, includeRemoving = true): string | null {
+    const snapshot = workspaceSnapshot();
+    const { open, normalize } = this.worktreeSpaces(target.key, snapshot);
+    const [machine] = JSON.parse(target.key);
+    const path = normalize(target.path);
+    const contains = (folder: string) => {
+      const normalized = normalize(folder);
+      return normalized === path || normalized.startsWith(`${path}/`);
+    };
+    const hasSpace = snapshot.spaces.some(
+      (space) =>
+        (space.machine ?? null) === machine &&
+        (contains(space.folder) || contains(snapshot.cwdBySpace.get(space.id) ?? "")),
+    );
+    const id = JSON.stringify([target.key, target.path]);
+    if (open.has(path) || hasSpace || this.openingWorktrees.has(id))
+      return "Checkout is open or opening in Herdr.";
+    if (this.checkingRemoval.has(id) || (includeRemoving && this.removingWorktrees.has(id)))
+      return "Another removal is in progress.";
+    return null;
+  }
+
+  requestBulkWorktreeRemoval(key: string, _cx: Context) {
+    if (this.busyBulkRemoval.has(key)) return;
+    if (this.pendingBulkRemoval) this.cancelBulkWorktreeRemoval(this.pendingBulkRemoval.token);
+    this.busyBulkRemoval.add(key);
+    this.pendingRemoval = null;
+    const token = String(++this.removalSequence);
+    this.pendingBulkRemoval = { token, key, plan: null, started: false };
+    openOverlay({
+      mod: "frantss-worktree-removal",
+      kind: "dialog",
+      width: 640,
+      height: 560,
+      props: { token, command: { name: `frantss.remove-worktrees:${token}` } },
+    });
+  }
+
+  cancelBulkWorktreeRemoval(token: string) {
+    if (this.pendingBulkRemoval?.token !== token) return;
+    this.busyBulkRemoval.delete(this.pendingBulkRemoval.key);
+    this.pendingBulkRemoval = null;
+  }
+
+  inspectBulkWorktreeRemoval(token: string, cx: Context) {
+    const pending = this.pendingBulkRemoval;
+    if (pending?.token !== token || pending.started) return;
+    pending.started = true;
+    cx.spawn(async () => {
+      try {
+        const plan = await planWorktreeRemoval(pending.key, exec, (target) =>
+          this.pendingBulkRemoval === pending
+            ? this.worktreeRemovalBlock(target)
+            : "Inspection cancelled.",
+        );
+        if (this.pendingBulkRemoval !== pending) return;
+        pending.plan = plan;
+        run(
+          `frantss-worktree-removal.result:${encodeURIComponent(JSON.stringify({ token, paths: plan.targets.map((target) => target.path), skipped: plan.skipped }))}`,
+        );
+      } catch (error) {
+        if (this.pendingBulkRemoval !== pending) return;
+        run(
+          `frantss-worktree-removal.result:${encodeURIComponent(JSON.stringify({ token, error: String(error) }))}`,
+        );
+      } finally {
+        if (this.pendingBulkRemoval === pending) this.busyBulkRemoval.delete(pending.key);
+      }
+    });
+  }
+
+  confirmedBulkWorktreeRemoval(token: string, cx: Context) {
+    if (this.pendingBulkRemoval?.token !== token || !this.pendingBulkRemoval.plan) return;
+    const { key, plan } = this.pendingBulkRemoval;
+    this.pendingBulkRemoval = null;
+    if (this.busyBulkRemoval.has(key)) return;
+    this.busyBulkRemoval.add(key);
+    for (const target of plan.targets)
+      this.removingWorktrees.add(JSON.stringify([key, target.path]));
+    cx.spawn(async (cx) => {
+      try {
+        const result = await removeWorktrees(plan, exec, (target) =>
+          this.worktreeRemovalBlock(target, false),
+        );
+        notify({
+          title: `Removed ${result.removed.length} worktree${result.removed.length === 1 ? "" : "s"}; skipped ${result.skipped.length}`,
+          body: [
+            ...result.removed.map((path) => `Removed: ${path}`),
+            ...result.skipped.map((item) => `Skipped: ${item.path}: ${item.reason}`),
+          ].join("\n"),
+        });
+        this.refreshWorktrees(cx, key);
+      } finally {
+        for (const target of plan.targets)
+          this.removingWorktrees.delete(JSON.stringify([key, target.path]));
+        this.busyBulkRemoval.delete(key);
+      }
     });
   }
 
@@ -796,6 +1133,9 @@ export default class Frantss extends View {
       value,
       end,
       onClick,
+      activate,
+      focus,
+      controlFocus,
       onMenu,
       hoverEnd,
       collapsed,
@@ -803,7 +1143,9 @@ export default class Frantss extends View {
       flush,
     }: RailRow,
   ) {
-    const hovered = Boolean(hoverEnd) && this.hovered === id;
+    const hovered =
+      Boolean(hoverEnd) &&
+      (this.hovered === id || focus?.is_focused() || controlFocus?.some((h) => h?.is_focused()));
     return (
       h_flex()
         .id(id)
@@ -822,7 +1164,25 @@ export default class Frantss extends View {
         .text_color(current || lit ? t.foreground : dim ? t.dim : t.muted)
         .when(Boolean(current), (e) => e.bg(t.selected))
         .when(!current, (e) => e.hover((s) => s.bg(t.hover).text_color(t.foreground)))
-        .on_click(onClick)
+        .when(Boolean(activate || onClick), (e) =>
+          e.on_click(activate ? (_event, cx) => activate(cx) : onClick),
+        )
+        .when(Boolean(focus), (e) => e.track_focus(focus))
+        .when(Boolean(activate), (e) =>
+          e
+            .tab_index(0)
+            .accessibility_label(text)
+            .focus((s) =>
+              s.bg(t.selected).text_color(t.foreground).border_1().border_color(t.accent),
+            )
+            .on_key_down((event, cx) => {
+              if (focus && !focus.is_focused()) return;
+              if (event.key === "enter" || event.key === "space") {
+                cx.stop_propagation();
+                activate(cx);
+              }
+            }),
+        )
         .when(Boolean(onMenu), (e) => e.on_mouse_down("right", onMenu))
         .when(Boolean(hoverEnd), (e) =>
           e.on_hover((over, cx) => {
@@ -892,7 +1252,10 @@ export default class Frantss extends View {
       .gap(8)
       .items_center()
       .cursor_pointer()
-      .on_click(() => toggleCollapsed(id))
+      .on_click((_event, cx) => {
+        toggleCollapsed(id);
+        if (id === "spaces") this.refreshWorktrees(cx);
+      })
       .child(chevron(t, collapsed))
       .child(
         div()
@@ -968,7 +1331,8 @@ export default class Frantss extends View {
       .transition("opacity", 150);
   }
 
-  rail(t: Theme, list: AgentInfo[], snapshot: WorkspaceSnapshot) {
+  rail(t: Theme, list: AgentInfo[], snapshot: WorkspaceSnapshot, cx: Context) {
+    this.usedWorktreeFocus.clear();
     const all = snapshot.spaces;
     const groups = [
       { status: "pinned", label: "Pinned", agents: list.filter((a) => a.pinned) },
@@ -1192,7 +1556,10 @@ export default class Frantss extends View {
             repo: g.repo,
           }),
         ),
-        onClick: () => toggleCollapsed(`workspace:${g.key}`),
+        onClick: (_event, cx) => {
+          toggleCollapsed(`workspace:${g.key}`);
+          this.refreshWorktrees(cx);
+        },
         // Only folders on this machine can be kept (the folder picker's, and new spaces', machine).
         onMenu: () => g.local && workspaceMenu(saved?.folder ?? g.folder, Boolean(saved)),
       };
@@ -1222,9 +1589,119 @@ export default class Frantss extends View {
     const unsaved = open.filter((group) => !savedKeys.has(group.key));
     const colors = this.colorWorkspaces([...savedKeys, ...unsaved.map((group) => group.key)]);
     const spaceById = new Map(all.map((s) => [s.id, s]));
+    const worktreeRows = (g: SpaceGroup): RailRow[] => {
+      if (!g.repo || collapsed.includes("spaces")) return [];
+      const open = collapsed.includes(`worktrees:${g.key}`);
+      const state = this.worktrees.state(g.key);
+      let unopened = state?.worktrees;
+      if (unopened?.length) {
+        const { open: opened, normalize } = this.worktreeSpaces(g.key, snapshot, g.spaces);
+        unopened = unopened.filter((tree) => !opened.has(normalize(tree.path)));
+      }
+      const refresh = (cx: Context) => this.refreshWorktrees(cx, g.key);
+      const refreshId = `worktrees-refresh-${g.key}`;
+      const refreshFocus = this.worktreeFocusHandle(refreshId);
+      const removeId = `worktrees-remove-all-${g.key}`;
+      const removeFocus = this.worktreeFocusHandle(removeId);
+      const refreshControl = () =>
+        this.control(
+          t,
+          refreshId,
+          state?.error ? "Retry worktree refresh" : "Refresh worktrees",
+          svg("mods/github/refresh.svg").size(10),
+          refresh,
+        ).when(Boolean(refreshFocus), (e) => e.track_focus(refreshFocus));
+      const rows: RailRow[] = [
+        {
+          id: `worktrees-${g.key}`,
+          lead: branchIcon(),
+          focus: this.worktreeFocusHandle(`worktrees-${g.key}`),
+          controlFocus: [refreshFocus, removeFocus],
+          end: refreshControl(),
+          hoverEnd: h_flex()
+            .gap(4)
+            .items_center()
+            .child(
+              this.control(
+                t,
+                removeId,
+                "Remove all eligible worktrees…",
+                svg("mods/frantss-files/trash.svg").size(10),
+                (cx) => this.requestBulkWorktreeRemoval(g.key, cx),
+              ).when(Boolean(removeFocus), (e) => e.track_focus(removeFocus)),
+            )
+            .child(refreshControl()),
+          text: "Other worktrees",
+          collapsed: !open,
+          value: state?.error
+            ? state.worktrees
+              ? "Stale"
+              : "Unavailable"
+            : unopened && String(unopened.length),
+          activate: (cx) => {
+            toggleCollapsed(`worktrees:${g.key}`);
+            this.refreshWorktrees(cx);
+          },
+        },
+      ];
+      if (!open) return rows;
+      if (!state || state.loading)
+        rows.push({
+          id: `worktrees-loading-${g.key}`,
+          indent: 14,
+          text: "Checking worktrees…",
+        });
+      if (unopened?.length === 0 && !state?.error)
+        rows.push({
+          id: `worktrees-empty-${g.key}`,
+          indent: 14,
+          text: "No other worktrees",
+        });
+      for (const tree of unopened ?? []) {
+        const id = `worktree-${JSON.stringify([g.key, tree.path])}`;
+        const actions = ["open", "thread", ...(!tree.main ? ["remove"] : [])];
+        const handles = actions.map((action) => this.worktreeFocusHandle(`${id}-${action}`));
+        const open = this.control(
+          t,
+          `${id}-open`,
+          "Open worktree",
+          svg("mods/github/external-link.svg").size(10),
+          (cx) => this.openWorktree(tree, g.key, cx),
+        ).when(Boolean(handles[0]), (e) => e.track_focus(handles[0]));
+        const thread = this.control(t, `${id}-thread`, "New thread", "+", () =>
+          this.newWorktreeThread(tree, g.key),
+        ).when(Boolean(handles[1]), (e) => e.track_focus(handles[1]));
+        rows.push({
+          id,
+          focus: this.worktreeFocusHandle(id),
+          controlFocus: handles,
+          indent: 14,
+          lead: branchIcon(),
+          text: tree.branch ?? tree.head.slice(0, 8),
+          hoverEnd: h_flex()
+            .gap(4)
+            .items_center()
+            .child(open)
+            .child(thread)
+            .when(!tree.main, (e) =>
+              e.child(
+                this.control(
+                  t,
+                  `${id}-remove`,
+                  "Remove worktree…",
+                  svg("mods/frantss-files/trash.svg").size(10),
+                  (cx) => this.requestWorktreeRemoval(tree, g.key, cx),
+                ).when(Boolean(handles[2]), (e) => e.track_focus(handles[2])),
+              ),
+            ),
+          activate: (cx) => this.openWorktree(tree, g.key, cx),
+        });
+      }
+      return rows;
+    };
     const groupRows = (g: SpaceGroup, w: NamedWorkspace) => [
       groupRow(g, w),
-      ...(workspaceClosed(g) ? [] : g.spaces.flatMap(withTabs)),
+      ...(workspaceClosed(g) ? [] : [...g.spaces.flatMap(withTabs), ...worktreeRows(g)]),
     ];
     const workspaceRows = [
       ...saved.flatMap((w) => {
@@ -1333,6 +1810,7 @@ export default class Frantss extends View {
       y += gap - RAIL.rowGap;
     }
 
+    this.syncWorktreeFocus(cx);
     this.marks ??= {};
     const chevron = (e: Element) =>
       e.left(12).h(RAIL.row).flex().items_center().text_size(12).text_color(t.accent).child("❯");
@@ -1696,6 +2174,6 @@ export default class Frantss extends View {
       this.contextFor = focusedAddress;
       this.refreshContext(cx);
     }
-    return this.rail(t, list, snapshot);
+    return this.rail(t, list, snapshot, cx);
   }
 }
