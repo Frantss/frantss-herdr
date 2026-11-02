@@ -1363,13 +1363,13 @@ export default class Frantss extends View {
       .child(`${prs.length} PR${prs.length > 1 ? "s" : ""}`);
   }
 
-  // An agent row's hover controls: its PR chip, peek, and interrupt while it works.
+  // An agent row's hover controls: peek, and interrupt while it works, then its PR chip, which
+  // stays where the row shows it.
   agentControls(t: Theme, a: AgentInfo) {
     const chip = this.prChip(t, a.address);
     return h_flex()
       .gap(4)
       .items_center()
-      .when(Boolean(chip), (e) => e.child(chip))
       .child(
         this.control(t, `peek-${a.address}`, "Peek", svg("mods/github/eye.svg").size(10), () =>
           run("terminal.peek", { terminal: a.address }),
@@ -1385,7 +1385,8 @@ export default class Frantss extends View {
             (cx) => cx.spawn(() => hcOrToast(["interrupt", a.address], "Could not interrupt")),
           ),
         ),
-      );
+      )
+      .when(Boolean(chip), (e) => e.child(chip));
   }
 
   addWorkspace(cx: Context) {
